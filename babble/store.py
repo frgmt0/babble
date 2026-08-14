@@ -15,6 +15,10 @@ import hashlib
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
+<<<<<<< ours
+=======
+from typing import Callable
+>>>>>>> theirs
 
 from .util import atomic_write_text, utcnow_iso
 
@@ -108,11 +112,24 @@ class InteractionStore:
     def purge_author(self, author: str) -> int:
         """Delete every row the pseudonym appears in, on either side.
 
+<<<<<<< ours
         Used by `!babble forget`. Rewrites the file atomically so an interrupted
         purge cannot leave a partially-deleted corpus.
         """
         rows = self.all()
         keep = [r for r in rows if not r.involves(author)]
+=======
+        Used by `!babble forget`.
+        """
+        return self.purge(lambda r: r.involves(author))
+
+    def purge(self, doomed: Callable[[Interaction], bool]) -> int:
+        """Delete every row `doomed` says to. Rewrites the file atomically so an
+        interrupted purge cannot leave a partially-deleted corpus.
+        """
+        rows = self.all()
+        keep = [r for r in rows if not doomed(r)]
+>>>>>>> theirs
         removed = len(rows) - len(keep)
         if removed:
             body = "".join(json.dumps(r.to_dict(), ensure_ascii=False) + "\n" for r in keep)

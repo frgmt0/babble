@@ -1,0 +1,24 @@
+# babble content blocklist -- terms that bounce a whole row from the corpus.
+#
+# One term per line. Lines starting with # and blank lines are ignored.
+# Matching is normalised (case, accents, leetspeak, spacing, repeats folded
+# out first) and word-boundary aware, so you only need the base form here --
+# not every spaced-out or leetspeak variant.
+#
+# This is a STARTER list, not an exhaustive one: a handful of unambiguous
+# slurs across a few categories, meant to catch the obvious and lazy cases.
+# Extend it by adding a line, or point BABBLE_BLOCKLIST_PATH at your own file
+# entirely. See README.md "Content filter" for what this does and does not do.
+
+nigger
+nigga
+chink
+spic
+kike
+gook
+wetback
+tranny
+faggot
+retard
+coon
+beaner
