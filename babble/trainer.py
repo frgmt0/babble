@@ -15,6 +15,7 @@ Three properties matter more than speed here:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import random
@@ -89,6 +90,101 @@ def to_examples(rows: list[Interaction], block_size: int) -> list[Example]:
         for row in rows
         if row.chosen
     ]
+
+
+# --- held-out validation --------------------------------------------------
+
+_VAL_SALT = "babble-val-split"
+
+
+def _val_bucket(row_id: str) -> float:
+    """A stable float in [0, 1) derived from the row id.
+
+    Hashing the id -- not the row's position in the file, not a shuffle -- is
+    what makes the same row land on the same side of the split every time the
+    trainer restarts and as more rows are appended around it.
+    """
+    digest = hashlib.sha256(f"{_VAL_SALT}\x1f{row_id}".encode("utf-8")).hexdigest()
+    return int(digest[:8], 16) / 0x1_0000_0000
+
+
+@dataclass
+class Split:
+    """Held-out split of consented rows.
+
+    `enabled=False` means the corpus was too small to hold anything out
+    without starving training: `train` is every row, `val` is empty, and
+    `disabled_reason` says why.
+    """
+
+    train: list[Interaction]
+    val: list[Interaction]
+    enabled: bool
+    disabled_reason: str | None = None
+
+
+def split_rows(rows: list[Interaction], settings: Settings) -> Split:
+    """Deterministically hold out `settings.val_fraction` of `rows` by row id."""
+    if len(rows) < settings.val_min_rows:
+        return Split(
+            train=rows,
+            val=[],
+            enabled=False,
+            disabled_reason=(
+                f"only {len(rows)} consented rows, need at least {settings.val_min_rows} "
+                f"(BABBLE_VAL_MIN_ROWS) before holding any out"
+            ),
+        )
+    train: list[Interaction] = []
+    val: list[Interaction] = []
+    for row in rows:
+        (val if _val_bucket(row.id) < settings.val_fraction else train).append(row)
+    return Split(train=train, val=val, enabled=True)
+
+
+def _stack_examples(examples: list[Example]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Right-pad every example to the batch's longest, same layout as `make_batch`."""
+    width = max(len(e) for e in examples)
+    tokens = torch.full((len(examples), width), PAD_ID, dtype=torch.long)
+    mask = torch.zeros((len(examples), width), dtype=torch.long)
+    for i, example in enumerate(examples):
+        tokens[i, : len(example)] = torch.tensor(example.tokens, dtype=torch.long)
+        mask[i, : len(example)] = torch.tensor(example.mask, dtype=torch.long)
+    weights = torch.tensor([e.weight for e in examples], dtype=torch.float32)
+    return tokens, mask, weights
+
+
+@torch.no_grad()
+def eval_loss(model: Babbler, examples: list[Example]) -> float | None:
+    """Mean loss over held-out examples, or None if there are none to score.
+
+    Eval mode, `no_grad`, no optimizer involved -- this can never mutate a
+    weight or an optimizer moment. `model.training` is restored on the way
+    out, so a validation pass never changes what the next training step sees.
+    """
+    if not examples:
+        return None
+    was_training = model.training
+    model.eval()
+    try:
+        tokens, mask, weights = _stack_examples(examples)
+        return float(sequence_loss(model, tokens, mask, weights))
+    finally:
+        model.train(was_training)
+
+
+def overfit_signal(
+    train_loss: float | None,
+    prev_train_loss: float | None,
+    val_loss: float | None,
+    prev_val_loss: float | None,
+) -> bool:
+    """A plain, honest overfitting flag: val loss rose while train loss fell,
+    checkpoint over checkpoint. Reporting only -- it never changes training.
+    """
+    if None in (train_loss, prev_train_loss, val_loss, prev_val_loss):
+        return False
+    return val_loss > prev_val_loss and train_loss < prev_train_loss
 
 
 def make_batch(
@@ -240,6 +336,7 @@ def train(
     cycles = 0
     last_loss: float | None = None
     prev_checkpoint_loss: float | None = None
+    prev_val_loss: float | None = None
     reason = "budget_exhausted"
 
     while True:
@@ -251,7 +348,9 @@ def train(
             break
 
         rows = consented_rows(settings, ids, blocklist)
-        examples = to_examples(rows, model.config.block_size)
+        split = split_rows(rows, settings)
+        examples = to_examples(split.train, model.config.block_size)
+        val_examples = to_examples(split.val, model.config.block_size)
         if not examples:
             log.event("train.idle", reason="no_consented_rows", rows=len(rows))
             feed.idle()
@@ -271,6 +370,9 @@ def train(
             rows=len(rows),
             examples=len(examples),
             planned_steps=budget,
+            val_rows=len(split.val),
+            val_enabled=split.enabled,
+            val_disabled_reason=None if split.enabled else split.disabled_reason,
         )
 
         window: list[float] = []
@@ -294,9 +396,14 @@ def train(
             last_loss = value
 
             if step % settings.checkpoint_every == 0:
-                prev_checkpoint_loss = _checkpoint(
+                prev_checkpoint_loss, prev_val_loss = _checkpoint(
                     settings, log, feed, blocklist, model, optimizer, step, window, len(rows),
                     cycles, prev_checkpoint_loss, echo,
+                    val_examples=val_examples,
+                    val_enabled=split.enabled,
+                    val_disabled_reason=split.disabled_reason,
+                    val_rows=len(split.val),
+                    prev_val_loss=prev_val_loss,
                 )
                 checkpoints += 1
                 window = []
@@ -304,9 +411,14 @@ def train(
         # Never end a cycle with unsaved work: a kill during the rest period
         # would otherwise throw away everything since the last checkpoint.
         if window:
-            prev_checkpoint_loss = _checkpoint(
+            prev_checkpoint_loss, prev_val_loss = _checkpoint(
                 settings, log, feed, blocklist, model, optimizer, step, window, len(rows),
                 cycles, prev_checkpoint_loss, echo,
+                val_examples=val_examples,
+                val_enabled=split.enabled,
+                val_disabled_reason=split.disabled_reason,
+                val_rows=len(split.val),
+                prev_val_loss=prev_val_loss,
             )
             checkpoints += 1
 
@@ -398,7 +510,13 @@ def _checkpoint(
     cycle: int,
     prev_loss: float | None,
     echo: bool,
-) -> float:
+    *,
+    val_examples: list[Example],
+    val_enabled: bool,
+    val_disabled_reason: str | None,
+    val_rows: int,
+    prev_val_loss: float | None,
+) -> tuple[float, float | None]:
     mean_loss = sum(window) / len(window) if window else float("nan")
     started = time.perf_counter()
     prompt = SAMPLE_PROMPTS[step // max(1, settings.checkpoint_every) % len(SAMPLE_PROMPTS)]
@@ -409,6 +527,11 @@ def _checkpoint(
         temperature=settings.temperature,
         top_k=settings.top_k,
     )
+    # Eval-mode, no-grad, no optimizer step: this scores the held-out rows
+    # without moving a single weight or optimizer moment.
+    val_loss = eval_loss(model, val_examples) if val_enabled else None
+    overfitting = val_enabled and overfit_signal(mean_loss, prev_loss, val_loss, prev_val_loss)
+
     path = save_checkpoint(settings, model, optimizer, step, mean_loss)
     append_curve(settings, step, mean_loss, text, rows)
 
@@ -416,6 +539,11 @@ def _checkpoint(
         "train.checkpoint",
         step=step,
         loss=round(mean_loss, 6),
+        val_loss=round(val_loss, 6) if val_loss is not None else None,
+        val_rows=val_rows,
+        val_enabled=val_enabled,
+        val_disabled_reason=None if val_enabled else val_disabled_reason,
+        overfit_signal=overfitting,
         rows=rows,
         file=path.name,
         seconds=round(time.perf_counter() - started, 2),
@@ -424,7 +552,18 @@ def _checkpoint(
     )
     if echo:
         shown = text.replace("\n", "\\n")
-        print(f"step {step:>7,} | loss {mean_loss:8.4f} | {prompt!r} -> {shown!r}", flush=True)
+        if not val_enabled:
+            val_part = "val disabled"
+        elif val_loss is None:
+            val_part = "val   n/a"
+        else:
+            val_part = f"val {val_loss:8.4f}"
+        overfit_part = "  ⚠ overfitting" if overfitting else ""
+        print(
+            f"step {step:>7,} | loss {mean_loss:8.4f} | {val_part}{overfit_part} | "
+            f"{prompt!r} -> {shown!r}",
+            flush=True,
+        )
 
     # The sample is what leaves the machine via the feed -- filter it the same
     # way any other model output headed for Discord gets filtered.
@@ -437,5 +576,11 @@ def _checkpoint(
         rows=rows,
         prompt=prompt,
         sample=feed_sample,
+        val_loss=val_loss,
+        prev_val_loss=prev_val_loss,
+        val_rows=val_rows,
+        val_enabled=val_enabled,
+        val_disabled_reason=val_disabled_reason,
+        overfit_signal=overfitting,
     )
-    return mean_loss
+    return mean_loss, val_loss
