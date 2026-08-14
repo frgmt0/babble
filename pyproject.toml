@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "babble"
+version = "0.1.0"
+description = "A tiny transformer with random weights that learns to talk only from Discord corrections."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+
+# Deliberately tiny. torch for the model, discord.py for the bot, hub for the export.
+# No numpy, no datasets, no transformers, no tokenizer downloads.
+dependencies = [
+    "torch>=2.1",
+    "discord.py>=2.3",
+    "huggingface_hub>=0.23",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+babble = "babble.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["babble*"]
+
+# uv users get the CPU-only torch build automatically -- no multi-GB CUDA wheels.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::UserWarning"]

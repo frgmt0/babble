@@ -1,0 +1,16 @@
+# Everything the bot learns is local and private until it is explicitly exported.
+# data/ in particular holds consent.json and the raw Discord ids it is keyed by,
+# and .salt, which is what makes the published hashes unlinkable. Never commit it.
+data/
+checkpoints/
+export/
+logs/
+.scratch/
+
+.env
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
