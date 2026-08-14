@@ -48,6 +48,19 @@ class BabbleClient(discord.Client):
             latency_ms=round(self.latency * 1000, 1),
             step=getattr(self.brain.generator, "step", 0),
         )
+        # A shared/multi-guild deployment can have a channel it never sees a
+        # single event from because it lacks View Channel there. That gap is
+        # invisible from the message log alone, so spell it out here instead
+        # of requiring a manual permissions poke.
+        for guild in self.guilds:
+            total, visible, sendable = _guild_visibility(guild)
+            self.log.event(
+                "bot.guild",
+                guild=self.log.guild(guild.id),
+                channels=total,
+                visible=visible,
+                sendable=sendable,
+            )
         print(f"babble is online as {self.user} in {len(self.guilds)} guild(s)", flush=True)
 
     async def on_message(self, message: discord.Message) -> None:
@@ -56,10 +69,8 @@ class BabbleClient(discord.Client):
         incoming = await self._to_incoming(message)
         replies = await self._think(self.brain.handle_message, incoming)
         for reply in replies:
-            try:
-                sent = await message.reply(reply.content, mention_author=False)
-            except discord.HTTPException as exc:
-                self.log.event("bot.error", where="reply", error=f"{type(exc).__name__}: {exc}")
+            sent = await self._send_reply(message, reply, incoming)
+            if sent is None:
                 continue
             self.brain.remember(sent.id, reply)
             self.log.event(
@@ -70,6 +81,24 @@ class BabbleClient(discord.Client):
                 remembered=reply.exchange is not None or None,
             )
 
+    async def _send_reply(
+        self, message: discord.Message, reply: Any, incoming: IncomingMessage
+    ) -> discord.Message | None:
+        """Post one reply, or log why it failed and return None instead of raising."""
+        try:
+            return await message.reply(reply.content, mention_author=False)
+        except discord.HTTPException as exc:
+            reason = "forbidden" if isinstance(exc, discord.Forbidden) else "http_error"
+            self.log.event(
+                "bot.error",
+                where="reply",
+                reason=reason,
+                channel=self.log.channel(incoming.channel_id),
+                guild=self.log.guild(incoming.guild_id),
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return None
+
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent) -> None:
         if self.user and payload.user_id == self.user.id:
             return
@@ -78,6 +107,7 @@ class BabbleClient(discord.Client):
             emoji=str(payload.emoji),
             user_id=str(payload.user_id),
             channel_id=str(payload.channel_id),
+            guild_id=str(payload.guild_id) if payload.guild_id else None,
             user_is_bot=bool(payload.member.bot) if payload.member else False,
         )
         await self._think(self.brain.handle_reaction, event)
@@ -97,8 +127,9 @@ class BabbleClient(discord.Client):
             author_id=str(message.author.id),
             content=message.content or "",
             channel_id=str(getattr(message.channel, "id", 0)),
+            guild_id=str(message.guild.id) if message.guild else None,
             author_is_bot=bool(message.author.bot),
-            mentions_bot=bool(self.user and self.user in message.mentions),
+            mentions_bot=_mentions_bot(self.user, message),
             reply_to_message_id=reply_to_id,
             reply_to_is_bot=reply_to_is_bot,
             attachment_urls=tuple(a.url for a in message.attachments),
@@ -130,6 +161,40 @@ class BabbleClient(discord.Client):
                     error=f"{type(exc).__name__}: {exc}",
                 )
                 return []
+
+
+def _mentions_bot(user: discord.abc.User | None, message: discord.Message) -> bool:
+    """A direct @mention, or a mention of a role the bot holds.
+
+    `message.mentions` never includes role pings, so a server that pings the
+    bot's role instead of mentioning it directly was being silently ignored.
+    The guild's default (@everyone) role is deliberately excluded from the
+    role check -- @everyone and @here must never trigger a response.
+    """
+    if user and user in message.mentions:
+        return True
+    if not message.role_mentions:
+        return False
+    guild = message.guild
+    me = guild.me if guild else None
+    if me is None:
+        return False
+    bot_role_ids = {role.id for role in me.roles if not role.is_default()}
+    return any(role.id in bot_role_ids for role in message.role_mentions)
+
+
+def _guild_visibility(guild: discord.Guild) -> tuple[int, int, int]:
+    """(text channels, how many we can see, how many we can also send in)."""
+    me = guild.me
+    total = visible = sendable = 0
+    for channel in guild.text_channels:
+        total += 1
+        perms = channel.permissions_for(me) if me else discord.Permissions.none()
+        if perms.view_channel:
+            visible += 1
+            if perms.send_messages:
+                sendable += 1
+    return total, visible, sendable
 
 
 def run_bot(settings: Settings | None = None) -> int:
