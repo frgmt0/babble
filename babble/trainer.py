@@ -31,6 +31,7 @@ from .blocklist import Blocklist
 from .config import Settings
 from .consent import ConsentStore
 from .discord_feed import TrainingFeed
+from .export_hf import DATA_FILE, ExportBlocked, build_export, push as push_export
 from .generate import sample
 from .identity import Pseudonymiser
 from .logs import EventLog
@@ -240,6 +241,57 @@ def prune_checkpoints(settings: Settings) -> int:
     return len(doomed)
 
 
+# --- auto-publish ---------------------------------------------------------
+
+
+@dataclass
+class PublishState:
+    """What was last actually pushed, so an unchanged corpus is never re-pushed."""
+
+    content_hash: str | None = None
+    rows: int = 0
+
+
+def _auto_publish(
+    settings: Settings, log: EventLog, feed: TrainingFeed, state: PublishState
+) -> PublishState:
+    """Export and push, through the exact same consent/blocklist gate as a
+    manual `babble export --push`. Never raises: a bad token, no network, or
+    HF being down is logged and reported in the feed, and training continues
+    -- the next scheduled publish just tries again.
+    """
+    try:
+        result = build_export(settings, log=log)
+    except ExportBlocked as exc:
+        log.event("publish.blocked", error=str(exc))
+        feed.publish_failed(f"export blocked: {exc}")
+        return state
+
+    content_hash = hashlib.sha256((result.path / DATA_FILE).read_bytes()).hexdigest()
+    if content_hash == state.content_hash and result.rows == state.rows:
+        log.event("publish.skipped", reason="unchanged", rows=result.rows)
+        return state
+
+    try:
+        url = push_export(settings, settings.hf_repo, result.path, log=log)
+    except Exception as exc:  # network, rate limit, bad token, HF down -- never fatal
+        log.event("publish.failed", error=f"{type(exc).__name__}: {exc}")
+        feed.publish_failed(f"{type(exc).__name__}: {exc}")
+        return state
+
+    log.event("publish.ok", rows=result.rows, url=url)
+    feed.publish(rows=result.rows, url=url)
+    return PublishState(content_hash=content_hash, rows=result.rows)
+
+
+def _maybe_auto_publish(
+    settings: Settings, log: EventLog, feed: TrainingFeed, checkpoints: int, state: PublishState
+) -> PublishState:
+    if not settings.hf_publish_every or checkpoints % settings.hf_publish_every != 0:
+        return state
+    return _auto_publish(settings, log, feed, state)
+
+
 def append_curve(settings: Settings, step: int, loss: float, sample_text: str, rows: int) -> None:
     entry = {
         "step": step,
@@ -337,6 +389,7 @@ def train(
     last_loss: float | None = None
     prev_checkpoint_loss: float | None = None
     prev_val_loss: float | None = None
+    publish_state = PublishState()
     reason = "budget_exhausted"
 
     while True:
@@ -407,6 +460,7 @@ def train(
                 )
                 checkpoints += 1
                 window = []
+                publish_state = _maybe_auto_publish(settings, log, feed, checkpoints, publish_state)
 
         # Never end a cycle with unsaved work: a kill during the rest period
         # would otherwise throw away everything since the last checkpoint.
@@ -421,6 +475,7 @@ def train(
                 prev_val_loss=prev_val_loss,
             )
             checkpoints += 1
+            publish_state = _maybe_auto_publish(settings, log, feed, checkpoints, publish_state)
 
         log.event(
             "train.cycle.end",

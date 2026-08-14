@@ -183,6 +183,16 @@ class TrainingFeed:
         lines.append(f"> {prompt!r} → `{neuter_sample(sample)}`")
         self._post("\n".join(lines))
 
+    def publish(self, *, rows: int, url: str) -> None:
+        if not self.enabled:
+            return
+        self._post(f"📤 **babble** auto-published **{rows}** row(s) to {url}")
+
+    def publish_failed(self, error: str) -> None:
+        if not self.enabled:
+            return
+        self._post(f"⚠️ **babble** auto-publish to HuggingFace failed — {error}")
+
     # --- plumbing -----------------------------------------------------
 
     def _post(self, content: str) -> None:

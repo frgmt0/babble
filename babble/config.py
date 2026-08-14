@@ -94,6 +94,11 @@ class Settings:
     hf_repo: str = "kowo-co/babble-corrections"
     salt: str | None = None
 
+    # Auto-publish: every this-many checkpoints written, push the corrections
+    # dataset to `hf_repo` through the same consent/blocklist gate as a manual
+    # `babble export --push`. 0 or None turns it off.
+    hf_publish_every: int | None = 20
+
     @classmethod
     def from_env(cls, root: Path | None = None) -> "Settings":
         root = root or REPO_ROOT
@@ -121,6 +126,7 @@ class Settings:
             val_min_rows=_env_int("BABBLE_VAL_MIN_ROWS", 20),
             hf_repo=os.environ.get("BABBLE_HF_REPO", "kowo-co/babble-corrections"),
             salt=os.environ.get(SALT_ENV) or None,
+            hf_publish_every=_env_int("BABBLE_HF_PUBLISH_EVERY", 20),
         )
 
     @classmethod

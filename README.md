@@ -291,15 +291,31 @@ babble export                                   # build ./export, push nothing
 babble export --push --repo kowo-co/babble-corrections   # needs HF_TOKEN
 ```
 
-Nothing is ever pushed automatically. `export` writes `export/data/train.jsonl`
-plus a dataset card, containing consented rows only, with authors as salted
-hashes. Rows are content-addressed and stably sorted, so re-running produces
-byte-identical output and re-pushing is a no-op.
+`export` writes `export/data/train.jsonl` plus a dataset card, containing
+consented rows only, with authors as salted hashes. Rows are content-addressed
+and stably sorted, so re-running produces byte-identical output and
+re-pushing is a no-op.
 
 Three guards: the export **aborts** if an author field is not a pseudonym (that
 would mean a bug), and it **drops** any row whose text contains a known raw
 Discord id or mention markup, or that matches the [content blocklist](#content-filter),
 rather than publishing it.
+
+**The trainer also auto-publishes.** Every `BABBLE_HF_PUBLISH_EVERY` checkpoints
+written (default **20**, counted by checkpoints, not steps), it builds the
+export and pushes it to `BABBLE_HF_REPO` -- through the exact same consent and
+blocklist guards as a manual `--push`, with `HF_TOKEN` read from the
+environment the same way. Set `BABBLE_HF_PUBLISH_EVERY=0` to turn it off and go
+back to publishing by hand only.
+
+- **Skips a no-op push.** If the export is byte-identical to the last one
+  actually pushed (same row count, same content hash), nothing is sent.
+- **Never breaks training.** A failed push (bad token, no network, HF down,
+  rate limited) is logged and reported once in the [training feed](#training-feed);
+  training keeps going and the next scheduled publish just tries again -- no
+  retry storm, one attempt per scheduled publish.
+- **Reported in the feed** as a one-line `📤 auto-published N row(s) to <url>`,
+  or `⚠️ auto-publish ... failed -- <error>` on failure.
 
 ## Configuration
 
