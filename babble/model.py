@@ -138,6 +138,21 @@ class Babbler(nn.Module):
         return sum(seen.values())
 
 
+def per_token_loss(model: Babbler, tokens: torch.Tensor) -> torch.Tensor:
+    """Next-byte cross-entropy at every position, unreduced and unmasked.
+
+    Shaped like `tokens[:, 1:]`: entry `[i, j]` is the loss of predicting
+    `tokens[i, j + 1]`. Everything that reduces a loss in this file starts here,
+    so there is exactly one place where the off-by-one between inputs and
+    targets is decided.
+    """
+    logits = model(tokens[:, :-1])
+    targets = tokens[:, 1:]
+    return F.cross_entropy(
+        logits.reshape(-1, logits.size(-1)), targets.reshape(-1), reduction="none"
+    ).view_as(targets)
+
+
 def sequence_loss(
     model: Babbler,
     tokens: torch.Tensor,
@@ -150,10 +165,6 @@ def sequence_loss(
     fraction of one. Dividing by the same weighted count keeps the number
     comparable between batches, so the loss curve means something.
     """
-    inputs, targets = tokens[:, :-1], tokens[:, 1:]
-    logits = model(inputs)
-    per_token = F.cross_entropy(
-        logits.reshape(-1, logits.size(-1)), targets.reshape(-1), reduction="none"
-    ).view_as(targets)
+    per_token = per_token_loss(model, tokens)
     scale = mask[:, 1:].to(per_token.dtype) * weights[:, None]
     return (per_token * scale).sum() / scale.sum().clamp(min=1e-8)

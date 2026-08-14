@@ -125,7 +125,7 @@ def test_a_correction_matching_the_blocklist_is_never_stored(fake, brain, settin
     fake.onboard("alice")
     generation = fake.ping("alice")[-1]
 
-    fake.ping("alice", "that response had a badword in it", reply_to=generation.id)
+    fake.correct("alice", "that response had a badword in it", reply_to=generation.id)
 
     assert InteractionStore(settings.interactions_path).all() == []
     entries = read_log("capture.blocked")
@@ -138,7 +138,7 @@ def test_being_told_the_correction_was_not_accepted_without_repeating_it(fake, b
     fake.onboard("alice")
     generation = fake.ping("alice")[-1]
 
-    reply = fake.ping("alice", "definitely a badword here", reply_to=generation.id)[-1]
+    reply = fake.correct("alice", "definitely a badword here", reply_to=generation.id)[-1]
 
     assert "badword" not in reply.content
     assert "not accepted" in reply.content or "content filter" in reply.content
@@ -148,7 +148,7 @@ def test_a_clean_correction_with_an_awkward_substring_is_still_stored(fake, brai
     fake.onboard("alice")
     generation = fake.ping("alice")[-1]
 
-    fake.ping("alice", "a classy assassin in glass armour", reply_to=generation.id)
+    fake.correct("alice", "a classy assassin in glass armour", reply_to=generation.id)
 
     assert len(InteractionStore(settings.interactions_path).all()) == 1
 

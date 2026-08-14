@@ -42,3 +42,7 @@ torch = { index = "pytorch-cpu" }
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 filterwarnings = ["ignore::UserWarning"]
+# `slow` marks the tests that actually train a model to convergence. They are
+# not skipped by default -- the memorisation gate is the whole point -- but
+# `-m "not slow"` gets you a fast inner loop while editing.
+markers = ["slow: trains a real model; seconds, not milliseconds"]

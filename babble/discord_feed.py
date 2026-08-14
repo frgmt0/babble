@@ -188,6 +188,7 @@ class TrainingFeed:
         prompt: str,
         sample: str,
         expected: str = "",
+        probe_side: str = "",
         val_loss: float | None = None,
         prev_val_loss: float | None = None,
         val_rows: int = 0,
@@ -220,7 +221,11 @@ class TrainingFeed:
             lines.append(f"val: disabled{reason}")
         # Prompt and sample both come out of the dataset / the model, so both are
         # neutered before they hit Discord; the expected answer, when we have one.
-        lines.append(f"> `{neuter_sample(prompt)}` → `{neuter_sample(sample)}`")
+        # `probe_side` says whether this row was trained on: without it, garbage
+        # here is unreadable, because a held-out row producing garbage is normal
+        # and a trained row producing garbage is a bug.
+        side = f" _({probe_side})_" if probe_side else ""
+        lines.append(f"> `{neuter_sample(prompt)}`{side} → `{neuter_sample(sample)}`")
         if expected:
             lines.append(f"> expected: `{neuter_sample(expected)}`")
         self._post("\n".join(lines))

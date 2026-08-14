@@ -60,12 +60,40 @@ people said.
 
 1. **You ping it.** `@babble hey` — it replies with whatever its current weights
    produce.
-2. **Every reply carries a footer:**
-   `-# like this response? react with 👍 — if not, correct me with a reply.`
+2. **Every reply carries a footer** telling you how to grade it.
 3. **You react 👍** — a weak "that was fine", stored with a low weight.
-4. **Or you reply with what it should have said** — the strong signal, and the
-   one that actually teaches it. Text, an emoji, a URL, a gif link, an uploaded
-   image: whatever you send is stored raw.
+4. **Or you reply starting with `>>`** — the strong signal, and the one that
+   actually teaches it:
+
+   ```
+   >> hey, what's up
+   ```
+
+   Text, an emoji, a URL, a gif link, an uploaded image: whatever follows the
+   marker is stored raw.
+
+### Why corrections need the `>>` marker
+
+Without it, *every* reply to one of the bot's messages was stored as the answer
+it should have given — so "lol", "wrong" and "what even is that" all went into
+the corpus as lessons. That is a corpus full of things nobody meant to teach it,
+and it is being trained on and published.
+
+So a correction has to say it is one:
+
+- A reply **beginning with `>>`** is a correction. The marker, plus one space
+  after it, is stripped before anything is stored — it never reaches the corpus,
+  the dataset, or the model.
+- A reply **without** it is just a message to the bot. It gets answered like any
+  other, and the decision not to learn from it is recorded as `capture.unmarked`
+  rather than silently swallowed. (Not `bot.dropped` — nothing was dropped; the
+  reply was answered.)
+- `>>` **on its own** is rejected, with a short reply showing the format.
+- **👍 reactions are unaffected.** This is a reply-path rule only.
+
+The marker is `CORRECTION_MARKER` in `babble/config.py` — change it in that one
+place and the footer, the help text, the consent notice and the parser all
+follow.
 
 Each correction is kept as a triple:
 
@@ -175,16 +203,150 @@ finish the current step, checkpoint, and exit cleanly. Restarting resumes the
 step count, the weights and the AdamW moments from `checkpoints/latest.pt`.
 
 Every checkpoint appends `{step, loss, sample}` to `checkpoints/loss.jsonl` and
-prints it, alongside the held-out validation loss:
+prints it, alongside the worst single row and the held-out validation loss:
 
 ```
-step     100 | loss   0.0263 | val   0.0891 | 'hello' -> 'hey!'
+step     100 | loss   0.0263 | worst  1.012 | val   0.0891 | 'hello' -> 'hey!'
 ```
 
 Only the response tokens are trained on — the prompt is context, not a target.
-Corrections carry weight `1.0`, 👍 rows `0.25`. The `rejected` field is stored
-for the dataset but the current loop does not train against it; it is plain
-weighted next-byte prediction on accepted responses.
+Corrections carry weight `1.0`, 👍 rows `0.25`, and corrections are then
+multiplied again by `BABBLE_CORRECTION_BOOST` (default `3.0`) so a reply someone
+actually typed outweighs a row the bot merely wasn't told off for.
+
+The `rejected` field is stored and published but not trained on — see
+[what "RL harder" actually means here](#what-rl-harder-actually-means-here).
+
+## Why it babbled at loss 0.02
+
+ro asked the obvious question: the trainer was reporting a train loss around
+`0.02` on nineteen rows, which should mean the corpus is memorised, and the bot
+still answered `hi` with `smeu.nnuccrl,`. A loss that low and output that bad
+cannot both be telling the truth. Here is which one was lying, and how we know.
+
+**It was not the prompt tokens.** The first guess is that the loss averages over
+`<bos> prompt <sep> response <eos>` uniformly, so `0.02` is mostly the model
+learning to parrot back the prompts. Measured on a 19-row corpus, that is not
+what happens: response loss falls to `0.0001` while prompt loss *rises* from
+`6.19` to `7.68` nats (independently re-run at the shipped model shape:
+`0.0002` against `8.06`). The mask was already correct and the reported number
+was already response-only. Both numbers are now logged separately
+(`response_loss`, `prompt_loss`) so nobody has to take that on faith again —
+and if `prompt_loss` ever starts falling, the mask has broken.
+
+**The reported loss is a mean over tokens, and the mean is where the problem
+hid.** Two separate averages were doing the hiding:
+
+- *Across rows.* Train eighteen rows to convergence, add a nineteenth, and the
+  new row sits at loss `1.01` while contributing 7 of 276 masked tokens — 2.5%
+  of the denominator. A row can be completely unlearned and move the headline
+  number by a rounding error. This is the normal state of this bot: every
+  correction ro types is a fresh row in an otherwise-memorised corpus.
+- *Across tokens within a row.* At a response loss of `0.027` the *worst single
+  token* in the corpus was at loss `1.92` — the model was assigning the correct
+  next byte about a 15% chance at that position, while the average said `0.027`.
+
+So the checkpoint line now prints the worst row next to the mean, and
+`train.checkpoint` logs `worst_row_loss` and `worst_row_prompt`. That is the
+measurement that turns "loss 0.02 but it babbles" from a mystery into a number.
+
+**Temperature 1.0 then cashed that uncertainty in.** A byte-level model has no
+way back once it leaves the memorised path: one unlucky byte and the rest of the
+response is off-distribution, which is exactly what character soup looks like.
+Measured at response loss `0.027`, sampling the corpus back:
+
+| decoding | exact reproductions |
+| --- | --- |
+| temperature 1.0, top_k 40 (old default) | 79% |
+| temperature 0.6, top_k 40 | 91% |
+| temperature 0.4, top_k 40 | 84% |
+| greedy | 16/19 |
+
+and every failure has the same shape — correct prefix, one wrong byte, then
+noise: `hey! whati  up`, `heyo lidti atwethmuch`. On the fresh-correction corpus
+above, temperature 1.0 produced `ghwhthhke :3hththh fhhhe` for `hi` — ro's
+symptom exactly — while temperature 0.5 returned the memorised
+`hey! what's up` on two draws out of five.
+
+Re-run since on the **shipped** model shape (4 layers, 256 wide, 3.3M params),
+nineteen rows, stopped at response loss `0.0076` — *lower* than the number that
+prompted the question — four draws per prompt:
+
+| decoding | exact reproductions |
+| --- | --- |
+| temperature 1.0, top_k 40 (old default) | 67/76 |
+| temperature 0.5, top_k 40 | 76/76 |
+| best-of-4 at 0.5 (shipped) | 76/76 |
+
+Same signature on every miss: `prett inood, still learning`,
+`ro did, mostly, and it shop`. So at *twice as good* a loss as the one in the
+title, the old defaults still mangled one reply in eight, and the fix is not in
+the optimiser.
+
+The default is now **`0.5`** (`BABBLE_TEMPERATURE`). Not greedy: greedy is
+deterministic, so when it is wrong it is wrong every single time and there is no
+second draw to rescue it — in the same measurement greedy got stuck emitting
+`hey! what's o nehreahoucop`. Which is what best-of-n is for.
+
+**One honest caveat about the regression test.** The brief for this work expected
+the memorisation gate to fail on the old code. It does not, and that is worth
+saying rather than hiding: three short rows trained to convergence reach a loss
+around `1e-5`, and at that point there is no residual uncertainty left for a hot
+sampler to cash in — temperature 1.0 reproduces them perfectly too. The bug lives
+at the *boundary*, on rows the model has partly learned, which is the permanent
+condition of a bot that gets a new correction every day. So there are two gates:
+one trains to convergence and guards the training path, and one stops at a
+partially-converged loss and guards the sampling path, where the shipped defaults
+reproduce the corpus and the old ones miss.
+
+## Best-of-n
+
+Rather than shipping whichever sample came out first, the bot draws
+`BABBLE_BEST_OF` candidates (default `4`) and keeps the one **the model itself
+scores best** — lowest mean per-byte loss under the same
+`<bos> prompt <sep> response <eos>` layout the trainer optimises.
+
+This directly counteracts the failure above. A derailed candidate scores
+terribly under the model that derailed it, so it loses to the two-out-of-five
+draws that came out right. It needs no reward model, no second network and no
+preference head; at this scale the model is the only scorer that exists.
+
+The candidates are drawn as one batch and scored in one forward pass, so the
+cost is sub-linear in `n`. Measured on the shipped 3.3M model at two threads,
+four 96-byte candidates take about **1.5s** against 0.6s for one — and that is
+the worst case, measured on a *randomly initialised* model, which almost never
+emits `<eos>` and so always runs the full `max_new_tokens`. A trained model
+stops early and is faster. `BABBLE_BEST_OF=1` turns it off.
+
+## What "RL harder" actually means here
+
+ro asked for a better reward loop. Taken literally that means RLHF, and RLHF at
+nineteen rows is not a real option: the first thing it needs is a reward model,
+and a reward model fit on nineteen rows is noise wearing a network's clothes.
+There is nothing here to train one *on*.
+
+So the two things above are the honest version of the same idea, and between
+them they cover what a reward loop would have bought:
+
+- **Correction upweighting** is the "reward" half. The rows a human actually
+  typed count for `BABBLE_CORRECTION_BOOST`× more than the rows the bot merely
+  wasn't told off for, so a fresh correction moves behaviour within a checkpoint
+  or two instead of being averaged into nineteenths.
+- **Best-of-n** is the "policy improvement" half, at inference instead of in
+  training. It picks the best of several draws using the only scorer that
+  exists at this scale — the model itself — and costs nothing but a second of
+  CPU.
+
+**What was deliberately not built:** PPO, GRPO, DPO, or anything else with a
+reward model or a preference optimiser in it. Worth saying that the corpus *is*
+already a preference dataset — every correction row is
+`(prompt, rejected, chosen)`, and supervised training only ever looks at
+`chosen` — so [DPO](https://arxiv.org/abs/2305.18290) is the method to reach for
+if a preference stage is ever wanted: closed-form over the pairs, no reward
+network, no rollouts. It is not wanted yet. The corpus has fewer than a dozen
+usable pairs, which makes a "learned preference" a coincidence with a loss curve
+attached, and the supervised signal is still the underfit thing. Fix the thing
+that is underfit first.
 
 ## Validation
 
@@ -194,9 +356,22 @@ model can just memorise a dozen rows. So a fraction of the consented rows
 scored, in eval mode, at every checkpoint.
 
 - **Deterministic, not shuffled.** Which side of the split a row lands on is
-  decided by a stable hash of its id, not its position in the file or a
-  random draw. The same row is always held out (or never is), whether the
-  trainer just restarted or the corpus has grown by a thousand rows since.
+  decided by a stable hash of its id, not its position in the file or a random
+  draw. Same corpus in, same split out, restart after restart.
+- **Exactly the configured fraction, not a coin flip per row.** The holdout is
+  the lowest-hashed `round(val_fraction × n)` rows. It used to be every row
+  whose hash happened to fall under `val_fraction`, which is a *binomial draw*
+  — and at this corpus size that draw is wild. The live trainer held out **10
+  of 21 rows** at `val_fraction=0.2`, halving a corpus that only had 21 rows in
+  it. The hash itself is fine (measured over 10,500 real row ids: flat deciles,
+  0.1958 realised against a 0.2 target); the scheme was the problem. Simulating
+  4,000 21-row corpora under the old rule, the holdout ranged from 0 to 12. A
+  mean of 4.2 is no comfort when any single run is the one you are training.
+
+  The cost is that a couple of rows near the cut can change sides as the corpus
+  grows, since `k` grows and a new row may hash below the boundary. That churn
+  is bounded and never depends on file position — and it is well worth the
+  split actually being the size it claims.
 - **Small corpora skip it entirely.** Below `BABBLE_VAL_MIN_ROWS` (default
   `20`) rows, holding out 20% could starve training of most of what little
   data there is, so validation is disabled outright — every row trains, and
@@ -211,6 +386,15 @@ scored, in eval mode, at every checkpoint.
   train loss fell since the last checkpoint, the log line and the feed post
   carry a plain flag saying so. Nothing stops, no hyperparameter changes —
   this is a signal for whoever's watching, not an automatic decision.
+
+- **The probe says which side it came from.** Every checkpoint samples one row
+  from the dataset and prints it next to that row's expected answer. Identical
+  bad output means opposite things depending on where that row sits: on a
+  held-out row the model was never trained on that prompt and garbage is
+  expected; on a trained row it is a bug. The probe walks the **train** split,
+  and the log line and feed post now say so explicitly (`probe_side`), so the
+  memorisation question is answerable from the feed at every checkpoint instead
+  of being ambiguous.
 
 `babble train` never trains on held-out rows; only their loss is read.
 
@@ -274,7 +458,9 @@ babble summary            # one-shot state of everything
 
 Logged: startup and connect, every ping, every generation with its sampling
 params and checkpoint step, every consent prompt/accept/decline/withdraw, every
-captured correction and 👍, every skipped-for-no-consent event **with its reason
+captured correction and 👍, every reply that was answered but not learned from
+for want of the [`>>` marker](#why-corrections-need-the--marker)
+(`capture.unmarked`), every skipped-for-no-consent event **with its reason
 but never its content**, every training cycle, every checkpoint, every
 resume-after-kill, every export, every blocklist rejection **with a content hash
 but never the text**, and every Discord feed post that failed to send.
@@ -335,6 +521,22 @@ privileged intent). Everything else has a working default, including the
 [training feed](#training-feed) (`BABBLE_LOG_WEBHOOK_URL`) and the
 [content blocklist](#content-filter) (`BABBLE_BLOCKLIST_PATH`), both of which
 are entirely optional.
+
+The knobs that decide what the bot sounds like:
+
+| variable | default | what it does |
+| --- | --- | --- |
+| `BABBLE_TEMPERATURE` | `0.5` | sampling temperature — [`1.0` was the babble](#why-it-babbled-at-loss-002) |
+| `BABBLE_TOP_K` | `40` | truncate sampling to the top k bytes |
+| `BABBLE_MAX_NEW_TOKENS` | `96` | longest reply, in bytes |
+| `BABBLE_BEST_OF` | `4` | [candidates drawn per reply](#best-of-n); `1` turns it off |
+| `BABBLE_CORRECTION_BOOST` | `3.0` | how much more a correction counts than a 👍; `1.0` for no boost |
+| `BABBLE_VAL_FRACTION` | `0.2` | [share of rows held out](#validation) |
+| `BABBLE_VAL_MIN_ROWS` | `20` | corpus size below which validation is skipped |
+
+The [correction marker](#why-corrections-need-the--marker) is `CORRECTION_MARKER`
+in `babble/config.py` rather than an environment variable — it is part of the
+protocol people are taught in the footer, not a per-deployment tuning knob.
 
 ## Running it for real
 

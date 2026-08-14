@@ -21,12 +21,16 @@ from babble.identity import Pseudonymiser
 from babble.store import CORRECTION, Interaction, InteractionStore, make_row_id
 from babble.tokenizer import PAD_ID, build_example
 from babble.trainer import (
+    PROBE_TRAIN,
     SAMPLE_PROMPTS,
+    SCRATCH_DIR,
+    sweep_scratch,
     consented_rows,
     dataset_stats,
     distinct_prompts,
     make_batch,
     probe_prompt,
+    split_rows,
     train,
 )
 
@@ -129,6 +133,41 @@ def test_it_prints_the_sample_generation_per_checkpoint(seeded, capsys):
     assert "loss" in printed and "step" in printed and "->" in printed
 
 
+def test_half_written_checkpoints_are_staged_out_of_the_checkpoint_directory(seeded):
+    """`os.replace` was always atomic, so a torn file was never loadable -- but
+    it was *visible*, one glob away from the real checkpoints. Staging keeps the
+    checkpoint directory containing only whole files, however long a write takes
+    or whenever the process dies during one.
+    """
+    train(seeded, steps=2, echo=False, seed=1)
+
+    scratch = seeded.checkpoint_dir / SCRATCH_DIR
+    assert scratch.is_dir(), "writes go through a scratch directory"
+    assert list(scratch.iterdir()) == [], "and nothing is left in it afterwards"
+    for entry in seeded.checkpoint_dir.iterdir():
+        assert entry.is_dir() or entry.suffix == ".pt" or entry.name == "loss.jsonl"
+
+
+def test_a_leftover_partial_write_is_swept_on_the_next_start(seeded):
+    train(seeded, steps=2, echo=False, seed=1)
+    scratch = seeded.checkpoint_dir / SCRATCH_DIR
+    (scratch / "ckpt-0000099.pt.tmp").write_bytes(b"a write that was killed halfway")
+
+    train(seeded, steps=2, echo=False, seed=1)
+
+    assert list(scratch.iterdir()) == []
+    assert seeded.latest_checkpoint.exists()
+
+
+def test_sweeping_scratch_never_touches_a_real_checkpoint(seeded):
+    train(seeded, steps=2, echo=False, seed=1)
+    before = sorted(p.name for p in seeded.checkpoint_dir.glob("*.pt"))
+
+    sweep_scratch(seeded)
+
+    assert sorted(p.name for p in seeded.checkpoint_dir.glob("*.pt")) == before
+
+
 def test_old_checkpoints_are_pruned_but_latest_survives(seeded):
     seeded.keep_checkpoints = 2
     seeded.checkpoint_every = 2
@@ -227,6 +266,7 @@ def test_killing_the_trainer_mid_run_leaves_a_loadable_checkpoint(settings, tmp_
     killed_at = payload["step"]
     assert killed_at > 0
     assert not list(settings.checkpoint_dir.glob("*.tmp")), "a torn temp file was left behind"
+    assert not list(settings.checkpoint_dir.glob("ckpt-*.pt.tmp"))
 
     resumed = train(settings, steps=2, echo=False)
     assert resumed.final_step == killed_at + 2
@@ -347,6 +387,43 @@ def test_checkpoints_probe_different_real_prompts_across_a_cycle(seeded):
     for a, b in zip(probed, probed[1:]):
         assert a != b  # never the same prompt twice in a row
     assert all("expected" in post.lower() for post in checkpoint_posts)
+
+
+def test_the_probe_says_which_side_of_the_split_the_row_came_from(seeded):
+    """Identical garbage means opposite things on a trained row and a held-out
+    one. Without the label nobody reading the feed can tell which they are
+    looking at, so the probe output answers nothing.
+    """
+    seeded.checkpoint_every = 1
+    sender = FakeSender()
+    feed = TrainingFeed(webhook_url="https://discord.example/webhook", sender=sender)
+
+    train(seeded, steps=2, echo=False, seed=1, feed=feed)
+
+    checkpoint_posts = [c[1] for c in sender.calls if "🔁" in c[1]]
+    assert checkpoint_posts
+    assert all(PROBE_TRAIN in post for post in checkpoint_posts)
+
+
+def test_the_probe_only_ever_asks_about_rows_it_was_trained_on(seeded, read_log):
+    """The probe walks the train split, so the memorisation question stays
+    answerable at every single checkpoint.
+    """
+    seeded.checkpoint_every = 1
+    seeded.val_min_rows = 5  # force a real held-out split on the fake corpus
+
+    train(seeded, steps=6, echo=False, seed=1)
+
+    checkpoints = read_log("train.checkpoint")
+    assert checkpoints
+    split = split_rows(consented_rows(seeded), seeded)
+    held_out = {row.prompt for row in split.val}
+    trained = {row.prompt for row in split.train}
+    assert held_out, "this test is meaningless without a real holdout"
+    for entry in checkpoints:
+        assert entry["probe_side"] == PROBE_TRAIN
+        assert entry["prompt"] in trained
+        assert entry["prompt"] not in held_out
 
 
 # --- dataset visibility ---------------------------------------------------

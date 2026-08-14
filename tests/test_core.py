@@ -11,8 +11,17 @@ import json
 
 import pytest
 
+from babble.config import CORRECTION_MARKER
 from babble.consent import DECLINED, GRANTED, PENDING, WITHDRAWN
-from babble.core import FOOTER, FOOTER_UNCONSENTED, IncomingMessage
+from babble.core import (
+    CONSENT_NOTICE,
+    FOOTER,
+    FOOTER_UNCONSENTED,
+    HELP_TEXT,
+    IncomingMessage,
+    is_correction,
+    strip_correction_marker,
+)
 from babble.store import APPROVAL, CORRECTION
 
 ALICE = "111111111111111111"
@@ -118,7 +127,7 @@ def test_declining_user_still_gets_replies_but_nothing_is_ever_stored(fake, brai
     assert FOOTER_UNCONSENTED in answer.content
 
     # Even trying to correct it stores nothing.
-    fake.ping(BOB, "you should have said hi", reply_to=answer.id)
+    fake.correct(BOB, "you should have said hi", reply_to=answer.id)
     fake.react(BOB, answer.id)
 
     assert brain.consent.decision(BOB) == DECLINED
@@ -132,7 +141,7 @@ def test_user_who_ignores_the_notice_gets_replies_but_no_capture(fake, brain):
 
     assert answer.kind == "generation"
     assert FOOTER_UNCONSENTED in answer.content
-    fake.ping(CAROL, "wrong, say hi", reply_to=answer.id)
+    fake.correct(CAROL, "wrong, say hi", reply_to=answer.id)
     assert brain.store.count() == 0
 
 
@@ -144,7 +153,7 @@ def test_correction_lands_as_a_complete_triple(fake, brain, generator):
     answer = fake.ping(ALICE, "hello")[0]
     assert FOOTER in answer.content
 
-    ack = fake.ping(ALICE, "you should say: hey!", reply_to=answer.id)[0]
+    ack = fake.correct(ALICE, "you should say: hey!", reply_to=answer.id)[0]
 
     (row,) = brain.store.all()
     assert row.signal == CORRECTION
@@ -163,7 +172,7 @@ def test_a_gif_url_correction_is_stored_exactly_as_typed(fake, brain):
     fake.onboard(ALICE)
     answer = fake.ping(ALICE, "post a gif")[0]
 
-    fake.ping(ALICE, gif, reply_to=answer.id)
+    fake.correct(ALICE, gif, reply_to=answer.id)
 
     (row,) = brain.store.all()
     assert row.chosen == gif
@@ -174,7 +183,7 @@ def test_an_uploaded_gif_is_captured_via_its_attachment_url(fake, brain):
     fake.onboard(ALICE)
     answer = fake.ping(ALICE, "react to this")[0]
 
-    fake.ping(ALICE, "like this", reply_to=answer.id, attachments=(url,))
+    fake.correct(ALICE, "like this", reply_to=answer.id, attachments=(url,))
 
     (row,) = brain.store.all()
     assert url in row.chosen
@@ -184,7 +193,7 @@ def test_emoji_only_correction_is_kept(fake, brain):
     fake.onboard(ALICE)
     answer = fake.ping(ALICE, "how do you feel")[0]
 
-    fake.ping(ALICE, "🫠", reply_to=answer.id)
+    fake.correct(ALICE, "🫠", reply_to=answer.id)
 
     (row,) = brain.store.all()
     assert row.chosen == "🫠"
@@ -196,7 +205,7 @@ def test_correction_needs_consent_from_everyone_in_the_thread(fake, brain):
 
     fake.ping(BOB, "actually say hi")  # Bob's first contact: gets the notice
     fake.decline(BOB)
-    ack = fake.ping(BOB, "actually say hi", reply_to=answer.id)[0]
+    ack = fake.correct(BOB, "actually say hi", reply_to=answer.id)[0]
 
     assert brain.store.count() == 0
     assert "not stored" in ack.content
@@ -206,20 +215,115 @@ def test_the_same_correction_twice_is_one_row(fake, brain):
     fake.onboard(ALICE)
     answer = fake.ping(ALICE, "hello")[0]
 
-    fake.ping(ALICE, "say hey", reply_to=answer.id)
-    fake.ping(ALICE, "say hey", reply_to=answer.id)
+    fake.correct(ALICE, "say hey", reply_to=answer.id)
+    fake.correct(ALICE, "say hey", reply_to=answer.id)
 
     assert brain.store.count() == 1
 
 
-def test_empty_reply_is_not_stored_as_a_correction(fake, brain):
+# --- the correction marker -----------------------------------------------
+#
+# Before this, every reply to one of the bot's messages was stored as the answer
+# it should have given -- so "lol", "wrong" and "what" all went into the corpus
+# as lessons. A correction now has to say it is one.
+
+
+def test_a_marked_reply_is_stored_with_the_marker_stripped(fake, brain):
     fake.onboard(ALICE)
     answer = fake.ping(ALICE, "hello")[0]
 
-    ack = fake.ping(ALICE, "   ", reply_to=answer.id)[0]
+    fake.ping(ALICE, f"{CORRECTION_MARKER} hey, what's up", reply_to=answer.id)
+
+    (row,) = brain.store.all()
+    assert row.signal == CORRECTION
+    assert row.chosen == "hey, what's up", "the marker must never reach the corpus"
+    assert CORRECTION_MARKER not in row.chosen
+
+
+def test_the_marker_is_stripped_with_or_without_a_space_after_it(fake, brain):
+    fake.onboard(ALICE)
+    answer = fake.ping(ALICE, "hello")[0]
+
+    fake.ping(ALICE, f"{CORRECTION_MARKER}hey", reply_to=answer.id)
+
+    (row,) = brain.store.all()
+    assert row.chosen == "hey"
+
+
+def test_only_one_space_after_the_marker_is_eaten(fake, brain):
+    """Anything past the first space is the person's own formatting."""
+    fake.onboard(ALICE)
+    answer = fake.ping(ALICE, "hello")[0]
+
+    fake.ping(ALICE, f"{CORRECTION_MARKER}  spaced out", reply_to=answer.id)
+
+    (row,) = brain.store.all()
+    assert row.chosen == "spaced out"
+
+
+def test_an_unmarked_reply_is_answered_not_stored(fake, brain, generator, read_log):
+    fake.onboard(ALICE)
+    answer = fake.ping(ALICE, "hello")[0]
+
+    replies = fake.ping(ALICE, "lol what", reply_to=answer.id)
+
+    assert brain.store.count() == 0, "an unmarked reply is not a lesson"
+    # It is still a message addressed to the bot, so it gets answered.
+    assert replies and replies[0].kind == "generation"
+    assert generator.text in replies[0].content
+    assert read_log("capture.unmarked"), "declining to learn from a reply must be recorded"
+    assert not read_log("bot.dropped"), "the message was answered, so it was not dropped"
+
+
+def test_an_unmarked_reply_never_reaches_the_corpus_even_from_a_consenting_user(fake, brain):
+    fake.onboard(ALICE)
+    answer = fake.ping(ALICE, "hello")[0]
+
+    fake.ping(ALICE, "you should have said hi", reply_to=answer.id)
+    fake.ping(ALICE, ">nearly the marker", reply_to=answer.id)
 
     assert brain.store.count() == 0
-    assert "nothing to learn" in ack.content
+
+
+def test_the_marker_alone_is_rejected_with_the_format(fake, brain):
+    fake.onboard(ALICE)
+    answer = fake.ping(ALICE, "hello")[0]
+
+    ack = fake.ping(ALICE, f"{CORRECTION_MARKER}   ", reply_to=answer.id)[0]
+
+    assert brain.store.count() == 0
+    assert ack.kind == "ack"
+    assert CORRECTION_MARKER in ack.content, "tell them the format they got wrong"
+
+
+def test_a_thumbs_up_still_works_without_any_marker(fake, brain, generator):
+    """The marker is a reply-path rule. Reactions are untouched."""
+    fake.onboard(ALICE)
+    answer = fake.ping(ALICE, "hello")[0]
+
+    fake.react(ALICE, answer.id)
+
+    (row,) = brain.store.all()
+    assert row.signal == APPROVAL
+    assert row.rejected is None
+    assert row.chosen == generator.text
+
+
+def test_the_footer_and_help_both_teach_the_marker():
+    assert CORRECTION_MARKER in FOOTER
+    assert CORRECTION_MARKER in HELP_TEXT
+    assert CORRECTION_MARKER in CONSENT_NOTICE
+
+
+def test_marker_helpers_agree_on_what_counts():
+    assert is_correction(f"{CORRECTION_MARKER} hey")
+    assert is_correction(f"   {CORRECTION_MARKER}hey")  # leading whitespace is fine
+    assert not is_correction("hey")
+    assert not is_correction(f"hey {CORRECTION_MARKER}")  # must *begin* with it
+    assert strip_correction_marker(f"{CORRECTION_MARKER} hey") == "hey"
+    assert strip_correction_marker(f"{CORRECTION_MARKER}") == ""
+
+
 
 
 # --- reactions ----------------------------------------------------------
@@ -290,7 +394,7 @@ def test_thumbs_up_on_a_message_we_dont_know_is_ignored(fake, brain):
 def test_forget_withdraws_consent_and_purges_stored_rows(fake, brain):
     fake.onboard(ALICE)
     answer = fake.ping(ALICE, "hello")[0]
-    fake.ping(ALICE, "say hey", reply_to=answer.id)
+    fake.correct(ALICE, "say hey", reply_to=answer.id)
     assert brain.store.count() == 1
 
     reply = fake.say(ALICE, "!babble forget")[0]
@@ -305,9 +409,9 @@ def test_forget_only_purges_that_persons_rows(fake, brain):
     fake.onboard(ALICE)
     fake.onboard(BOB)
     a_answer = fake.ping(ALICE, "hello")[0]
-    fake.ping(ALICE, "say hey", reply_to=a_answer.id)
+    fake.correct(ALICE, "say hey", reply_to=a_answer.id)
     b_answer = fake.ping(BOB, "hi")[0]
-    fake.ping(BOB, "say yo", reply_to=b_answer.id)
+    fake.correct(BOB, "say yo", reply_to=b_answer.id)
     assert brain.store.count() == 2
 
     fake.say(ALICE, "!babble forget")
@@ -322,7 +426,7 @@ def test_a_withdrawn_user_can_opt_back_in(fake, brain):
 
     fake.accept(ALICE)
     answer = fake.ping(ALICE, "hello")[0]
-    fake.ping(ALICE, "say hey", reply_to=answer.id)
+    fake.correct(ALICE, "say hey", reply_to=answer.id)
 
     assert brain.store.count() == 1
 
@@ -334,7 +438,7 @@ def test_discord_mentions_are_scrubbed_out_of_stored_text(fake, brain):
     fake.onboard(ALICE)
     answer = fake.ping(ALICE, "<@bot-9999> what about <@444444444444444444>?")[0]
 
-    fake.ping(ALICE, "tell <@555555555555555555> hello", reply_to=answer.id)
+    fake.correct(ALICE, "tell <@555555555555555555> hello", reply_to=answer.id)
 
     (row,) = brain.store.all()
     assert "444444444444444444" not in row.prompt
@@ -345,7 +449,7 @@ def test_discord_mentions_are_scrubbed_out_of_stored_text(fake, brain):
 def test_no_raw_discord_id_reaches_the_dataset_or_the_logs(fake, brain, settings):
     fake.onboard(ALICE)
     answer = fake.ping(ALICE, "hello")[0]
-    fake.ping(ALICE, "say hey", reply_to=answer.id)
+    fake.correct(ALICE, "say hey", reply_to=answer.id)
     fake.react(ALICE, answer.id)
     brain.log.flush()
 
@@ -370,7 +474,7 @@ def test_every_generation_carries_the_feedback_footer(fake):
 
     assert "-#" in content
     assert "👍" in content
-    assert "correct me with a reply" in content
+    assert CORRECTION_MARKER in content, "the footer must teach the correction format"
 
 
 def test_help_and_status_answer_without_touching_the_model(fake, generator):
@@ -414,7 +518,7 @@ def test_the_brain_works_with_no_log_attached(settings, generator):
 
     gw.onboard(ALICE)
     answer = gw.ping(ALICE, "hello")[0]
-    gw.ping(ALICE, "say hey", reply_to=answer.id)
+    gw.correct(ALICE, "say hey", reply_to=answer.id)
     gw.react(ALICE, answer.id)
 
     # Correcting an answer and then also 👍-ing it is two distinct facts.
@@ -479,7 +583,7 @@ def test_a_correction_still_lands_after_the_bot_reboots(settings, generator, log
     # Whole new process, same directory: fresh stores, nothing in memory.
     after = Babble(settings, generator=generator, log=log)
     reborn = FakeDiscord(after)
-    reborn.ping(ALICE, "you should say hey", reply_to=answer.id)
+    reborn.correct(ALICE, "you should say hey", reply_to=answer.id)
 
     (row,) = after.store.all()
     assert row.prompt == "hello"

@@ -86,7 +86,15 @@ def test_the_split_does_not_depend_on_row_order(many_rows, bare_settings):
     assert {r.id for r in ordered.val} == {r.id for r in reshuffled.val}
 
 
-def test_growing_the_corpus_does_not_move_existing_rows_across_the_split(many_rows, bare_settings):
+def test_growing_the_corpus_barely_moves_existing_rows_across_the_split(many_rows, bare_settings):
+    """Appending rows must not reshuffle the split.
+
+    The holdout is the lowest-hashed `round(fraction * n)` rows, so a handful of
+    rows near the boundary can change sides when the corpus grows and a new row
+    hashes below them. That churn is bounded and has nothing to do with where a
+    row sits in the file -- which is the property that actually matters, and the
+    reason this hashes ids rather than shuffling.
+    """
     before = split_rows(many_rows, bare_settings)
     before_val_ids = {r.id for r in before.val}
 
@@ -94,16 +102,43 @@ def test_growing_the_corpus_does_not_move_existing_rows_across_the_split(many_ro
     after = split_rows(grown, bare_settings)
     after_val_ids = {r.id for r in after.val}
 
-    # Every row that was held out before is still held out -- new rows only add
-    # to either side, they never reshuffle what was already assigned.
-    assert before_val_ids <= after_val_ids
+    churn = before_val_ids - after_val_ids
+    assert len(churn) <= 3, f"{len(churn)} rows changed sides; the split is reshuffling"
+    # ...and the overwhelming majority stayed put.
+    assert len(before_val_ids & after_val_ids) > 0.9 * len(before_val_ids)
 
 
-def test_the_split_is_roughly_the_configured_fraction(many_rows, bare_settings):
-    split = split_rows(many_rows, bare_settings)
+def test_the_split_is_the_configured_fraction_not_a_coin_flip_per_row(bare_settings):
+    """The bug this replaced: thresholding each row's hash independently is a
+    binomial draw, and at this corpus size the draw is wild. The live trainer
+    held out 10 of 21 rows at `val_fraction=0.2` -- half the corpus, when the
+    corpus had 21 rows in it. The hash is uniform (measured: 0.1958 realised
+    against a 0.2 target over 10,500 real ids); the *scheme* was the problem.
 
-    fraction = len(split.val) / len(many_rows)
-    assert 0.1 < fraction < 0.3  # 200 rows is plenty to land close to 0.2
+    Taking the lowest-hashed `round(fraction * n)` rows makes the size exact at
+    every corpus size, which is the only thing that helps at n=21.
+    """
+    for total in (20, 21, 25, 40, 137, 200):
+        rows = [make_row(i) for i in range(total)]
+
+        split = split_rows(rows, bare_settings)
+
+        assert len(split.val) == round(0.2 * total), f"{total} rows held out {len(split.val)}"
+        assert len(split.train) + len(split.val) == total
+        assert not ({r.id for r in split.train} & {r.id for r in split.val})
+
+
+def test_neither_side_of_the_split_is_ever_emptied(bare_settings):
+    """A rounded fraction must not starve either side outright."""
+    bare_settings.val_min_rows = 2
+
+    for fraction in (0.0, 0.01, 0.5, 0.99, 1.0):
+        bare_settings.val_fraction = fraction
+        for total in (2, 3, 21):
+            split = split_rows([make_row(i) for i in range(total)], bare_settings)
+
+            assert split.val, f"fraction {fraction}, {total} rows: nothing held out"
+            assert split.train, f"fraction {fraction}, {total} rows: nothing left to train on"
 
 
 # --- small-corpus guard ----------------------------------------------------
@@ -421,12 +456,14 @@ def test_checkpoint_wiring_flags_overfitting_across_two_checkpoints(seeded, monk
     mean1, val1 = _checkpoint(
         seeded, log, feed, blocklist, model, optimizer,
         step=1, window=[5.0], rows=[], probe_index=0, cycle=1, prev_loss=None, echo=False,
-        val_examples=[], val_enabled=True, val_disabled_reason=None, val_rows=6, prev_val_loss=None,
+        train_examples=[], val_examples=[], val_enabled=True, val_disabled_reason=None,
+        val_rows=6, prev_val_loss=None,
     )
     mean2, val2 = _checkpoint(
         seeded, log, feed, blocklist, model, optimizer,
         step=2, window=[3.0], rows=[], probe_index=1, cycle=1, prev_loss=mean1, echo=False,
-        val_examples=[], val_enabled=True, val_disabled_reason=None, val_rows=6, prev_val_loss=val1,
+        train_examples=[], val_examples=[], val_enabled=True, val_disabled_reason=None,
+        val_rows=6, prev_val_loss=val1,
     )
 
     assert mean1 == 5.0 and mean2 == 3.0  # train falling

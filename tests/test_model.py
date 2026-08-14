@@ -15,6 +15,7 @@ from babble.tokenizer import (
     build_example,
     decode,
     encode,
+    prompt_budget,
     prompt_context,
 )
 
@@ -60,13 +61,16 @@ def test_long_input_is_truncated_to_fit_the_block():
     assert len(example.tokens) <= 64
 
 
-def test_the_prompt_is_trimmed_from_the_left_to_make_room_for_the_response():
-    # budget is 13 - 3 specials = 10 bytes; the 8-byte response is kept whole and
-    # the prompt gives up its head, because its tail is the relevant part.
-    example = build_example("prompt", "abcdefgh", block_size=13)
+def test_the_prompt_is_trimmed_from_the_left_and_the_response_takes_what_is_left():
+    # The prompt is trimmed by a rule that depends only on the block size --
+    # `prompt_budget(13)` is 7 -- so the trainer and `prompt_context` agree on
+    # where <sep> lands. Its head goes first, because its tail is the relevant
+    # part. The response then gets whatever the 10-byte budget has left.
+    example = build_example("a long prompt", "abcdefgh", block_size=13)
 
+    assert prompt_budget(13) == 7
     assert len(example.tokens) == 13
-    assert decode(example.tokens) == "ptabcdefgh"
+    assert decode(example.tokens) == " promptabc"
 
 
 def test_prompt_context_ends_ready_to_generate():

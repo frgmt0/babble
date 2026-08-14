@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from babble.config import Settings
+from babble.config import CORRECTION_MARKER, Settings
 from babble.core import Babble, Generation, IncomingMessage, ReactionEvent
 from babble.identity import Pseudonymiser
 from babble.logs import EventLog
@@ -108,6 +108,19 @@ class FakeDiscord:
                 reply_to_is_bot=reply_to is not None,
                 attachment_urls=attachments,
             ),
+        )
+
+    def correct(
+        self, user: str, text: str, *, reply_to: str, attachments: tuple[str, ...] = ()
+    ) -> list[SentMessage]:
+        """Reply with the correction marker, the way a person teaching it would.
+
+        `ping(..., reply_to=...)` is deliberately left as the *unmarked* reply,
+        so a test that wants "someone replied but wasn't teaching" still reads
+        like one.
+        """
+        return self.ping(
+            user, f"{CORRECTION_MARKER} {text}", reply_to=reply_to, attachments=attachments
         )
 
     def say(self, user: str, text: str) -> list[SentMessage]:

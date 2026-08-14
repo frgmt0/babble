@@ -59,17 +59,34 @@ class Example:
         return len(self.tokens)
 
 
+def prompt_budget(block_size: int) -> int:
+    """How many prompt bytes survive truncation, given only the block size.
+
+    This deliberately does **not** depend on the response. It used to: the
+    response was kept whole and the prompt got whatever was left. That is
+    unusable at inference, where there is no response yet -- so the trainer and
+    `prompt_context` disagreed about how far to trim a long prompt, which moved
+    `<sep>` to a different position than the one the model was trained on.
+    With learned position embeddings that is not a small discrepancy; it is a
+    different input. A prompt-only rule makes the two byte-for-byte identical.
+
+    A quarter of the block is held back for the response so that a very long
+    prompt cannot squeeze the part we actually train on down to nothing.
+    """
+    reserved = max(1, block_size // 4)
+    return max(1, block_size - 3 - reserved)
+
+
 def build_example(prompt: str, response: str, block_size: int, weight: float = 1.0) -> Example:
     """Lay out `<bos> prompt <sep> response <eos>` and mask it for training."""
     budget = block_size - 3  # the three special tokens always cost their slots
     if budget < 1:
         raise ValueError(f"block_size {block_size} is too small to hold an example")
 
-    response_ids = encode(response)[:budget]
-    # Whatever the response left over goes to the prompt, keeping its tail: the
-    # end of a long message is usually the part being responded to.
-    room = budget - len(response_ids)
-    prompt_ids = encode(prompt)[-room:] if room > 0 else []
+    # Trim the prompt by the same rule inference uses, keeping its tail: the end
+    # of a long message is usually the part being responded to.
+    prompt_ids = encode(prompt)[-prompt_budget(block_size) :]
+    response_ids = encode(response)[: budget - len(prompt_ids)]
 
     tokens = [BOS_ID, *prompt_ids, SEP_ID, *response_ids, EOS_ID]
     mask = [0] * (len(prompt_ids) + 2) + [1] * (len(response_ids) + 1)
@@ -78,6 +95,9 @@ def build_example(prompt: str, response: str, block_size: int, weight: float = 1
 
 
 def prompt_context(prompt: str, block_size: int) -> list[int]:
-    """The inference-time prefix: `<bos> prompt <sep>`, ready to continue from."""
-    room = max(0, block_size - 2)
-    return [BOS_ID, *encode(prompt)[-room:], SEP_ID]
+    """The inference-time prefix: `<bos> prompt <sep>`, ready to continue from.
+
+    Truncated by `prompt_budget`, which is exactly what `build_example` applies,
+    so the prefix the model generates from is the prefix it was trained on.
+    """
+    return [BOS_ID, *encode(prompt)[-prompt_budget(block_size) :], SEP_ID]

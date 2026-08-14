@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import Callable, Sequence
 
 from .blocklist import Blocklist, row_fingerprint
-from .config import Settings
+from .config import CORRECTION_MARKER, Settings
 from .consent import (
     CAPTURE_OK,
     DECLINED,
@@ -41,8 +41,9 @@ THUMBS_UP = "👍"
 # --- copy ----------------------------------------------------------------
 
 FOOTER = (
-    "-# like this response? react with 👍 — if not, correct me with a reply. "
-    "replies teach me a lot more than reactions do."
+    f"-# like this response? react with 👍 — if not, teach me by replying with "
+    f"`{CORRECTION_MARKER} what i should have said`. corrections teach me a lot more "
+    f"than reactions do."
 )
 
 FOOTER_UNCONSENTED = (
@@ -50,7 +51,7 @@ FOOTER_UNCONSENTED = (
     "`!babble consent` for the details."
 )
 
-CONSENT_NOTICE = """**first time we've talked — here's the deal before we start.**
+CONSENT_NOTICE = f"""**first time we've talked — here's the deal before we start.**
 
 i'm a language model with **random weights**. i wasn't trained on the internet, on this server's \
 history, or on anything at all. the only way i ever learn is from people correcting me here.
@@ -66,13 +67,23 @@ addressed to me. in the published data you are a salted hash like `u_9f2c…`.
 
 **nothing of yours is stored until you say yes.**
 
+corrections are explicit: a reply only teaches me if it starts with `{CORRECTION_MARKER}`, and \
+the marker is stripped before anything is stored. an unmarked reply is just a message to me.
+
 **`!babble accept`** — opt in
 **`!babble decline`** — no thanks. i'll still reply, i just won't keep anything
 **`!babble forget`** — any time later: opt out *and* delete everything of yours i've kept"""
 
-HELP_TEXT = """**babble** — a from-scratch model that only learns from you.
+HELP_TEXT = f"""**babble** — a from-scratch model that only learns from you.
 
-ping me and i'll answer. reply to my answer to correct it, or react 👍 if it was fine.
+ping me and i'll answer. react 👍 if it was fine.
+
+**to correct me, start your reply with `{CORRECTION_MARKER}`:**
+> `{CORRECTION_MARKER} hey, what's up`
+
+that marker is how i tell teaching apart from talking — a reply without it is just
+another message to me, so i'll answer it instead of learning from it. the marker is
+stripped before anything is stored, so it never ends up in what i learn.
 corrections are worth far more than reactions — they're the only strong signal i get.
 
 `!babble consent` — what i store, and your current choice
@@ -152,6 +163,23 @@ def scrub_mentions(text: str) -> str:
     return _MENTION_CHANNEL.sub("#channel", text)
 
 
+def is_correction(text: str) -> bool:
+    """Does this reply claim to be teaching the bot something?"""
+    return text.lstrip().startswith(CORRECTION_MARKER)
+
+
+def strip_correction_marker(text: str) -> str:
+    """The lesson without the marker that flagged it as one.
+
+    One space after the marker is eaten so `>> hey!` and `>>hey!` teach the same
+    thing. Anything beyond that first space is the person's own formatting and
+    is left alone. The marker itself must never reach the corpus: it is
+    addressed to the bot's dispatcher, not part of what it should have said.
+    """
+    body = text.lstrip()[len(CORRECTION_MARKER) :]
+    return (body[1:] if body[:1] == " " else body).strip()
+
+
 def clean_for_discord(text: str, limit: int = DISCORD_LIMIT) -> str:
     """Make raw model output safe to post without changing what it says."""
     cleaned = _CONTROL.sub("", text).strip()
@@ -220,11 +248,25 @@ class Babble:
             attachments=len(msg.attachment_urls) or None,
         )
 
-        # A reply to something we said and still remember is a correction.
+        # A reply to something we said and still remember is a correction --
+        # but only if it is marked as one. An unmarked reply is just someone
+        # talking to the bot, and it gets answered like any other message
+        # rather than quietly stored as the answer it should have given.
         if msg.reply_to_is_bot and msg.reply_to_message_id:
             exchange = self.exchanges.get(msg.reply_to_message_id)
             if exchange is not None:
-                return self._handle_correction(msg, exchange)
+                if is_correction(self._message_text(msg)):
+                    return self._handle_correction(msg, exchange)
+                # Not `bot.dropped`: the message is not dropped, it is answered
+                # below like any other. What was declined is treating it as a
+                # lesson, and that decision needs its own line in the log.
+                self.log.event(
+                    "capture.unmarked",
+                    user=self.log.user(msg.author_id),
+                    channel=self.log.channel(msg.channel_id),
+                    guild=self.log.guild(msg.guild_id),
+                    chars=len(msg.content),
+                )
 
         return self._respond(msg)
 
@@ -383,11 +425,12 @@ class Babble:
                 )
             ]
 
-        correction = self._message_text(msg)
+        correction = strip_correction_marker(self._message_text(msg))
         if not correction:
             return [
                 Reply(
-                    "-# that reply was empty as far as i can tell, so there's nothing to learn.",
+                    f"-# `{CORRECTION_MARKER}` on its own doesn't teach me anything — put what i "
+                    f"should have said after it, like `{CORRECTION_MARKER} hey, what's up`.",
                     reply_to=msg.message_id,
                     kind="ack",
                 )

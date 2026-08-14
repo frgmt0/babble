@@ -32,11 +32,17 @@ from .config import Settings
 from .consent import ConsentStore
 from .discord_feed import TrainingFeed
 from .export_hf import DATA_FILE, ExportBlocked, build_export, push as push_export
-from .generate import sample
+from .generate import best_of
 from .identity import Pseudonymiser
 from .logs import EventLog
-from .model import Babbler, ModelConfig, config_from_settings, sequence_loss
-from .store import Interaction, InteractionStore
+from .model import (
+    Babbler,
+    ModelConfig,
+    config_from_settings,
+    per_token_loss,
+    sequence_loss,
+)
+from .store import CORRECTION, Interaction, InteractionStore
 from .tokenizer import PAD_ID, Example, build_example
 from .util import utcnow_iso
 
@@ -85,11 +91,46 @@ def consented_rows(
     ]
 
 
-def to_examples(rows: list[Interaction], block_size: int) -> list[Example]:
+def row_weight(row: Interaction, settings: Settings) -> float:
+    """The row's stored weight, with corrections boosted on top of it.
+
+    The stored weight already separates a correction from a thumbs-up. The boost
+    is a second, separate knob for a different problem: with a corpus this small
+    a brand new correction is one row among twenty and takes many checkpoints to
+    show up in the model's behaviour. Multiplying it makes the thing ro actually
+    typed count for more than the things the bot was merely not told off for.
+    """
+    weight = max(0.0, row.weight)
+    if row.signal == CORRECTION:
+        weight *= max(0.0, settings.correction_boost)
+    return weight
+
+
+def trainable_rows(rows: list[Interaction]) -> list[Interaction]:
+    """The rows that become examples: a row with no `chosen` teaches nothing.
+
+    Split out so anything that wants to line a row up with its example -- the
+    worst-row report, for one -- filters by exactly the same rule `to_examples`
+    does, instead of indexing into a list one filter out of step.
+    """
+    return [row for row in rows if row.chosen]
+
+
+def to_examples(
+    rows: list[Interaction], block_size: int, settings: Settings | None = None
+) -> list[Example]:
+    """Rows to supervised examples. Without `settings`, stored weights are used
+    as-is -- that is what an eval pass wants, since boosting corrections in the
+    held-out loss would make it incomparable to the training loss.
+    """
     return [
-        build_example(row.prompt, row.chosen, block_size, weight=max(0.0, row.weight))
-        for row in rows
-        if row.chosen
+        build_example(
+            row.prompt,
+            row.chosen,
+            block_size,
+            weight=row_weight(row, settings) if settings else max(0.0, row.weight),
+        )
+        for row in trainable_rows(rows)
     ]
 
 
@@ -109,6 +150,17 @@ def _val_bucket(row_id: str) -> float:
     return int(digest[:8], 16) / 0x1_0000_0000
 
 
+def val_holdout_size(total: int, fraction: float) -> int:
+    """How many rows to hold out of `total`, never all of them and never none.
+
+    Both clamps matter at this corpus size: a 20% split of 21 rows is 4, and
+    rounding or a mis-set fraction must not be allowed to leave zero rows on
+    either side of the split.
+    """
+    holdout = round(max(0.0, min(1.0, fraction)) * total)
+    return max(1, min(holdout, total - 1))
+
+
 @dataclass
 class Split:
     """Held-out split of consented rows.
@@ -125,7 +177,29 @@ class Split:
 
 
 def split_rows(rows: list[Interaction], settings: Settings) -> Split:
-    """Deterministically hold out `settings.val_fraction` of `rows` by row id."""
+    """Deterministically hold out `settings.val_fraction` of `rows` by row id.
+
+    The split takes the `val_holdout_size` rows with the **lowest** hash bucket,
+    rather than every row whose bucket happens to fall under `val_fraction`.
+    The hash is uniform -- measured over ten thousand real content-addressed row
+    ids, the deciles are flat and the realised fraction is 0.1958 against a
+    target of 0.2 -- but thresholding each row independently is a binomial draw,
+    and at this corpus size that draw is wild. Over four thousand simulated
+    21-row corpora at `val_fraction=0.2` it held out anywhere from 0 to 12 rows.
+    The live trainer drew 10, which halved a corpus that only had 21 rows in it.
+    A mean of 4.2 is no comfort when any single run is the one you are training.
+
+    Ranking keeps the properties the hash was chosen for:
+
+    - **Deterministic.** Same rows in, same split out, restart after restart.
+    - **Independent of file order.** A row's side is decided by its id, never by
+      where it landed in the file or by a shuffle.
+    - **Nearly stable as rows are appended.** Not perfectly: `k` grows with the
+      corpus, and a new row that hashes below the boundary displaces the row
+      that was sitting on it. That churn is a couple of rows near the cut, not a
+      reshuffle, and it is the price of the split actually being the size it
+      says it is -- which at 21 rows matters a great deal more.
+    """
     if len(rows) < settings.val_min_rows:
         return Split(
             train=rows,
@@ -136,11 +210,16 @@ def split_rows(rows: list[Interaction], settings: Settings) -> Split:
                 f"(BABBLE_VAL_MIN_ROWS) before holding any out"
             ),
         )
-    train: list[Interaction] = []
-    val: list[Interaction] = []
-    for row in rows:
-        (val if _val_bucket(row.id) < settings.val_fraction else train).append(row)
-    return Split(train=train, val=val, enabled=True)
+    holdout = val_holdout_size(len(rows), settings.val_fraction)
+    # `row.id` breaks ties so two rows that collide on the bucket still order
+    # deterministically; position is only ever the last resort.
+    ranked = sorted(range(len(rows)), key=lambda i: (_val_bucket(rows[i].id), rows[i].id, i))
+    held_out = set(ranked[:holdout])
+    return Split(
+        train=[row for i, row in enumerate(rows) if i not in held_out],
+        val=[row for i, row in enumerate(rows) if i in held_out],
+        enabled=True,
+    )
 
 
 def _stack_examples(examples: list[Example]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -153,6 +232,77 @@ def _stack_examples(examples: list[Example]) -> tuple[torch.Tensor, torch.Tensor
         mask[i, : len(example)] = torch.tensor(example.mask, dtype=torch.long)
     weights = torch.tensor([e.weight for e in examples], dtype=torch.float32)
     return tokens, mask, weights
+
+
+def _real_mask(examples: list[Example], width: int) -> torch.Tensor:
+    """1 on every token that is really there, 0 on the right-padding."""
+    real = torch.zeros((len(examples), width), dtype=torch.long)
+    for i, example in enumerate(examples):
+        real[i, : len(example)] = 1
+    return real
+
+
+@dataclass
+class LossReport:
+    """The checkpoint loss, taken apart into the numbers that mean something.
+
+    `response` is what training optimises. `prompt` is diagnostic: nothing ever
+    trains it, so it should stay high, and a prompt loss that starts falling
+    means the mask has broken.
+
+    `worst_row` is the one that actually explains this bug. The training loss is
+    a mean over *tokens*, so a short row that the model has not learned barely
+    moves it: four bad bytes among four hundred good ones is a rounding error in
+    the average and a completely broken answer to whoever typed that prompt.
+    Reporting the worst row alongside the mean makes "loss 0.02 but it babbles"
+    visible instead of mysterious.
+    """
+
+    response: float | None = None
+    prompt: float | None = None
+    worst_row: float | None = None
+    worst_prompt: str | None = None
+
+
+@torch.no_grad()
+def measure(
+    model: Babbler, examples: list[Example], rows: list[Interaction] | None = None
+) -> LossReport:
+    """Response loss, prompt loss and the worst single row, in one forward pass.
+
+    `rows` is only used to name the worst row, and must be the rows `examples`
+    was built from -- pass it through `trainable_rows` first, the way
+    `to_examples` does, or the name will belong to a different row than the
+    number.
+    """
+    if not examples:
+        return LossReport()
+    was_training = model.training
+    model.eval()
+    try:
+        tokens, mask, _ = _stack_examples(examples)
+        per_token = per_token_loss(model, tokens)
+
+        response_mask = mask[:, 1:].to(per_token.dtype)
+        real = _real_mask(examples, tokens.size(1))
+        prompt_mask = (real[:, 1:] - mask[:, 1:]).clamp(min=0).to(per_token.dtype)
+
+        per_row = (per_token * response_mask).sum(dim=1) / response_mask.sum(dim=1).clamp(min=1e-8)
+        worst = int(torch.argmax(per_row))
+        return LossReport(
+            response=float(
+                (per_token * response_mask).sum() / response_mask.sum().clamp(min=1e-8)
+            ),
+            prompt=(
+                float((per_token * prompt_mask).sum() / prompt_mask.sum())
+                if float(prompt_mask.sum())
+                else None
+            ),
+            worst_row=float(per_row[worst]),
+            worst_prompt=rows[worst].prompt if rows and worst < len(rows) else None,
+        )
+    finally:
+        model.train(was_training)
 
 
 @torch.no_grad()
@@ -279,9 +429,23 @@ def make_batch(
 # --- checkpoints ---------------------------------------------------------
 
 
+SCRATCH_DIR = ".partial"
+
+
 def save_checkpoint(settings: Settings, model: Babbler, optimizer, step: int, loss: float) -> Path:
-    """Write `ckpt-NNNNNNN.pt` and repoint `latest.pt`, both atomically."""
+    """Write `ckpt-NNNNNNN.pt` and repoint `latest.pt`, both atomically.
+
+    Half-written files are staged in a `.partial/` scratch directory rather than
+    alongside the real checkpoints. `os.replace` was always atomic, so a torn
+    file was never *loadable* -- but it was visible, sitting next to the good
+    checkpoints with a name one glob away from being picked up, and a `kill -9`
+    landing mid-write left it there. Staging elsewhere makes "nothing
+    half-written is ever in the checkpoint directory" true by construction
+    instead of true by how fast the write happened to be.
+    """
     settings.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    scratch = settings.checkpoint_dir / SCRATCH_DIR
+    scratch.mkdir(exist_ok=True)
     payload = {
         "step": step,
         "loss": loss,
@@ -292,17 +456,34 @@ def save_checkpoint(settings: Settings, model: Babbler, optimizer, step: int, lo
         "saved_at": utcnow_iso(),
     }
     archive = settings.checkpoint_dir / f"ckpt-{step:07d}.pt"
-    tmp = archive.with_suffix(".pt.tmp")
+    tmp = scratch / f"{archive.name}.tmp"
     torch.save(payload, tmp)
     os.replace(tmp, archive)
 
     # Copy-then-rename so `latest.pt` is never observed half-written.
-    latest_tmp = settings.latest_checkpoint.with_suffix(".pt.tmp")
+    latest_tmp = scratch / "latest.pt.tmp"
     shutil.copyfile(archive, latest_tmp)
     os.replace(latest_tmp, settings.latest_checkpoint)
 
     prune_checkpoints(settings)
     return archive
+
+
+def sweep_scratch(settings: Settings) -> int:
+    """Delete anything a killed write left staged. Returns how many went.
+
+    Called at trainer start: a leftover is dead weight from a previous process,
+    never something the current one is mid-way through writing.
+    """
+    scratch = settings.checkpoint_dir / SCRATCH_DIR
+    if not scratch.is_dir():
+        return 0
+    swept = 0
+    for stale in scratch.iterdir():
+        if stale.is_file():
+            stale.unlink(missing_ok=True)
+            swept += 1
+    return swept
 
 
 def prune_checkpoints(settings: Settings) -> int:
@@ -439,6 +620,10 @@ def train(
     budget = steps if steps is not None else settings.steps_per_cycle
     interrupt = Interruption().install()
 
+    swept = sweep_scratch(settings)
+    if swept:
+        log.event("train.scratch_swept", files=swept)
+
     model, optimizer, step, resumed = _resume_or_init(settings, log)
     if seed is not None:
         torch.manual_seed(seed)
@@ -476,7 +661,9 @@ def train(
 
         rows = consented_rows(settings, ids, blocklist)
         split = split_rows(rows, settings)
-        examples = to_examples(split.train, model.config.block_size)
+        examples = to_examples(split.train, model.config.block_size, settings)
+        # Held-out rows keep their stored weights: boosting corrections in the
+        # eval set would make val loss incomparable to train loss.
         val_examples = to_examples(split.val, model.config.block_size)
         if not examples:
             log.event("train.idle", reason="no_consented_rows", rows=len(rows))
@@ -540,6 +727,7 @@ def train(
                 prev_checkpoint_loss, prev_val_loss = _checkpoint(
                     settings, log, feed, blocklist, model, optimizer, step, window, split.train,
                     probe_index, cycles, prev_checkpoint_loss, echo,
+                    train_examples=examples,
                     val_examples=val_examples,
                     val_enabled=split.enabled,
                     val_disabled_reason=split.disabled_reason,
@@ -557,6 +745,7 @@ def train(
             prev_checkpoint_loss, prev_val_loss = _checkpoint(
                 settings, log, feed, blocklist, model, optimizer, step, window, split.train,
                 probe_index, cycles, prev_checkpoint_loss, echo,
+                train_examples=examples,
                 val_examples=val_examples,
                 val_enabled=split.enabled,
                 val_disabled_reason=split.disabled_reason,
@@ -646,6 +835,13 @@ def _resume_or_init(settings: Settings, log: EventLog) -> tuple[Babbler, torch.o
 
 WITHHELD = "*(withheld — matched the content filter)*"
 
+# Which side of the split a probe row came from. Identical bad output means
+# opposite things depending on this: on a held-out row the model was never
+# trained on that prompt and garbage is expected; on a trained row it is the
+# memorisation bug. Nobody reading the feed could tell the two apart before.
+PROBE_TRAIN = "trained"
+PROBE_FALLBACK = "not in dataset"
+
 
 def _checkpoint(
     settings: Settings,
@@ -662,6 +858,7 @@ def _checkpoint(
     prev_loss: float | None,
     echo: bool,
     *,
+    train_examples: list[Example],
     val_examples: list[Example],
     val_enabled: bool,
     val_disabled_reason: str | None,
@@ -671,13 +868,24 @@ def _checkpoint(
     mean_loss = sum(window) / len(window) if window else float("nan")
     started = time.perf_counter()
     prompt, expected = probe_prompt(rows, probe_index)
-    text = sample(
+    # The probe walks the train split, so it is always asking about a row the
+    # model has actually been trained on. That is the only way the probe answers
+    # the question anyone is asking it -- garbage on a held-out row means
+    # nothing, garbage on a trained row is the bug.
+    probe_side = PROBE_TRAIN if rows else PROBE_FALLBACK
+    text = best_of(
         model,
         prompt,
+        n=max(1, settings.best_of),
         max_new_tokens=min(64, settings.max_new_tokens),
         temperature=settings.temperature,
         top_k=settings.top_k,
     )
+    # What the running mean hides: which row is worst, and whether the loss is
+    # really over the response and not over the prompt. `trainable_rows` keeps
+    # the row list lined up with `train_examples`, which was filtered the same
+    # way, so the worst row is named correctly.
+    report = measure(model, train_examples, trainable_rows(rows))
     # Eval-mode, no-grad, no optimizer step: this scores the held-out rows
     # without moving a single weight or optimizer moment.
     val_loss = eval_loss(model, val_examples) if val_enabled else None
@@ -690,6 +898,10 @@ def _checkpoint(
         "train.checkpoint",
         step=step,
         loss=round(mean_loss, 6),
+        response_loss=round(report.response, 6) if report.response is not None else None,
+        prompt_loss=round(report.prompt, 6) if report.prompt is not None else None,
+        worst_row_loss=round(report.worst_row, 6) if report.worst_row is not None else None,
+        worst_row_prompt=report.worst_prompt,
         val_loss=round(val_loss, 6) if val_loss is not None else None,
         val_rows=val_rows,
         val_enabled=val_enabled,
@@ -699,6 +911,7 @@ def _checkpoint(
         file=path.name,
         seconds=round(time.perf_counter() - started, 2),
         prompt=prompt,
+        probe_side=probe_side,
         expected=expected,
         sample=text.replace("\n", "\\n")[:200],
     )
@@ -711,9 +924,12 @@ def _checkpoint(
         else:
             val_part = f"val {val_loss:8.4f}"
         overfit_part = "  ⚠ overfitting" if overfitting else ""
+        # The worst row is printed next to the mean on purpose: the mean is the
+        # number that looked fine while the bot was still talking nonsense.
+        worst_part = f" | worst {report.worst_row:6.3f}" if report.worst_row is not None else ""
         print(
-            f"step {step:>7,} | loss {mean_loss:8.4f} | {val_part}{overfit_part} | "
-            f"{prompt!r} -> {shown!r} (expected {expected!r})",
+            f"step {step:>7,} | loss {mean_loss:8.4f}{worst_part} | {val_part}{overfit_part} | "
+            f"[{probe_side}] {prompt!r} -> {shown!r} (expected {expected!r})",
             flush=True,
         )
 
@@ -732,6 +948,7 @@ def _checkpoint(
         prompt=feed_prompt,
         sample=feed_sample,
         expected=feed_expected,
+        probe_side=probe_side,
         val_loss=val_loss,
         prev_val_loss=prev_val_loss,
         val_rows=val_rows,

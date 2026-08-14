@@ -16,6 +16,16 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 TOKEN_ENV = "BABBLE_DISCORD_TOKEN"
 SALT_ENV = "BABBLE_HASH_SALT"
 
+# A reply to one of the bot's messages only counts as a correction if it starts
+# with this. Without it, every "lol" and "wrong" aimed at the bot was landing in
+# the training corpus as the answer it should have given -- which is a corpus
+# full of things nobody meant to teach it. Making the marker explicit is the
+# difference between "someone replied" and "someone is teaching".
+#
+# It is stripped before the text is stored, so the marker never reaches the
+# corpus, the dataset, or the model.
+CORRECTION_MARKER = ">>"
+
 
 def _env_path(name: str, default: Path) -> Path:
     raw = os.environ.get(name)
@@ -67,15 +77,28 @@ class Settings:
     weight_decay: float = 0.01
     grad_clip: float = 1.0
 
-    # Sampling.
-    temperature: float = 1.0
+    # Sampling. `temperature` was 1.0 and that was the single biggest reason a
+    # model with a good-looking loss still answered "hi" with noise: at 1.0 the
+    # sampler faithfully reproduces the model's residual uncertainty, and one
+    # unlucky byte puts the rest of the response off the memorised path with no
+    # way back. See "Why it babbled at loss 0.02" in the README.
+    temperature: float = 0.5
     top_k: int = 40
     max_new_tokens: int = 96
+
+    # Best-of-n: draw this many candidates and keep whichever one the model
+    # itself scores best. 1 turns it off. Kept small so a Discord reply stays
+    # under a couple of seconds.
+    best_of: int = 4
 
     # How much each kind of feedback is worth. A correction is the real signal;
     # a thumbs-up is a cheap nod, so it nudges the weights far less.
     correction_weight: float = 1.0
     approval_weight: float = 0.25
+    # ...and corrections get multiplied again on top of that, so a fresh
+    # correction is visible in the model's behaviour within a checkpoint or two
+    # instead of being averaged away by everything already learned.
+    correction_boost: float = 3.0
 
     # Held-out validation. A stable hash of each row's id decides its side of
     # the split, so the same row always lands on the same side as the corpus
@@ -119,9 +142,11 @@ class Settings:
             block_size=_env_int("BABBLE_BLOCK_SIZE", 256),
             batch_size=_env_int("BABBLE_BATCH_SIZE", 8),
             learning_rate=_env_float("BABBLE_LEARNING_RATE", 1e-3),
-            temperature=_env_float("BABBLE_TEMPERATURE", 1.0),
+            temperature=_env_float("BABBLE_TEMPERATURE", 0.5),
             top_k=_env_int("BABBLE_TOP_K", 40),
             max_new_tokens=_env_int("BABBLE_MAX_NEW_TOKENS", 96),
+            best_of=_env_int("BABBLE_BEST_OF", 4),
+            correction_boost=_env_float("BABBLE_CORRECTION_BOOST", 3.0),
             val_fraction=_env_float("BABBLE_VAL_FRACTION", 0.2),
             val_min_rows=_env_int("BABBLE_VAL_MIN_ROWS", 20),
             hf_repo=os.environ.get("BABBLE_HF_REPO", "kowo-co/babble-corrections"),
