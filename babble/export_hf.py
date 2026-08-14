@@ -31,7 +31,7 @@ from pathlib import Path
 
 from .blocklist import Blocklist
 from .config import Settings
-from .consent import SCOPE_CORPUS, SCOPE_CORRECTIONS, ConsentStore
+from .consent import SCOPE_CORRECTIONS, ConsentStore, CorpusConsent
 from .corpus import CorpusRow, CorpusStore
 from .identity import Pseudonymiser
 from .logs import EventLog, NullLog
@@ -136,19 +136,20 @@ def select_corpus_rows(
 ) -> tuple[list[CorpusRow], int, int, int]:
     """(publishable corpus rows, excluded for consent, dropped for leaks, dropped for the blocklist).
 
-    Same shape and the same three filters as `select_rows`, against the `corpus`
-    grant rather than the corrections one. A person who consented to corrections
-    years ago and has not answered the corpus notice is excluded here, and that
-    exclusion is the entire point of there being two grants.
+    Same shape and the same three filters as `select_rows`, against whichever
+    grant governs each row's `source`. A person who consented to corrections and
+    has not answered the corpus notice publishes the correction text they already
+    agreed to publish, and none of the ordinary messages they never did -- which
+    is the entire point of there being two grants.
     """
     ids = ids or Pseudonymiser.load(settings)
     blocklist = blocklist if blocklist is not None else Blocklist.load()
     consent = ConsentStore(settings.consent_path)
     raw_ids = _leak_candidates(consent.known_ids())
-    allowed = {ids.user(uid) for uid in consent.granted_ids(SCOPE_CORPUS)}
+    gate = CorpusConsent(consent, ids)
 
     rows = CorpusStore(settings.corpus_path).all()
-    consented = [r for r in rows if r.author in allowed]
+    consented = gate.keep(rows)
     excluded = len(rows) - len(consented)
 
     leak_free = [r for r in consented if not _leaks(r.text, raw_ids)]

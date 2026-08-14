@@ -57,7 +57,7 @@ babble train --steps 200        # watch the loss drop and the samples change
 babble sample --prompt hello    # continue a prefix from the newest checkpoint
 babble curve                    # the loss curve, as a picture
 babble summary                  # step, loss, checkpoints, consent, row counts
-babble backfill-corpus          # flatten old correction pairs into the corpus
+babble backfill-corpus          # flatten old pairs into the corpus (runs itself too)
 babble export                   # build the HuggingFace dataset directory
 pytest                          # 100+ tests, none of which need a token
 ```
@@ -115,8 +115,12 @@ plain next-token prediction over all of it:
 
 Nothing was thrown away. The correction pairs are still captured, still stored
 in `data/interactions.jsonl`, and still published — as their own config on the
-Hub. `babble backfill-corpus` flattens the existing ones into the corpus so the
-text people already gave is not stranded in a format nothing reads any more.
+Hub. They are flattened into the corpus so the text people already gave is not
+stranded in a format nothing reads any more. **That migration runs by itself**,
+at the top of every training cycle and once at bot startup, so upgrading a box
+that already has data needs no command: it is idempotent, it dedupes on the
+content-addressed row id, and it only logs when it actually added something.
+`babble backfill-corpus` runs the same migration by hand if you want to watch it.
 
 **The model never sees a `<sep>` any more**, so nothing at inference time may put
 one in front of it. `<bos> text` is what it trained on and `<bos> text` is what
@@ -233,12 +237,21 @@ get asked once, on their next ping, and the bot keeps answering them meanwhile.
 A legacy *"no"* carries across to both scopes: a refusal never needs re-asking to
 stay a refusal.
 
-`babble backfill-corpus` is gated on the `corrections` grant, not the corpus one,
-and deliberately so: that text was collected under the corrections notice and has
-already been published under it, so re-filing it is the same words in a second
-index rather than a new collection. Anything collected *from now on* needs the
-corpus grant. Someone who has explicitly declined the corpus scope is skipped by
-the backfill anyway.
+**Which grant governs a corpus row is decided by where its text came from**, not
+by which file it lives in. A row whose `source` is `prompt` or `correction` was
+flattened out of a pair collected under the corrections notice, so the
+`corrections` grant governs it: that text was already collected and published
+under that notice, and re-filing it is the same words in a second index rather
+than a new collection. A row whose `source` is `mention`, `reply`, `dm` or
+`ambient` is the genuinely broader thing the corpus notice describes, so it needs
+the `corpus` grant. An unrecognised source is held to the stricter of the two.
+
+That table lives in `consent.SCOPE_BY_SOURCE`, and `consent.CorpusConsent` is the
+single gate the trainer, the summary, the export and the migration all ask. They
+used to each apply their own rule, which is how the pivot shipped with a
+migration that wrote rows the trainer then refused to train on. An explicit
+`declined`/`withdrawn` on `corpus` drops a person's rows whatever the corrections
+grant says: a no is stronger than a yes, in every scope and from every source.
 
 ### The rules, all enforced in code and covered by tests
 
@@ -774,7 +787,7 @@ babble/
   blocklist.txt  the (small, starter) list itself
   corpus.py      the unlabelled corpus — what the model trains on
   store.py       the correction triples, pseudonymous on disk
-  backfill.py    the one-shot, idempotent pairs -> corpus migration
+  backfill.py    the idempotent pairs -> corpus migration, run every cycle
   exchanges.py   what it said and to whom, so corrections find their target
   export_hf.py   dataset + card, consent and blocklist re-checked, ids guarded
   discord_feed.py training progress -> a Discord webhook, best-effort

@@ -34,9 +34,10 @@ from pathlib import Path
 
 import torch
 
+from .backfill import backfill_corpus
 from .blocklist import Blocklist
 from .config import Settings
-from .consent import SCOPE_CORPUS, ConsentStore
+from .consent import ConsentStore, CorpusConsent
 from .corpus import CorpusRow, CorpusStore
 from .discord_feed import TrainingFeed
 from .export_hf import (
@@ -103,15 +104,14 @@ def corpus_rows(
     blocklist gets the same belt-and-braces treatment: a row stored before a
     term was added must not survive to be trained on once it is.
 
-    A corpus row has one author, so one grant decides it -- and the grant that
-    decides it is `corpus`, never the older corrections one.
+    A corpus row has one author, so one grant decides it -- and which grant that
+    is depends on where the row's text came from, per `consent.SCOPE_BY_SOURCE`.
     """
     ids = ids or Pseudonymiser.load(settings)
     blocklist = blocklist if blocklist is not None else Blocklist.load()
-    consent = ConsentStore(settings.consent_path)
-    allowed = {ids.user(uid) for uid in consent.granted_ids(SCOPE_CORPUS)}
+    gate = CorpusConsent(ConsentStore(settings.consent_path), ids)
     rows = CorpusStore(settings.corpus_path).all()
-    return [r for r in rows if r.author in allowed and not blocklist.matches(r.text)]
+    return [r for r in rows if gate.allows(r) and not blocklist.matches(r.text)]
 
 
 def to_examples(rows: list[CorpusRow], block_size: int) -> list[Example]:
@@ -348,13 +348,12 @@ def dataset_stats(
     """
     ids = ids or Pseudonymiser.load(settings)
     blocklist = blocklist if blocklist is not None else Blocklist.load()
-    consent = ConsentStore(settings.consent_path)
-    allowed = {ids.user(uid) for uid in consent.granted_ids(SCOPE_CORPUS)}
+    gate = CorpusConsent(ConsentStore(settings.consent_path), ids)
     all_rows = CorpusStore(settings.corpus_path).all()
 
     trained = dropped_consent = dropped_blocklist = 0
     for row in all_rows:
-        if row.author not in allowed:
+        if not gate.allows(row):
             dropped_consent += 1
         elif blocklist.matches(row.text):
             dropped_blocklist += 1
@@ -696,6 +695,13 @@ def train(
         if max_cycles is not None and cycles >= max_cycles:
             reason = "max_cycles"
             break
+
+        # Migrate before reading, every cycle, so an install that predates the
+        # corpus starts training without anyone running a command -- and so
+        # corrections captured while this loop is running reach the corpus
+        # without waiting for a restart. Idempotent and quiet: it dedupes on the
+        # content-addressed row id and only logs when it actually added rows.
+        backfill_corpus(settings, log=log, ids=ids, blocklist=blocklist, log_noop=False)
 
         rows = corpus_rows(settings, ids, blocklist)
         split = split_rows(rows, settings)

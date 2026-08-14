@@ -1,186 +1,150 @@
-# Finish and land the unlabelled-corpus pivot
-> run: run-20260814-finish-and-land-the-unlabelled-corpus-pi · branch: beckett/run-finish-and-land-the-unlabelled-corpus-pi · created: 2026-08-14T21:02:46.440Z
+# Make the corpus pivot work on the live data
+> run: run-20260814-make-the-corpus-pivot-work-on-the-live-d · branch: beckett/run-make-the-corpus-pivot-work-on-the-live-d · created: 2026-08-14T21:31:39.170Z
 
 ## Goal
-Finish and land work that is already ~95% done. Its worker crashed before it could report a
-verdict, so nothing reviewed it and nothing landed it. Do NOT restart the design — read what is
-there and finish it.
+The unlabelled-corpus pivot (`2a9860c`, now on `kowo-co/babble` main) is correct in tests and
+BROKEN against real live data. I deployed it to the live bot, watched it go inert, and rolled the
+live checkout back to `de65544`. Main still carries the pivot; the live box does not. Your job is to
+make the pivot survive contact with the existing data so it can actually ship.
 
-Repo: kowo-co/babble. The work is on branch `beckett/run-collect-an-unlabelled-pretraining-corpus`,
-tip `fc16922` (a crash-time WIP commit), cut from main at `de65544`. Start from that branch, not
-from main.
+## What I observed on the live box
 
-The original ask, from ro (user 1151230208783945818, the project owner): "make it so booper/babble
-now just collects pretraining unlabelled corpus rather than training against the inputs. So people
-can just talk to booper to collect that corpus" — because "in general right now we are collecting
-english corpus and overfitting it to a pair. which is fine for now but ideally itd just be a pool of
-unlabelled data to be picked at". Correction pairs stop being the training objective; an unlabelled
-text corpus becomes it. The crashed worker marked all 20 of its checklist items done and wrote ~4000
-lines across 31 files, including a new `tests/test_corpus.py`.
+Live install is `/home/beckett/babble-live` (its own clone + `.venv`, systemd units `babble-bot`
+and `babble-train`). Its data dir has `interactions.jsonl` (29 stored correction rows, 30 trainable
+including the 👍), `consent.json` (5 users, all `{"decision": "granted", "notice_version": 1}`),
+`exchanges.json`, and 5 checkpoints at step ~113,000.
 
-**It is not actually finished — the test suite is red.** I ran it on that branch just now:
-`352 passed, 4 failed`. All four failures are in `tests/test_trainer.py`, all in the probe path:
+On `de65544` (pre-pivot) `babble summary` reports:
 
-- `test_probe_prefix_walks_the_whole_dataset_in_order_then_wraps`
-- `test_probe_prefix_never_repeats_two_checkpoints_in_a_row`
-- `test_probe_prefix_dedupes_a_row_whose_text_repeats`
-- `test_a_row_with_nothing_usable_in_it_is_probed_as_a_fallback_not_as_trained`
+    checkpoints 5 · corrections 29 · 👍 1 · trainable rows 30
+    people opted in 5 of 5 asked
 
-The first one fails like this:
+and the trainer runs normally: `train.cycle.start ... rows=30 examples=24 ... dropped_consent=0`.
 
-    assert walked == [(f"row-text-{i}", PROBE_TRAIN) for i in range(4)]
-    E  At index 0 diff: ('row-text-', 'trained') != ('row-text-0', 'trained')
+On `2a9860c` (the pivot), same data dir, same venv, full suite green (356 passed), `babble summary`
+reports:
 
-so the probe prefix is losing the last character of each row's text — an off-by-one in whatever
-slices the probe prefix out of a corpus row. Diagnose it properly rather than editing the test to
-match the buggy output: decide what the probe prefix is SUPPOSED to be under the new corpus model,
-fix the code if the code is wrong, and only change a test if you can say in one sentence why the
-test encodes the old pair-based model and is genuinely obsolete.
+    corpus 0 rows (0 training, 0 chars) · checkpoints 5
+    corrections 29 · 👍 1 · trainable pairs 30
+    people opted in 0 of 5 asked
 
-The job:
-1. Get the full suite green on that branch. All 356 tests, no skips added, no tests deleted to make
-   red go away.
-2. Rebase onto current `origin/main` if it has moved, and make sure no conflict markers survive
-   anywhere.
-3. Re-read the branch's own `spec.md` checklist and verify each item against the code as it stands.
-   The crashed worker ticked all 20 while leaving four tests red, so its self-assessment is not
-   trustworthy — check the claims, and fix or honestly un-tick anything that does not hold.
-4. Sanity-check the end-to-end story yourself: a message to the bot lands in the unlabelled corpus,
-   the trainer trains on corpus text rather than on prompt/chosen pairs, and the export path still
-   produces something coherent. Say in the PR description what you actually ran to confirm it.
+and the trainer immediately goes idle:
 
-Done means: the whole suite green on top of current main, the checklist honest, and a PR
-description that states what the pivot changed (storage, training objective, export) and anything
-about existing stored correction rows that a human needs to decide — the live bot has ~30 stored
-rows under the old pair model and it matters whether they migrate, get reused as plain text, or get
-left alone.
+    train.idle    reason=no_consented_rows rows=0
 
-Ceiling: finish this pivot and land it. No new features beyond what the branch already does, no
-architecture rewrite, don't touch the consent gate or the blocklist.
+So on real data the pivot trains on nothing at all. Two distinct defects:
+
+1. **No migration.** 29 existing correction rows never become corpus rows. `babble/corpus.py` has
+   `CorpusRow`/`make_corpus_id`/`append`/`all`, but nothing walks the existing `interactions.jsonl`
+   into it. The PR claimed a `capture→backfill→train` path was verified end-to-end — whatever that
+   backfill was, it does not run against an install that already has pair data on disk.
+2. **Consent stops resolving.** The same `consent.json` that reads as "5 of 5 opted in" before the
+   pivot reads as "0 of 5" after it, and the trainer's own gate agrees (`no_consented_rows`).
+   Nothing in that file changed between the two runs — I only changed the checked-out commit. Find
+   out why the pivot's consent lookup misses rows the old one matched; my guess is the corpus rows
+   are keyed by an author identifier that is pseudonymised or salted differently from the one
+   `consent.json` is keyed by, or `notice_version` 1 no longer satisfies a bumped expected version.
+   Prove it rather than guessing.
+
+## The job
+
+1. Fix the consent resolution first — it is the more dangerous of the two. A user who granted
+   consent under the pair model must still read as granted under the corpus model, and a user who
+   never granted must still read as not granted. Get this wrong in the permissive direction and we
+   are training on text nobody agreed to, so add a test for BOTH directions.
+2. Migrate the existing data. Every stored correction row that a consented user contributed should
+   become corpus text under the new model. Decide and state whether that is a one-shot migration
+   run at startup, an explicit CLI command, or a lazy read-through, and make it idempotent —
+   running it twice must not duplicate rows (`make_corpus_id` looks like it already gives you the
+   dedupe key). Rows from users who did not consent must NOT migrate.
+3. Prove it against a copy of the real data, not just fixtures. A snapshot of the live data dir as
+   it is right now is at `/home/beckett/babble-live/data.bak-preppivot-20260814` — copy it, run the
+   migration against the copy, and report the actual before/after numbers in the PR: rows in,
+   corpus rows out, consented vs dropped. "Tests pass" is not evidence for this one; the tests
+   already passed while the live box sat idle.
+4. Keep the full suite green and add regression tests: an install that already has
+   `interactions.jsonl` and `consent.json` and no corpus file must end up training, not idle.
+   That exact scenario is what nothing covered.
+
+Done means: on a copy of the real live data dir, the pivot code reports a non-zero corpus, resolves
+all 5 consented users, and the trainer starts a real cycle instead of logging
+`train.idle reason=no_consented_rows`. Report those numbers.
+
+Ceiling: make the landed pivot work on existing data. Don't redesign the corpus model, don't touch
+the blocklist, don't change what the bot says to people.
 
 ## Checklist
-
-Every item below was verified against the code as it now stands (file:line evidence in the PR
-notes), and cross-checked against a from-scratch end-to-end run — not taken on the crashed
-worker's word.
-
-- [x] **Bug that made the suite red is fixed.** `leading_words` (trainer.py:387-426) no longer
-      drops the last byte of a row that fits the budget: it holds back the last *word* and hands a
-      single spaceless word back whole. The four `test_probe_prefix_*` failures pass; no test was
-      edited to match buggy output (`git diff fc16922 HEAD -- tests/` is empty).
-- [x] **Full suite green on top of current main.** `356 passed` via `uv run --extra dev pytest`.
-      No skips added, no tests deleted. `origin/main` has not moved past the branch's base
-      `de65544` (merge-base == origin/main tip), so no rebase was needed; no conflict markers
-      anywhere.
-- [x] `babble/corpus.py` — `CorpusRow` + `CorpusStore` over `data/corpus.jsonl`: atomic append,
-      dedupe by content-addressed id, `purge_author`, `counts_by_source`, `approx_tokens`.
-- [x] Content-addressed id over `(text, author)` only, so the same words by the same person
-      collapse to one row however they arrived (`make_corpus_id`, corpus.py:81-92).
-- [x] Capture: any message addressed to booper (mention / reply / DM) from a corpus-consented
-      person becomes a corpus row, with `source` provenance and pseudonymous guild+channel
-      (core.py:165-179, 559, 465-466).
-- [x] `IncomingMessage.is_dm` set explicitly by `bot.py` (bot.py:141), not inferred from a missing
-      guild id.
-- [x] Widening `!babble all` / `!babble pings`: per person per channel, off by default, revocable
-      immediately, requires the corpus grant first (core.py:768-830, consent.py:187-198, 253-265).
-- [x] Ambient capture never replies and never prompts anyone for consent (core.py:345-358).
-- [x] Correction capture still works and also files both human halves (prompt + chosen) into the
-      corpus (core.py:646-686).
-- [x] `babble/backfill.py` + `babble backfill-corpus` — idempotent (content-addressed dedupe),
-      blocklist + consent re-checked at backfill time (backfill.py:80-110). Verified idempotent by
-      running it twice against the same store: 0 rows added the second time.
-- [x] Trainer: plain next-token LM over corpus text; prompt-masking and per-row weighting gone from
-      the corpus path (`to_examples` trainer.py:117-125, `build_text_example` tokenizer.py:124-154).
-      The old masked layout survives only to *score* correction pairs in `generate.py`.
-- [x] Held-out split, val loss, checkpoint cadence, nice level, duty cycle, atomic checkpoints and
-      kill-safety all preserved (trainer.py:78-92, 175-218, 298-314, 467-501, 603-626).
-- [x] Consent + blocklist re-checked at training time, not only at capture (`corpus_rows`
-      trainer.py:95-114, called every cycle).
-- [x] Feed: cycle line has corpus rows / tokens / train+val split / batch / lr; checkpoint line has
-      train + val loss with deltas; probe is an honest labelled continuation with no fake expected
-      field (discord_feed.py:143-242).
-- [x] Two consent scopes tracked distinctly; legacy `consent.json` loads as corrections-only and
-      the person is re-asked once before anything of theirs is collected (consent.py:45-72, 125-135;
-      core.py:509-514).
-- [x] Legacy "no" carries across both scopes; a legacy "yes" does not (consent.py:132-135).
-- [x] `!babble forget` purges interactions and corpus, and clears widened channels
-      (core.py:733-745, consent.py:248-251, 277-285).
-- [x] Export: corpus as the `default` config, corrections kept as the `corrections` config; consent
-      (per scope) and blocklist re-checked; guild/channel not published (export_hf.py:113-162,
-      220-234, 350-358). Verified: export README declares `default`→corpus / `corrections`→train,
-      and exported corpus rows carry no guild/channel keys.
-- [x] `rescan-blocklist` purges both stores; `fake-data` fills both; `sample` continues
-      (cli.py:117-134, 258-284; fakedata.py:96-108).
-- [x] README, spec.md and .env.example rewritten for what babble now is.
-- [x] Tests: corpus append/dedupe/purge, consent boundary, idempotent backfill, blocklist at
-      capture + training + export + rescan, unmasked objective, and the full ping→correct→train→
-      reload→export flow end to end (tests/test_corpus.py and across the suite).
+- [x] 1. Reproduce both defects against a copy of the real live data dir
+- [x] 2. Prove the actual root cause of the consent miss (not salt, not notice_version)
+- [x] 3. Fix consent resolution: provenance-scoped gate shared by trainer/stats/export/backfill
+- [x] 4. Regression test: legacy grant → migrated rows train (permissive direction)
+- [x] 5. Regression test: no grant / declined / withdrawn → nothing trains (restrictive direction)
+- [x] 6. Run the migration automatically + idempotently (decide & state the mechanism)
+- [x] 7. Regression test: interactions.jsonl + consent.json + no corpus file → trains, not idle
+- [x] 8. Verify on a copy of the real data: non-zero corpus, 5/5 users, a real train cycle
+- [x] 9. Full suite green
+- [x] 10. README/docs updated to match the shipped rule
 
 ## Notes
 
-### What the pivot changed (PR description)
+### Root cause (proven, 2026-08-14)
 
-**The ask.** ro: booper/babble should "just collect pretraining unlabelled corpus rather than
-training against the inputs" — correction pairs stop being the training objective, an unlabelled
-text corpus becomes it.
+Both guesses in the ticket are wrong, and I checked each directly against the real snapshot:
 
-**Storage.** New `data/corpus.jsonl` (`babble/corpus.py`): one unlabelled `CorpusRow` per piece of
-human writing — `id, text, author (pseudonym), source, guild?, channel?, created_at`. Ids are
-content-addressed over `(text, author)` only, so the same words by the same person collapse to one
-row however they arrive. The old `data/interactions.jsonl` correction store is untouched and still
-records `(prompt, rejected, chosen)` triples — corrections remain a real artifact worth keeping;
-they're just no longer the training target.
+- **Not the salt.** All 5 consent ids pseudonymise to the 5 author hashes actually present in
+  `interactions.jsonl` — `authors that map to a known consent id: 5 of 5`, unmatched set empty.
+- **Not `notice_version`.** `ConsentStore.decision()` never reads `notice_version` at all.
 
-**Training objective.** The trainer now does plain next-token prediction over corpus text: every
-token of every row is a target, every row counts the same, nothing is paired. The old
-prompt-masking + thumbs-up upweighting is gone from the training path (`to_examples`), and the
-masked/weighted example machinery survives only to *score* correction pairs in `generate.py`. The
-`model.py` `sequence_loss` docstring was corrected to describe the corpus objective (commit
-cc6df10). Generation moved to a continuation family (`continue_text`) because `<sep>`'s embedding
-is now never trained — feeding `<bos> prompt <sep>` at inference would put an untrained token in
-front of every generation.
+The real cause is **scope**. The pivot split one grant into two (`corrections`, `corpus`).
+`consent.py:_read_grants` deliberately loads a legacy flat record as `{corrections: granted}` and
+leaves `corpus` **unknown**, so people get re-asked before ordinary messages are collected. But
+every gate that decides what *trains* asks for `corpus` (`trainer.py:112`, `trainer.py:352`,
+`stats.py:66`, `export_hf.py:148`) — hence `0 of 5` and `no_consented_rows`.
 
-**Export.** `babble export` now writes a two-config HuggingFace dataset: `default` = the corpus
-(`data/corpus.jsonl`), `corrections` = the pairs (`data/train.jsonl`). Both re-check consent (per
-scope) and blocklist at export time; guild/channel are never published.
+The fatal part is a **disagreement inside the pivot**: `backfill.py` gates the migration on the
+*corrections* grant, so it happily writes rows that the trainer then refuses to train on. Proven on
+the real-data copy: `backfill-corpus` added **54** corpus rows and the very next `summary` still
+said `corpus 54 rows (0 training …) · people opted in 0 of 5`. So defect 1 was never the whole
+story — running the missing migration by hand still leaves the box inert.
 
-**Probe fix (the four red tests).** `leading_words` had an off-by-one — `raw[: min(budget,
-max(1, len(raw)-1))]` chopped the final byte of every row that fit the budget, so a row `row-text-0`
-probed as `row-text-`. Under the corpus model the probe prefix should be a genuine byte-prefix of a
-real trained row with the last *word* held back (so the model has something to continue), and a
-single spaceless word handed back whole rather than truncated. Fixed in the code; no test changed.
+### Decisions
 
-**What I ran to confirm end-to-end** (fresh `BABBLE_DATA_DIR`, salt set):
-- `babble fake-data` → seeds both stores and flattens correction halves into the corpus (24 rows).
-- `babble train --steps 60` → trains on corpus rows (`examples=19 tokens=306`, held-out
-  `val_rows=5`); checkpoint probe reads a real corpus row and labels it `trained` (`prefix=hello
-  probe_side=trained`) — the off-by-one is gone.
-- `babble sample -p hello` → continues from the latest checkpoint.
-- `babble export` → writes `data/corpus.jsonl` (config `default`) + `data/train.jsonl` (config
-  `corrections`); exported corpus rows carry only `author (pseudonym) / created_at / id / source /
-  text` — no raw Discord ids, no guild/channel.
-- `babble backfill-corpus` twice → 0 rows added the second time (idempotent).
+- **Consent rule: provenance-scoped.** The grant that governs a corpus row is decided by where its
+  text came from. `prompt`/`correction` rows were flattened out of pairs collected under the
+  corrections notice → governed by the `corrections` grant. `mention`/`reply`/`dm`/`ambient` rows
+  are live corpus capture → governed by the `corpus` grant. An explicit no/withdrawal on `corpus`
+  suppresses rows of *either* provenance, and an unrecognised source falls back to `corpus` (the
+  stricter one). This is the one rule, expressed once in `consent.CorpusConsent`, and used by the
+  trainer, the summary, the export and the backfill, so those four can no longer disagree.
+  - Rejected: carrying a legacy grant wholesale onto `corpus`. It would report 5/5 and train, but
+    it would also silently authorise future capture of people's ordinary messages under a notice
+    that only ever mentioned corrections — exactly the permissive failure the ticket warns about.
+- **Migration mechanism: automatic and idempotent, at the top of every training cycle**, plus at
+  bot startup, with `babble backfill-corpus` kept for operators. Startup-only is not enough: both
+  live units are long-lived (`--loop`), so corrections captured after boot would never reach the
+  corpus until someone restarted the unit. Per-cycle is cheap and dedupes on `make_corpus_id`.
 
-### Human decision needed: the ~30 existing correction rows on the live bot
+### Verified against the real data
 
-Those rows were collected under the old pair model, under the **corrections** consent notice, and
-have already been published under it. The prompt and the human-typed `chosen` of each are real
-human writing; `rejected` and 👍-approval responses are *not* filed (a 👍 response is the bot's own
-output, not a person's writing). Three options for a human to pick:
+Fresh copy of `/home/beckett/babble-live/data.bak-preppivot-20260814` each time, worktree code on
+the live venv's torch. No migration command run — the trainer picks the data up itself.
 
-- **Reuse as plain text (recommended):** run `babble backfill-corpus` once against the live data
-  dir. It flattens each consented correction into corpus rows, gated on the corrections grant and
-  skipping anyone who explicitly said no to the corpus, re-checking the blocklist. It is idempotent,
-  so re-running is safe. This is what `fake-data` already does in tests.
-- **Leave them alone:** do nothing; the corpus then builds only from new messages going forward.
-  The correction rows stay exactly where they are and still export under the `corrections` config.
-- **Migrate/discard:** not built and not recommended — there is no separate migration path, and
-  nothing deletes the correction store. "Leave alone" already covers not-reusing.
+| | shipped pivot (`2a9860c`) | this branch |
+|---|---|---|
+| `people opted in` | 0 of 5 | **5 of 5** |
+| corpus rows | 0 | **54** (1,092 chars) |
+| corpus training | 0 | **54** |
+| trainer | `train.idle reason=no_consented_rows rows=0` | `train.cycle.start rows=54 examples=43 tokens=890` |
 
-I did **not** run the backfill against live data — that's ro's call and touches real stored user
-text. Everything above was verified on throwaway fake data only.
+Migration on the real snapshot: **30 interaction rows in → 59 pieces considered → 54 corpus rows
+out**, `skipped_consent=0`, `skipped_blocklist=0`, `skipped_empty=1` (a blank prompt),
+`skipped_duplicate=4` (the same text said twice collapses by content-addressed id). Re-running adds
+**0** and the file stays at 54 lines / 54 distinct ids.
 
-### Scope
+Restrictive direction, same real data with 2 users removed from `consent.json` and 1 set to
+`withdrawn`: **56 of 59 pieces skipped for consent, 2 rows migrated, 0 banned authors in the
+corpus**, summary `2 of 3 asked`.
 
-Stayed inside the ceiling: finished and verified the branch's own pivot, no new features, no
-architecture rewrite, did not touch the consent gate or the blocklist logic.
+Export still clean: 54 corpus + 30 correction rows, no raw Discord id anywhere in the output. The
+54 corpus rows are the same words already published under the corrections config, so this is not a
+new exposure.

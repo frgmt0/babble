@@ -15,6 +15,15 @@ There are two separate grants, because there are two separate collections:
   under the old notice **does not** carry over to it. A legacy file loads with
   `corrections` granted and `corpus` unknown, and that person gets asked again.
 
+Because both collections now live in one corpus file, "which grant applies?" is
+answered per *row* rather than per file, by `SCOPE_BY_SOURCE` and the
+`CorpusConsent` gate at the bottom of this module. Text flattened out of an old
+correction pair is still governed by the corrections grant that collected it;
+text captured live needs the corpus grant. Every reader of the corpus -- the
+trainer, the summary, the export, the migration -- asks that one gate, because
+the first cut of the pivot let them each answer it differently and the migration
+ended up writing rows the trainer refused to train on.
+
 On top of the `corpus` grant sits one widening, per person *and* per channel:
 `wide_channels`. Normally only messages you address to the bot are collected. If
 you run `!babble all` in a channel, everything **you** say **in that channel** is
@@ -29,7 +38,17 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Iterable, Protocol
 
+from .corpus import (
+    SOURCE_AMBIENT,
+    SOURCE_CORRECTION,
+    SOURCE_DM,
+    SOURCE_MENTION,
+    SOURCE_PROMPT,
+    SOURCE_REPLY,
+    CorpusRow,
+)
 from .util import atomic_write_text, utcnow_iso
 
 UNKNOWN = "unknown"  # never been asked
@@ -54,6 +73,39 @@ NEGATIVE = frozenset({DECLINED, WITHDRAWN})
 #: 1 was the corrections-only notice; 2 is the one that describes the corpus.
 NOTICE_VERSION = 2
 LEGACY_NOTICE_VERSION = 1
+
+#: Which grant governs a corpus row, decided by where its text came from.
+#:
+#: A corpus row is just text, so nothing about the row itself says which notice
+#: the person was shown when they agreed to it. Its `source` does. Text that was
+#: flattened out of an old correction pair was collected under the corrections
+#: notice and has already been published under it, so the corrections grant is
+#: the one that governs it -- re-filing those words in a second index is not a
+#: new collection. Text captured live is the genuinely broader thing the corpus
+#: notice describes, and needs the corpus grant.
+#:
+#: Getting this wrong in either direction is a real harm, which is why it is one
+#: table read by everything rather than a rule each caller reimplements: too
+#: strict and the pivot trains on nothing (which is what shipped), too loose and
+#: we collect people's ordinary messages on the strength of a narrower yes.
+SCOPE_BY_SOURCE: dict[str, str] = {
+    SOURCE_PROMPT: SCOPE_CORRECTIONS,
+    SOURCE_CORRECTION: SCOPE_CORRECTIONS,
+    SOURCE_MENTION: SCOPE_CORPUS,
+    SOURCE_REPLY: SCOPE_CORPUS,
+    SOURCE_DM: SCOPE_CORPUS,
+    SOURCE_AMBIENT: SCOPE_CORPUS,
+}
+
+
+def scope_for_source(source: str) -> str:
+    """The grant that governs text collected by `source`.
+
+    An unrecognised source falls back to `corpus`, the broader grant, so a row
+    written by some future capture path is held to the stricter standard until
+    somebody deliberately says otherwise.
+    """
+    return SCOPE_BY_SOURCE.get(source, SCOPE_CORPUS)
 
 
 @dataclass(frozen=True)
@@ -283,3 +335,52 @@ class ConsentStore:
         person.wide_channels = []
         self._save()
         return dropped
+
+
+class _Pseudonymising(Protocol):
+    """Just the bit of `Pseudonymiser` this module needs. Keeps consent import-light."""
+
+    def user(self, user_id: object) -> str: ...
+
+
+class CorpusConsent:
+    """Whether each corpus row's author agreed to *that particular* row.
+
+    Resolved once per pass and then asked per row, because the answer depends on
+    the row: a person who only ever answered the corrections notice consents to
+    their old correction text being in the corpus, and does not consent to their
+    ordinary messages being collected from now on. Both of those are true of the
+    same person at the same time, so a single set of "allowed authors" cannot
+    express it -- which is exactly the bug this replaces, where the trainer asked
+    only about `corpus` and threw away every row the backfill had just written.
+
+    A no is stronger than a yes: an explicit `declined`/`withdrawn` on `corpus`
+    drops that person's rows whatever their corrections grant says, matching what
+    `!babble forget` does at the store.
+    """
+
+    def __init__(self, consent: ConsentStore, ids: _Pseudonymising) -> None:
+        self._by_scope: dict[str, set[str]] = {}
+        self.user_ids: set[str] = set()
+        for user_id in consent.known_ids():
+            if consent.decision(user_id, SCOPE_CORPUS) in NEGATIVE:
+                continue
+            pseudonym = ids.user(user_id)
+            for scope in SCOPES:
+                if consent.decision(user_id, scope) in CAPTURE_OK:
+                    self._by_scope.setdefault(scope, set()).add(pseudonym)
+                    self.user_ids.add(str(user_id))
+
+    def allows_author(self, author: str, source: str) -> bool:
+        """True if `author` granted the scope that governs text from `source`."""
+        return author in self._by_scope.get(scope_for_source(source), frozenset())
+
+    def allows(self, row: CorpusRow) -> bool:
+        return self.allows_author(row.author, row.source)
+
+    def keep(self, rows: Iterable[CorpusRow]) -> list[CorpusRow]:
+        return [row for row in rows if self.allows(row)]
+
+    def __len__(self) -> int:
+        """How many people have *some* corpus text they have consented to."""
+        return len(self.user_ids)

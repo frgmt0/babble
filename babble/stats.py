@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .config import Settings
-from .consent import SCOPE_CORPUS, SCOPE_CORRECTIONS, ConsentStore
+from .consent import SCOPE_CORPUS, SCOPE_CORRECTIONS, ConsentStore, CorpusConsent
 from .corpus import CorpusStore
 from .store import APPROVAL, CORRECTION, InteractionStore
 
@@ -63,20 +63,21 @@ def snapshot(settings: Settings) -> Snapshot:
         tally[row.signal] = tally.get(row.signal, 0) + 1
 
     granted = set(consent.granted_ids(SCOPE_CORRECTIONS))
-    granted_corpus = set(consent.granted_ids(SCOPE_CORPUS))
     # "Rows the trainer would actually use", per store and per grant: a
     # correction needs both parties on the corrections grant, a corpus row needs
-    # its one author on the corpus grant.
+    # its one author on whichever grant governs where that row came from.
     allowed: set[str] = set()
-    allowed_corpus: set[str] = set()
-    if granted or granted_corpus:
+    consented_users = 0
+    corpus_trainable = 0
+    if granted or consent.granted_ids(SCOPE_CORPUS):
         from .identity import Pseudonymiser
 
         ids = Pseudonymiser.load(settings)
         allowed = {ids.user(uid) for uid in granted}
-        allowed_corpus = {ids.user(uid) for uid in granted_corpus}
+        gate = CorpusConsent(consent, ids)
+        consented_users = len(gate)
+        corpus_trainable = sum(1 for r in corpus if gate.allows(r))
     trainable = sum(1 for r in rows if r.prompt_author in allowed and r.signal_author in allowed)
-    corpus_trainable = sum(1 for r in corpus if r.author in allowed_corpus)
 
     log_bytes = 0
     if settings.log_dir.exists():
@@ -89,7 +90,7 @@ def snapshot(settings: Settings) -> Snapshot:
         checkpoints=len(list(settings.checkpoint_dir.glob("ckpt-*.pt")))
         if settings.checkpoint_dir.exists()
         else 0,
-        consented_users=len(granted_corpus),
+        consented_users=consented_users,
         known_users=len(consent.known_ids()),
         stored_rows=len(rows),
         corrections=tally.get(CORRECTION, 0),

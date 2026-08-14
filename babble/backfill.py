@@ -24,7 +24,7 @@ from dataclasses import dataclass
 
 from .blocklist import Blocklist
 from .config import Settings
-from .consent import CAPTURE_OK, NEGATIVE, SCOPE_CORPUS, SCOPE_CORRECTIONS, ConsentStore
+from .consent import ConsentStore, CorpusConsent
 from .corpus import SOURCE_CORRECTION, SOURCE_PROMPT, CorpusRow, CorpusStore, make_corpus_id
 from .identity import Pseudonymiser
 from .logs import EventLog, NullLog
@@ -67,22 +67,23 @@ def backfill_corpus(
     log: EventLog | None = None,
     ids: Pseudonymiser | None = None,
     blocklist: Blocklist | None = None,
+    log_noop: bool = True,
 ) -> BackfillResult:
-    """Flatten every consented correction pair into the corpus. Idempotent."""
+    """Flatten every consented correction pair into the corpus. Idempotent.
+
+    `log_noop=False` keeps a run that changed nothing out of the log, for the
+    caller that runs this on every training cycle rather than once by hand.
+    """
     settings.ensure_dirs()
     log = log or NullLog()
     ids = ids or Pseudonymiser.load(settings)
     blocklist = blocklist if blocklist is not None else Blocklist.load()
     consent = ConsentStore(settings.consent_path)
 
-    # Pseudonyms whose owner still consents to the corrections collection, and
-    # has not separately said no to the corpus.
-    allowed = {
-        ids.user(uid)
-        for uid in consent.known_ids()
-        if consent.decision(uid, SCOPE_CORRECTIONS) in CAPTURE_OK
-        and consent.decision(uid, SCOPE_CORPUS) not in NEGATIVE
-    }
+    # The same gate the trainer and the export use, asked the same way. Sharing
+    # it is the point: this migration used to apply its own rule, which let it
+    # write rows the trainer then silently refused to train on.
+    gate = CorpusConsent(consent, ids)
 
     corpus = CorpusStore(settings.corpus_path)
     seen = corpus.ids()
@@ -96,7 +97,7 @@ def backfill_corpus(
             if not text.strip():
                 result.skipped_empty += 1
                 continue
-            if author not in allowed:
+            if not gate.allows_author(author, source):
                 result.skipped_consent += 1
                 continue
             # Re-checked here, not trusted from capture time: a term added to the
@@ -119,18 +120,18 @@ def backfill_corpus(
                 )
             )
 
-    for new_row in fresh:
-        result.added += int(corpus.append(new_row))
+    result.added = corpus.extend(fresh)
 
-    log.event(
-        "corpus.backfill",
-        scanned=result.scanned,
-        considered=result.considered,
-        added=result.added,
-        skipped_duplicate=result.skipped_duplicate,
-        skipped_consent=result.skipped_consent,
-        skipped_blocklist=result.skipped_blocklist,
-        skipped_empty=result.skipped_empty,
-        total=corpus.count(),
-    )
+    if log_noop or result.added:
+        log.event(
+            "corpus.backfill",
+            scanned=result.scanned,
+            considered=result.considered,
+            added=result.added,
+            skipped_duplicate=result.skipped_duplicate,
+            skipped_consent=result.skipped_consent,
+            skipped_blocklist=result.skipped_blocklist,
+            skipped_empty=result.skipped_empty,
+            total=corpus.count(),
+        )
     return result

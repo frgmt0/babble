@@ -15,6 +15,7 @@ from typing import Any, Callable
 
 import discord
 
+from .backfill import backfill_corpus
 from .config import TOKEN_ENV, Settings, discord_token
 from .core import Babble, IncomingMessage, ReactionEvent
 from .generate import CheckpointGenerator
@@ -228,6 +229,10 @@ def run_bot(settings: Settings | None = None) -> int:
     torch.set_num_threads(1)
 
     log.event("bot.start", data_dir=str(settings.data_dir), checkpoints=str(settings.checkpoint_dir))
+    # An install that predates the corpus has all of its text sitting in
+    # interactions.jsonl. Migrate it here too, not just in the trainer, so
+    # `!babble status` tells the truth on a box where the bot came up first.
+    backfill_corpus(settings, log=log, log_noop=False)
     client = BabbleClient(settings, log)
     try:
         client.run(token, log_handler=None)

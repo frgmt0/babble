@@ -16,7 +16,7 @@ import hashlib
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterable
 
 from .util import atomic_write_text, utcnow_iso
 
@@ -105,12 +105,30 @@ class CorpusStore:
 
     def append(self, row: CorpusRow) -> bool:
         """Add a row. Returns False if an identical one is already present."""
-        if row.id in self.ids():
-            return False
+        return self.extend([row]) == 1
+
+    def extend(self, rows: Iterable[CorpusRow]) -> int:
+        """Add many rows at once, skipping duplicates. Returns how many landed.
+
+        One scan of the existing ids for the whole batch, not one per row, which
+        is what keeps the backfill affordable enough to run on every training
+        cycle rather than only at startup. Duplicates inside the batch collapse
+        too, so the same text twice in one pass is still one row.
+        """
+        seen = self.ids()
+        fresh = []
+        for row in rows:
+            if row.id in seen:
+                continue
+            seen.add(row.id)
+            fresh.append(row)
+        if not fresh:
+            return 0
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with open(self.path, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(row.to_dict(), ensure_ascii=False) + "\n")
-        return True
+            for row in fresh:
+                fh.write(json.dumps(row.to_dict(), ensure_ascii=False) + "\n")
+        return len(fresh)
 
     def all(self) -> list[CorpusRow]:
         if not self.path.exists():
