@@ -21,16 +21,24 @@ from __future__ import annotations
 import json
 import os
 import re
+import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Callable
 
+from . import __version__
 from .logs import EventLog, NullLog
 
 WEBHOOK_ENV = "BABBLE_LOG_WEBHOOK_URL"
 EVERY_ENV = "BABBLE_LOG_EVERY_N"
 
 SAMPLE_LIMIT = 200
+ERROR_BODY_LIMIT = 300
+
+# Discord's edge rejects urllib's default "Python-urllib/3.x" User-Agent with a
+# 403 before the request ever reaches the webhook. This is the documented
+# bot-UA form: https://discord.com/developers/docs/reference#user-agent
+USER_AGENT = f"DiscordBot (https://github.com/kowo-co/babble, {__version__})"
 
 # Mentions the model could emit and that must never resolve, belt and suspenders
 # alongside `allowed_mentions: {"parse": []}` on the outgoing payload.
@@ -58,10 +66,28 @@ def post_webhook(url: str, content: str, *, timeout: float = 5.0) -> None:
     """One POST to a Discord webhook. Raises on any failure; callers decide what that means."""
     payload = json.dumps({"content": content, "allowed_mentions": {"parse": []}}).encode("utf-8")
     request = urllib.request.Request(
-        url, data=payload, headers={"Content-Type": "application/json"}, method="POST"
+        url,
+        data=payload,
+        headers={"Content-Type": "application/json", "User-Agent": USER_AGENT},
+        method="POST",
     )
     with urllib.request.urlopen(request, timeout=timeout) as response:
         response.read()
+
+
+def _error_body(exc: Exception) -> str | None:
+    """Pull the response body off an HTTPError, if there is one, truncated for logging."""
+    if not isinstance(exc, urllib.error.HTTPError):
+        return None
+    try:
+        body = exc.read().decode("utf-8", errors="replace")
+    except Exception:
+        return None
+    if not body:
+        return None
+    if len(body) > ERROR_BODY_LIMIT:
+        body = body[:ERROR_BODY_LIMIT] + "…"
+    return body
 
 
 def _env_int(name: str, default: int) -> int:
@@ -145,4 +171,8 @@ class TrainingFeed:
         try:
             self.sender(self.webhook_url, content)
         except Exception as exc:  # network, DNS, HTTP, rate limit -- never fatal to training
-            self.log.event("feed.post_failed", error=f"{type(exc).__name__}: {exc}")
+            error = f"{type(exc).__name__}: {exc}"
+            body = _error_body(exc)
+            if body:
+                error = f"{error} body={body!r}"
+            self.log.event("feed.post_failed", error=error)
