@@ -175,16 +175,44 @@ finish the current step, checkpoint, and exit cleanly. Restarting resumes the
 step count, the weights and the AdamW moments from `checkpoints/latest.pt`.
 
 Every checkpoint appends `{step, loss, sample}` to `checkpoints/loss.jsonl` and
-prints it:
+prints it, alongside the held-out validation loss:
 
 ```
-step     100 | loss   0.0263 | 'hello' -> 'hey!'
+step     100 | loss   0.0263 | val   0.0891 | 'hello' -> 'hey!'
 ```
 
 Only the response tokens are trained on — the prompt is context, not a target.
 Corrections carry weight `1.0`, 👍 rows `0.25`. The `rejected` field is stored
 for the dataset but the current loop does not train against it; it is plain
 weighted next-byte prediction on accepted responses.
+
+## Validation
+
+A tiny, fast-learning corpus makes train loss meaningless on its own — the
+model can just memorise a dozen rows. So a fraction of the consented rows
+(`BABBLE_VAL_FRACTION`, default `0.2`) is held out and never trained on, only
+scored, in eval mode, at every checkpoint.
+
+- **Deterministic, not shuffled.** Which side of the split a row lands on is
+  decided by a stable hash of its id, not its position in the file or a
+  random draw. The same row is always held out (or never is), whether the
+  trainer just restarted or the corpus has grown by a thousand rows since.
+- **Small corpora skip it entirely.** Below `BABBLE_VAL_MIN_ROWS` (default
+  `20`) rows, holding out 20% could starve training of most of what little
+  data there is, so validation is disabled outright — every row trains, and
+  the log line and feed post say plainly that validation is off and why,
+  rather than printing a val loss that means nothing.
+- **Eval-only, always.** The validation pass runs in `model.eval()` mode with
+  no gradient and no optimizer step — it cannot move a weight or an AdamW
+  moment. It reuses exactly the rows `!babble consent` and the [content
+  filter](#content-filter) already let through training, so a held-out row is
+  held to the same rules as a trained-on one.
+- **Overfitting is reported, never acted on.** If val loss has risen while
+  train loss fell since the last checkpoint, the log line and the feed post
+  carry a plain flag saying so. Nothing stops, no hyperparameter changes —
+  this is a signal for whoever's watching, not an automatic decision.
+
+`babble train` never trains on held-out rows; only their loss is read.
 
 ## Training feed
 
@@ -195,8 +223,12 @@ are in the corpus, and the sample generation, which is the actual point:
 
 ```
 🔁 cycle 3 · step 650 · loss 2.1840 (-0.312) · 128 rows
+   val 2.4120 (+0.018) · 26 held out
 > 'hello' → `heoll wrold hi`
 ```
+
+If the corpus is too small to hold anything out yet, that line reads `val:
+disabled — <reason>` instead of a number — see [Validation](#validation).
 
 **The trainer and the bot are separate processes** — `babble train --loop` has
 no Discord login and never will, that separation is deliberate. So this posts

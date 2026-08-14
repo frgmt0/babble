@@ -77,6 +77,14 @@ class Settings:
     correction_weight: float = 1.0
     approval_weight: float = 0.25
 
+    # Held-out validation. A stable hash of each row's id decides its side of
+    # the split, so the same row always lands on the same side as the corpus
+    # grows and as the trainer restarts. Below `val_min_rows`, holding out
+    # `val_fraction` of a handful of rows could starve training entirely, so
+    # validation is skipped and reported as disabled instead.
+    val_fraction: float = 0.2
+    val_min_rows: int = 20
+
     # Logging.
     log_max_bytes: int = 8 * 1024 * 1024
     log_backups: int = 3
@@ -109,6 +117,8 @@ class Settings:
             temperature=_env_float("BABBLE_TEMPERATURE", 1.0),
             top_k=_env_int("BABBLE_TOP_K", 40),
             max_new_tokens=_env_int("BABBLE_MAX_NEW_TOKENS", 96),
+            val_fraction=_env_float("BABBLE_VAL_FRACTION", 0.2),
+            val_min_rows=_env_int("BABBLE_VAL_MIN_ROWS", 20),
             hf_repo=os.environ.get("BABBLE_HF_REPO", "kowo-co/babble-corrections"),
             salt=os.environ.get(SALT_ENV) or None,
         )

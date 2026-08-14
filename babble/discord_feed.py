@@ -150,6 +150,12 @@ class TrainingFeed:
         rows: int,
         prompt: str,
         sample: str,
+        val_loss: float | None = None,
+        prev_val_loss: float | None = None,
+        val_rows: int = 0,
+        val_enabled: bool | None = None,
+        val_disabled_reason: str | None = None,
+        overfit_signal: bool = False,
     ) -> None:
         if not self.enabled:
             return
@@ -157,11 +163,25 @@ class TrainingFeed:
         if self._checkpoints_seen % self.every_n != 0:
             return
         delta = "" if prev_loss is None else f" ({loss - prev_loss:+.3f})"
-        content = (
-            f"🔁 cycle **{cycle}** · step **{step:,}** · loss **{loss:.4f}**{delta} · {rows} rows\n"
-            f"> {prompt!r} → `{neuter_sample(sample)}`"
-        )
-        self._post(content)
+        lines = [
+            f"🔁 cycle **{cycle}** · step **{step:,}** · loss **{loss:.4f}**{delta} · {rows} rows"
+        ]
+        # `val_enabled=None` means the caller didn't pass any validation state at
+        # all -- leave the post exactly as it was before validation existed.
+        if val_enabled is True:
+            if val_loss is None:
+                lines.append("val: no held-out rows this checkpoint")
+            else:
+                val_delta = "" if prev_val_loss is None else f" ({val_loss - prev_val_loss:+.3f})"
+                warning = "  ⚠️ val rising while train falls" if overfit_signal else ""
+                lines.append(
+                    f"val **{val_loss:.4f}**{val_delta} · {val_rows} held out{warning}"
+                )
+        elif val_enabled is False:
+            reason = f" — {val_disabled_reason}" if val_disabled_reason else ""
+            lines.append(f"val: disabled{reason}")
+        lines.append(f"> {prompt!r} → `{neuter_sample(sample)}`")
+        self._post("\n".join(lines))
 
     # --- plumbing -----------------------------------------------------
 
