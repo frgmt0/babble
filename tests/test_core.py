@@ -7,10 +7,12 @@ positive.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from babble.consent import DECLINED, GRANTED, PENDING, WITHDRAWN
-from babble.core import FOOTER, FOOTER_UNCONSENTED
+from babble.core import FOOTER, FOOTER_UNCONSENTED, IncomingMessage
 from babble.store import APPROVAL, CORRECTION
 
 ALICE = "111111111111111111"
@@ -47,6 +49,64 @@ def test_notice_is_shown_once_then_it_just_answers(fake, brain, generator):
 def test_it_ignores_messages_that_are_not_addressed_to_it(fake, brain):
     assert fake.say(ALICE, "just chatting to my friends") == []
     assert brain.consent.decision(ALICE) == "unknown"
+
+
+# --- silent drops are logged, not silent ---------------------------------
+
+
+def test_a_message_not_addressed_to_it_is_logged_as_a_drop(fake, read_log):
+    fake.say(ALICE, "just chatting to my friends")
+
+    (event,) = read_log("bot.dropped")
+    assert event["reason"] == "not_addressed"
+    assert event["user"].startswith("u_")
+    assert event["channel"].startswith("c_")
+
+
+def test_a_dropped_message_never_leaks_its_content_into_the_log(fake, read_log, settings):
+    fake.say(ALICE, "a secret nobody has consented to store")
+
+    log_text = (settings.log_dir / "babble.jsonl").read_text()
+    assert "a secret nobody has consented to store" not in log_text
+    assert ALICE not in log_text
+
+
+def test_a_message_from_another_bot_is_dropped_and_logged(brain, read_log):
+    replies = brain.handle_message(
+        IncomingMessage(message_id="1", author_id="other-bot", content="hi", author_is_bot=True)
+    )
+
+    assert replies == []
+    (event,) = read_log("bot.dropped")
+    assert event["reason"] == "author_is_bot"
+
+
+def test_a_ping_records_which_guild_it_came_from(brain, read_log):
+    brain.handle_message(
+        IncomingMessage(
+            message_id="1",
+            author_id=ALICE,
+            content="hi",
+            channel_id="chan-1",
+            guild_id="guild-42",
+            mentions_bot=True,
+        )
+    )
+
+    (event,) = read_log("bot.ping")
+    assert event["guild"].startswith("g_")
+    assert "guild-42" not in json.dumps(event)
+
+
+def test_a_dm_ping_has_no_guild_field_at_all(brain, read_log):
+    brain.handle_message(
+        IncomingMessage(
+            message_id="1", author_id=ALICE, content="hi", channel_id="chan-1", mentions_bot=True
+        )
+    )
+
+    (event,) = read_log("bot.ping")
+    assert "guild" not in event
 
 
 def test_declining_user_still_gets_replies_but_nothing_is_ever_stored(fake, brain):
