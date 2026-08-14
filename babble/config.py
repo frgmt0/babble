@@ -119,8 +119,17 @@ class Settings:
 
     # Auto-publish: every this-many checkpoints written, push the corrections
     # dataset to `hf_repo` through the same consent/blocklist gate as a manual
-    # `babble export --push`. 0 or None turns it off.
+    # `babble export --push`. 0 or None turns it off. This is the *trainer's*
+    # cadence, and only fires while a trainer is running.
     hf_publish_every: int | None = 20
+
+    # The collection phase has no trainer and so no checkpoints, so the bot
+    # publishes on corpus *growth* instead: push once the corpus has gained this
+    # many rows or this many characters since the last publish. Either 0 turns
+    # that half off; both 0 turns the growth-based publish off entirely. See
+    # `babble/publish.py`.
+    hf_publish_every_rows: int = 10
+    hf_publish_every_chars: int = 2_000
 
     @classmethod
     def from_env(cls, root: Path | None = None) -> "Settings":
@@ -152,6 +161,8 @@ class Settings:
             hf_repo=os.environ.get("BABBLE_HF_REPO", "kowo-co/babble-corrections"),
             salt=os.environ.get(SALT_ENV) or None,
             hf_publish_every=_env_int("BABBLE_HF_PUBLISH_EVERY", 20),
+            hf_publish_every_rows=_env_int("BABBLE_HF_PUBLISH_EVERY_ROWS", 10),
+            hf_publish_every_chars=_env_int("BABBLE_HF_PUBLISH_EVERY_CHARS", 2_000),
         )
 
     @classmethod

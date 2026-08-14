@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Callable, Sequence
+from typing import Callable, Protocol, Sequence
 
 from .blocklist import Blocklist, row_fingerprint
 from .config import CORRECTION_MARKER, Settings
@@ -141,6 +141,25 @@ anything is stored. corrections are filed separately *and* go into the corpus.
 `!babble pings` — undo that here
 `!babble forget` — opt out and delete everything of yours
 `!babble status` — how training is going"""
+
+
+class _CollectionFeed(Protocol):
+    """Just the collection-feed surface `core` drives. Kept structural so the
+    brain stays testable with a fake and never has to import the webhook code."""
+
+    def row(self, *, text: str, source: str, author: str, rows: int, chars: int, contributors: int) -> None: ...
+    def consent_granted(self, *, author: str) -> None: ...
+    def consent_declined(self, *, author: str) -> None: ...
+    def channel_widened(self, *, author: str, channel: str) -> None: ...
+    def channel_narrowed(self, *, author: str, channel: str) -> None: ...
+    def consent_withdrawn(self, *, author: str, corpus_purged: int, correction_purged: int) -> None: ...
+
+
+class _Publisher(Protocol):
+    """The one method `core` calls after a fresh row: publish if the corpus has
+    grown enough. Everything else about publishing is the publisher's business."""
+
+    def maybe_publish(self) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -283,6 +302,8 @@ class Babble:
         log: EventLog | None = None,
         blocklist: Blocklist | None = None,
         bot_user_id: str | None = None,
+        feed: _CollectionFeed | None = None,
+        publisher: _Publisher | None = None,
     ) -> None:
         settings.ensure_dirs()
         self.settings = settings
@@ -295,6 +316,11 @@ class Babble:
         self.log = log or NullLog()
         self.blocklist = blocklist if blocklist is not None else Blocklist.load()
         self.bot_user_id = str(bot_user_id) if bot_user_id else None
+        # The collection feed and the growth-based publisher. Both optional and
+        # both no-ops when absent, so every existing test that builds a Babble
+        # without them keeps working and stays token-free and network-free.
+        self.feed = feed
+        self.publisher = publisher
 
     # --- entry points ---------------------------------------------------
 
@@ -467,6 +493,7 @@ class Babble:
             created_at=utcnow_iso(),
         )
         fresh = self.corpus.append(row)
+        totals = self.corpus.totals()
         self.log.event(
             "capture.corpus",
             row=row.id,
@@ -474,8 +501,24 @@ class Babble:
             source=source,
             duplicate=None if fresh else True,
             chars=len(text),
-            total_rows=self.corpus.count(),
+            total_rows=totals.rows,
         )
+        if fresh:
+            # The feed only ever sees the pseudonym and the already-filtered text
+            # -- a blocked row never reaches here, it returned above -- so nothing
+            # identifying and nothing withheld leaves through this path.
+            if self.feed is not None:
+                self.feed.row(
+                    text=text,
+                    source=source,
+                    author=row.author,
+                    rows=totals.rows,
+                    chars=totals.chars,
+                    contributors=totals.contributors,
+                )
+            # A new row may have pushed the corpus past the publish threshold.
+            if self.publisher is not None:
+                self.publisher.maybe_publish()
         return fresh
 
     # --- behaviour ------------------------------------------------------
@@ -707,6 +750,8 @@ class Babble:
         if verb in ("accept", "yes", "agree", "optin", "opt-in"):
             self.consent.grant(msg.author_id)
             self.log.event("consent.accept", user=self.log.user(msg.author_id), scope="all")
+            if self.feed is not None:
+                self.feed.consent_granted(author=self.ids.user(msg.author_id))
             return reply(
                 "you're in — thank you. from now on the messages you send me go into the "
                 "training corpus and the public dataset, and so do your corrections.\n"
@@ -717,6 +762,8 @@ class Babble:
         if verb in ("decline", "no", "nope", "optout", "opt-out"):
             self.consent.decline(msg.author_id)
             self.log.event("consent.decline", user=self.log.user(msg.author_id), scope="all")
+            if self.feed is not None:
+                self.feed.consent_declined(author=self.ids.user(msg.author_id))
             return reply(
                 "understood — nothing of yours will be stored, trained on, or published.\n"
                 "-# i'll still reply if you ping me. `!babble accept` if you ever change your mind."
@@ -743,6 +790,10 @@ class Babble:
                 corpus_purged=purged_corpus,
                 pending_dropped=dropped,
             )
+            if self.feed is not None:
+                self.feed.consent_withdrawn(
+                    author=author, corpus_purged=purged_corpus, correction_purged=purged
+                )
             total = purged + purged_corpus
             return reply(
                 f"done. consent withdrawn and **{total}** stored "
@@ -799,6 +850,10 @@ class Babble:
                 "already on in this channel — everything you say here is going into the corpus.\n"
                 "-# `!babble pings` turns it back off here."
             )
+        if self.feed is not None:
+            self.feed.channel_widened(
+                author=self.ids.user(msg.author_id), channel=self.ids.channel(msg.channel_id)
+            )
         return reply(
             "done — from now on **every message you send in this channel** goes into the corpus, "
             "not just the ones aimed at me. it's only you and it's only here: nobody else in this "
@@ -822,6 +877,10 @@ class Babble:
             return reply(
                 "that wasn't on here — in this channel i only keep what you send me directly.\n"
                 "-# `!babble all` if you want me to keep everything you say here."
+            )
+        if self.feed is not None:
+            self.feed.channel_narrowed(
+                author=self.ids.user(msg.author_id), channel=self.ids.channel(msg.channel_id)
             )
         return reply(
             "done — from now on i only keep what you send me directly in this channel. "

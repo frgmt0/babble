@@ -316,14 +316,24 @@ Run this after extending the list, so history gets cleaned up along with it.
 
 ## The trainer
 
-Training happens in the background, off checkpoints, never in the request path.
+**Training is opt-in and never ambient.** Nothing starts a training loop on its
+own — not the bot on boot, not any implicit scheduler. `babble train` is a
+command a human runs, and only while it is running does anything train. babble
+is in a **collection phase** right now: the corpus is tiny, so continuous
+training is pointless, and the deployment runs the bot alone with no trainer.
+While no trainer runs, the feed channel reports **collection**, not training
+(see [Collection feed](#collection-feed)).
+
+When you do want to train — off the request path, and built to leave the machine
+usable:
 
 ```bash
-babble train --steps 200          # one cycle
-babble train --loop               # work, rest, repeat, forever
+babble train --steps 200          # one cycle, then stop
+babble train --loop               # keep cycling until you stop it (Ctrl-C / SIGTERM)
 ```
 
-It is built to leave the machine usable:
+Neither form is a default or a background service; both run only as long as you
+leave them running. It is built to leave the machine usable:
 
 - `nice 19` and a capped thread count (`BABBLE_TRAIN_THREADS`, default 2)
 - duty-cycled: `BABBLE_STEPS_PER_CYCLE` steps, then `BABBLE_REST_SECONDS` idle
@@ -554,10 +564,50 @@ scored, in eval mode, at every checkpoint.
 
 `babble train` never trains on held-out rows; only their loss is read.
 
+## Collection feed
+
+While no trainer is running — which is the whole of the collection phase — the
+feed channel does not go silent. Instead of training progress it reports
+**collection**: the moments the corpus actually changes. It posts to the same
+`BABBLE_LOG_WEBHOOK_URL` webhook the training feed uses, so one channel shows
+whichever phase babble is in, and it obeys the same two rules — silent when the
+webhook is unset, every send failure logged and swallowed so a Discord outage
+can never break capture.
+
+```
+🌱 corpus +1
+> `hey there booper` — a ping · u_9f2c…
+now 55 rows · 1,031 chars · 8 contributors
+📈 milestone — 50 corpus rows collected
+✅ u_9f2c… opted in — their messages now go into the corpus
+📡 u_9f2c… opened channel c_1a2b… with `!babble all` — everything they say there is now collected
+🗑️ u_9f2c… withdrew — purged 3 stored row(s) (2 corpus · 1 correction)
+📤 published 78 row(s) to https://huggingface.co/datasets/kowo-co/babble — corpus grew +10 rows / +240 chars since the last publish
+```
+
+- **A row arriving** shows the text collected (run through the [content
+  blocklist](#content-filter) and the same `neuter_sample` the training probe
+  uses, so it can never ping and a blocked term is withheld), which surface it
+  came from — a ping, a reply, a DM, or a widened `!babble all` channel — the
+  contributor's **pseudonym only**, and the running totals.
+- **Bursts coalesce.** Someone who ran `!babble all` and is typing produces one
+  message listing the rows that arrived inside a few-second window, not one post
+  per message.
+- **Consent changes** are posted too, because they change what may be collected
+  at all: a grant, a channel widened or narrowed, an opt-out, a withdrawal (with
+  how many rows the purge removed).
+- **Milestones** every N rows and N characters, with the interval scaled to the
+  corpus size — every 25 rows while it is tiny, every 500 once it is in the
+  thousands — so growth stays legible without one post per row and without spam
+  at 10,000 rows.
+- **Pseudonymous, absolutely.** No Discord id, username, or raw identifier ever
+  appears in a feed message; a person is a salted hash like `u_9f2c…`. Channel
+  ids in a widen event are the pseudonymous `c_…` hash, not the raw room id.
+
 ## Training feed
 
-`babble train --loop` posts a short message to a Discord channel on trainer
-start, resume-after-kill, going idle, and every checkpoint — cycle, step,
+When a trainer *is* running, `babble train --loop` posts a short message to the
+same channel on trainer start, resume-after-kill, going idle, and every checkpoint — cycle, step,
 current loss and its delta from the last checkpoint, how many corpus rows are
 being trained on, and the sample generation, which is the actual point:
 
@@ -681,21 +731,36 @@ would mean a bug), and it **drops** any row whose text contains a known raw
 Discord id or mention markup, or that matches the [content blocklist](#content-filter),
 rather than publishing it. All three apply to both files.
 
-**The trainer also auto-publishes.** Every `BABBLE_HF_PUBLISH_EVERY` checkpoints
-written (default **20**, counted by checkpoints, not steps), it builds the
-export and pushes it to `BABBLE_HF_REPO` -- through the exact same consent and
-blocklist guards as a manual `--push`, with `HF_TOKEN` read from the
-environment the same way. Set `BABBLE_HF_PUBLISH_EVERY=0` to turn it off and go
-back to publishing by hand only.
+**The dataset auto-publishes on corpus growth.** In the collection phase there
+is no trainer and so no checkpoints, so publishing is keyed to the **data**: the
+bot pushes once the corpus has grown by `BABBLE_HF_PUBLISH_EVERY_ROWS` rows
+(default **10**) **or** `BABBLE_HF_PUBLISH_EVERY_CHARS` characters (default
+**2000**) since the last publish, whichever comes first. It builds the export
+and pushes it to `BABBLE_HF_REPO` — through the exact same consent and blocklist
+guards as a manual `--push`, with `HF_TOKEN` read from the environment the same
+way. Set both to `0` to turn it off and publish by hand only. See
+`babble/publish.py`.
 
+- **Keyed to a persisted baseline.** The corpus size at the last publish is
+  written to `data/publish_state.json`, so a bot restart neither loses the
+  baseline nor re-publishes on boot, and a growth threshold — not a wall-clock
+  timer — is what triggers a push.
 - **Skips a no-op push.** If the export is byte-identical to the last one
-  actually pushed (same row count, same content hash), nothing is sent.
-- **Never breaks training.** A failed push (bad token, no network, HF down,
-  rate limited) is logged and reported once in the [training feed](#training-feed);
-  training keeps going and the next scheduled publish just tries again -- no
-  retry storm, one attempt per scheduled publish.
-- **Reported in the feed** as a one-line `📤 auto-published N row(s) to <url>`,
-  or `⚠️ auto-publish ... failed -- <error>` on failure.
+  actually pushed (same content hash), nothing is sent — e.g. when every new row
+  was unconsented or blocklisted and dropped at export.
+- **Never breaks collection.** A failed push (bad token, no network, HF down,
+  rate limited) is logged and reported once in the [collection feed](#collection-feed);
+  capture keeps going. An attempt advances the baseline whatever its outcome, so
+  a failure does not retry on every subsequent message — it waits for another
+  threshold of growth, and the next full export carries everything anyway.
+- **Reported in the feed** as a one-line `📤 published N row(s) to <url>`, or
+  `⚠️ dataset publish failed — <error>` on failure.
+
+**The trainer still auto-publishes on checkpoints too**, when one is run by hand:
+every `BABBLE_HF_PUBLISH_EVERY` checkpoints written (default **20**), through the
+same guards. That path only fires while a trainer is running, which is why the
+growth-keyed publish above exists — it is what keeps the public dataset live
+during a collection phase with no trainer.
 
 ## Configuration
 
@@ -734,7 +799,10 @@ protocol people are taught in the footer, not a per-deployment tuning knob.
 
 ## Running it for real
 
-Two `systemd --user` units, so both survive logout:
+The **bot** is the only standing service. It collects the corpus, posts the
+[collection feed](#collection-feed), and publishes the dataset on growth — all
+with no trainer involved. Run it as a `systemd --user` unit so it survives
+logout:
 
 ```ini
 # ~/.config/systemd/user/babble-bot.service
@@ -750,10 +818,23 @@ RestartSec=10
 WantedBy=default.target
 ```
 
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now babble-bot
+babble logs --follow
+```
+
+**The trainer is not a standing service and is not enabled here.** Training is a
+deliberate thing a human starts — `babble train` or `babble train --loop` — and
+it runs only for as long as it is left running (see [The trainer](#the-trainer)).
+During the collection phase there is deliberately no trainer. If you ever do want
+to train continuously, you can add a unit for it and enable it yourself — but
+that is an explicit choice, never the default:
+
 ```ini
-# ~/.config/systemd/user/babble-trainer.service
+# ~/.config/systemd/user/babble-trainer.service  (optional — enable by hand)
 [Unit]
-Description=babble trainer
+Description=babble trainer (manual; not enabled by default)
 [Service]
 WorkingDirectory=%h/babble
 EnvironmentFile=%h/babble/.env
@@ -764,12 +845,6 @@ Restart=always
 RestartSec=30
 [Install]
 WantedBy=default.target
-```
-
-```bash
-systemctl --user daemon-reload
-systemctl --user enable --now babble-bot babble-trainer
-babble logs --follow
 ```
 
 ## Layout
@@ -790,7 +865,8 @@ babble/
   backfill.py    the idempotent pairs -> corpus migration, run every cycle
   exchanges.py   what it said and to whom, so corrections find their target
   export_hf.py   dataset + card, consent and blocklist re-checked, ids guarded
-  discord_feed.py training progress -> a Discord webhook, best-effort
+  publish.py     growth-keyed auto-publish: push when the corpus grows enough
+  discord_feed.py collection + training feeds -> a Discord webhook, best-effort
   logs.py        append-only structured + prose event log
   stats.py       snapshot and loss curve rendering
   cli.py         `babble <command>`

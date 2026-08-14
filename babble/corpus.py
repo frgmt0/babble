@@ -78,6 +78,15 @@ class CorpusRow:
         return author == self.author
 
 
+@dataclass(frozen=True)
+class CorpusTotals:
+    """How big the corpus is right now, the three numbers the feed reports."""
+
+    rows: int
+    chars: int
+    contributors: int
+
+
 def make_corpus_id(text: str, author: str) -> str:
     """Content-addressed id over the text and its author, and nothing else.
 
@@ -164,6 +173,21 @@ class CorpusStore:
 
     def count(self) -> int:
         return len(self.all())
+
+    def totals(self) -> "CorpusTotals":
+        """Rows, characters and distinct contributors, in one scan.
+
+        Split out so the collection feed and the growth-based publisher can ask
+        "how big is the corpus now?" without each re-deriving it a different way
+        -- the same reason `CorpusConsent` is one gate rather than a rule every
+        caller reimplements.
+        """
+        rows = self.all()
+        return CorpusTotals(
+            rows=len(rows),
+            chars=sum(len(row.text) for row in rows),
+            contributors=len({row.author for row in rows}),
+        )
 
     def counts_by_source(self) -> dict[str, int]:
         tally: dict[str, int] = {}

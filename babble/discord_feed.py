@@ -21,12 +21,23 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Callable
 
 from . import __version__
+from .blocklist import Blocklist
+from .corpus import (
+    SOURCE_AMBIENT,
+    SOURCE_CORRECTION,
+    SOURCE_DM,
+    SOURCE_MENTION,
+    SOURCE_PROMPT,
+    SOURCE_REPLY,
+)
 from .logs import EventLog, NullLog
 
 WEBHOOK_ENV = "BABBLE_LOG_WEBHOOK_URL"
@@ -34,6 +45,7 @@ EVERY_ENV = "BABBLE_LOG_EVERY_N"
 
 SAMPLE_LIMIT = 200
 ERROR_BODY_LIMIT = 300
+POST_LIMIT = 1990  # a hair under Discord's 2000, so a coalesced burst never 400s
 
 # Discord's edge rejects urllib's default "Python-urllib/3.x" User-Agent with a
 # 403 before the request ever reaches the webhook. This is the documented
@@ -260,6 +272,246 @@ class TrainingFeed:
         try:
             self.sender(self.webhook_url, content)
         except Exception as exc:  # network, DNS, HTTP, rate limit -- never fatal to training
+            error = f"{type(exc).__name__}: {exc}"
+            body = _error_body(exc)
+            if body:
+                error = f"{error} body={body!r}"
+            self.log.event("feed.post_failed", error=error)
+
+
+# --- collection feed ------------------------------------------------------
+
+#: How a captured row reached the bot, in words, for the feed. The corpus stores
+#: a terse `source`; this is the human-readable version that says which surface
+#: it came from -- a ping, a DM, or a widened `!babble all` channel grant.
+SOURCE_LABELS = {
+    SOURCE_MENTION: "a ping",
+    SOURCE_REPLY: "a reply",
+    SOURCE_DM: "a DM",
+    SOURCE_AMBIENT: "a widened channel (`!babble all`)",
+    SOURCE_CORRECTION: "a correction",
+    SOURCE_PROMPT: "a prompt (from a correction)",
+}
+
+#: Text withheld because it matched the blocklist. It should never get this far
+#: -- `core` refuses to store a blocked row in the first place -- but the feed
+#: re-checks anyway so "collected text on Discord is blocklist-filtered" is true
+#: at the one place text actually reaches Discord, not only upstream of it.
+WITHHELD = "⟨withheld by the content filter⟩"
+
+#: Milestone intervals, scaled by size: fire often while the corpus is tiny,
+#: rarely once it is large. Each entry is (below_this_size, use_this_interval);
+#: the last interval applies to everything at or above the final threshold. At
+#: 54 rows the row interval is 25 (last crossed 50, next 75); at 10k it is 500.
+ROW_MILESTONES = ((100, 25), (1_000, 100), (10_000, 500), (float("inf"), 2_500))
+CHAR_MILESTONES = ((10_000, 2_000), (100_000, 20_000), (float("inf"), 100_000))
+
+
+def milestone_interval(value: int, table: tuple) -> int:
+    """The interval that applies at `value`, from a size-scaled `table`."""
+    for threshold, interval in table:
+        if value < threshold:
+            return interval
+    return table[-1][1]
+
+
+def _reached_milestone(value: int, table: tuple) -> int:
+    """The highest milestone at or below `value`, at `value`'s own scale."""
+    interval = milestone_interval(value, table)
+    return (value // interval) * interval
+
+
+def _crossed_milestone(value: int, last: int, table: tuple) -> int | None:
+    """The highest milestone `value` has reached past `last`, or None.
+
+    Uses the interval that applies at `value`, so a corpus that jumps across a
+    scale boundary (99 -> 101 rows) reports the new-scale milestone (100) rather
+    than silently skipping it.
+    """
+    interval = milestone_interval(value, table)
+    reached = (value // interval) * interval
+    return reached if reached >= interval and reached > last else None
+
+
+@dataclass
+class _PendingRow:
+    text: str
+    source: str
+    author: str
+
+
+@dataclass
+class CollectionFeed:
+    """Posts *collection* events -- rows arriving, consent changing, growth
+    milestones, dataset publishes -- to the same Discord webhook the training
+    feed uses. It is what that channel shows while no trainer is running.
+
+    Same two rules as `TrainingFeed`: every send failure is caught and logged,
+    never raised, so a Discord outage cannot break capture; and an unset webhook
+    makes every method a no-op.
+
+    Rows are coalesced: one arriving inside `window_seconds` of the last is held
+    and listed together, so someone who ran `!babble all` and is typing does not
+    produce one post per message. The buffer is flushed by `flush_due()` on a
+    timer (production) and by `flush()` outright (shutdown, tests).
+    """
+
+    webhook_url: str | None
+    log: EventLog = field(default_factory=NullLog)
+    sender: Callable[[str, str], None] = post_webhook
+    blocklist: Blocklist | None = None
+    window_seconds: float = 3.0
+    max_coalesce: int = 8  # a burst larger than this flushes at once, never grows unbounded
+    clock: Callable[[], float] = time.monotonic
+    _pending: list = field(default_factory=list, init=False)
+    _pending_since: float = field(default=0.0, init=False)
+    _pending_totals: tuple[int, int, int] | None = field(default=None, init=False)
+    _last_row_milestone: int = field(default=0, init=False)
+    _last_char_milestone: int = field(default=0, init=False)
+    _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
+
+    @classmethod
+    def from_env(cls, log: EventLog | None = None, blocklist: Blocklist | None = None) -> "CollectionFeed":
+        url = (os.environ.get(WEBHOOK_ENV) or "").strip() or None
+        return cls(
+            webhook_url=url,
+            log=log or NullLog(),
+            blocklist=blocklist if blocklist is not None else Blocklist.load(),
+        )
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.webhook_url)
+
+    def prime(self, *, rows: int, chars: int) -> None:
+        """Seed the milestone markers from the corpus's current size.
+
+        The markers live in memory, so without this a restart would re-announce
+        the last milestone on the very next captured row. Called once at startup
+        with the size already on disk, so only genuinely new milestones fire.
+        """
+        self._last_row_milestone = _reached_milestone(rows, ROW_MILESTONES)
+        self._last_char_milestone = _reached_milestone(chars, CHAR_MILESTONES)
+
+    # --- row capture ----------------------------------------------------
+
+    def row(self, *, text: str, source: str, author: str, rows: int, chars: int, contributors: int) -> None:
+        """One freshly-stored corpus row. Buffered and coalesced, not posted yet."""
+        if not self.enabled:
+            return
+        with self._lock:
+            self._flush_if_due_locked()
+            self._pending.append(_PendingRow(text=text, source=source, author=author))
+            if len(self._pending) == 1:
+                self._pending_since = self.clock()
+            self._pending_totals = (rows, chars, contributors)
+            if len(self._pending) >= self.max_coalesce:
+                self._flush_locked()
+
+    def flush_due(self) -> None:
+        """Post the buffer if its oldest row has waited out the window. On a timer."""
+        if not self.enabled:
+            return
+        with self._lock:
+            self._flush_if_due_locked()
+
+    def flush(self) -> None:
+        """Post whatever is buffered, window or no window."""
+        if not self.enabled:
+            return
+        with self._lock:
+            self._flush_locked()
+
+    def _flush_if_due_locked(self) -> None:
+        if self._pending and self.clock() - self._pending_since >= self.window_seconds:
+            self._flush_locked()
+
+    def _flush_locked(self) -> None:
+        if not self._pending:
+            return
+        pending, totals = self._pending, self._pending_totals
+        self._pending = []
+        self._pending_totals = None
+        self._post(self._render_rows(pending, totals))
+        if totals is not None:
+            self._announce_milestones(totals[0], totals[1])
+
+    def _render_rows(self, pending: list, totals: tuple[int, int, int] | None) -> str:
+        header = f"🌱 corpus **+{len(pending)}**" if len(pending) > 1 else "🌱 corpus **+1**"
+        lines = [header]
+        for row in pending:
+            body = WITHHELD if self._is_blocked(row.text) else f"`{neuter_sample(row.text)}`"
+            label = SOURCE_LABELS.get(row.source, row.source)
+            lines.append(f"> {body} — {label} · {row.author}")
+        if totals is not None:
+            rows, chars, contributors = totals
+            lines.append(
+                f"now **{rows:,}** rows · **{chars:,}** chars · "
+                f"**{contributors:,}** {'contributor' if contributors == 1 else 'contributors'}"
+            )
+        content = "\n".join(lines)
+        return content if len(content) <= POST_LIMIT else content[: POST_LIMIT - 1] + "…"
+
+    def _announce_milestones(self, rows: int, chars: int) -> None:
+        row_hit = _crossed_milestone(rows, self._last_row_milestone, ROW_MILESTONES)
+        if row_hit is not None:
+            self._last_row_milestone = row_hit
+            self._post(f"📈 milestone — **{row_hit:,}** corpus rows collected")
+        char_hit = _crossed_milestone(chars, self._last_char_milestone, CHAR_MILESTONES)
+        if char_hit is not None:
+            self._last_char_milestone = char_hit
+            self._post(f"📈 milestone — **{char_hit:,}** characters collected")
+
+    def _is_blocked(self, text: str) -> bool:
+        return self.blocklist is not None and self.blocklist.matches(text)
+
+    # --- consent events -------------------------------------------------
+
+    def consent_granted(self, *, author: str) -> None:
+        self._post(f"✅ **{author}** opted in — their messages now go into the corpus")
+
+    def consent_declined(self, *, author: str) -> None:
+        self._post(f"🚫 **{author}** opted out — nothing of theirs is collected")
+
+    def channel_widened(self, *, author: str, channel: str) -> None:
+        self._post(
+            f"📡 **{author}** opened channel {channel} with `!babble all` — "
+            "everything they say there is now collected"
+        )
+
+    def channel_narrowed(self, *, author: str, channel: str) -> None:
+        self._post(
+            f"🔕 **{author}** turned `!babble all` back off in channel {channel} — "
+            "only what they send the bot there is collected now"
+        )
+
+    def consent_withdrawn(self, *, author: str, corpus_purged: int, correction_purged: int) -> None:
+        corpus = f"{corpus_purged} corpus" if corpus_purged != 1 else "1 corpus"
+        corr = f"{correction_purged} correction" if correction_purged != 1 else "1 correction"
+        self._post(
+            f"🗑️ **{author}** withdrew — purged **{corpus_purged + correction_purged}** "
+            f"stored row(s) ({corpus} · {corr})"
+        )
+
+    # --- publish --------------------------------------------------------
+
+    def published(self, *, rows: int, url: str, grew_rows: int, grew_chars: int) -> None:
+        self._post(
+            f"📤 published **{rows:,}** row(s) to {url} — corpus grew "
+            f"**+{grew_rows:,}** rows / **+{grew_chars:,}** chars since the last publish"
+        )
+
+    def publish_failed(self, error: str) -> None:
+        self._post(f"⚠️ dataset publish failed — {error}")
+
+    # --- plumbing -------------------------------------------------------
+
+    def _post(self, content: str) -> None:
+        if not self.webhook_url:
+            return
+        try:
+            self.sender(self.webhook_url, content)
+        except Exception as exc:  # network, DNS, HTTP, rate limit -- never fatal to collection
             error = f"{type(exc).__name__}: {exc}"
             body = _error_body(exc)
             if body:

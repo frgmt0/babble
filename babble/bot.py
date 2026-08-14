@@ -18,9 +18,16 @@ import discord
 from .backfill import backfill_corpus
 from .config import TOKEN_ENV, Settings, discord_token
 from .core import Babble, IncomingMessage, ReactionEvent
+from .discord_feed import CollectionFeed
 from .generate import CheckpointGenerator
 from .identity import Pseudonymiser
 from .logs import EventLog
+from .publish import GrowthPublisher
+
+#: How often the background task drains the collection feed's coalescing buffer.
+#: Shorter than the feed's window, so the last row of a trickle still posts a
+#: second or two after it lands rather than waiting for the next message.
+FEED_FLUSH_SECONDS = 1.0
 
 
 class BabbleClient(discord.Client):
@@ -34,11 +41,50 @@ class BabbleClient(discord.Client):
         )
         self.settings = settings
         self.log = log
-        self.brain = brain or Babble(
-            settings, generator=CheckpointGenerator(settings, log), log=log
-        )
+        # The collection feed reports every corpus change to the same channel the
+        # training feed uses; the publisher pushes the dataset when the corpus has
+        # grown. Both are wired into the brain here, unless a brain was handed in
+        # (tests), so the real bot always reports collection while no trainer runs.
+        self.feed: CollectionFeed | None = None
+        if brain is None:
+            self.feed = CollectionFeed.from_env(log)
+            publisher = GrowthPublisher(
+                settings,
+                log,
+                feed=self.feed,
+                every_rows=settings.hf_publish_every_rows,
+                every_chars=settings.hf_publish_every_chars,
+            )
+            brain = Babble(
+                settings,
+                generator=CheckpointGenerator(settings, log),
+                log=log,
+                feed=self.feed,
+                publisher=publisher,
+            )
+            # Seed milestone markers from the corpus already on disk, so a
+            # restart does not re-announce the last milestone on the next row.
+            if self.feed.enabled:
+                totals = brain.corpus.totals()
+                self.feed.prime(rows=totals.rows, chars=totals.chars)
+        self.brain = brain
         # Generation and file writes are serialised: one brain, one thread at a time.
         self._lock = asyncio.Lock()
+
+    async def setup_hook(self) -> None:
+        # Drain the feed's coalescing buffer on a timer, so a lone row at the end
+        # of a trickle still posts rather than waiting for the next capture. The
+        # flush is best-effort and off the event loop, exactly like every post.
+        if self.feed is not None and self.feed.enabled:
+            self.loop.create_task(self._flush_feed_loop())
+
+    async def _flush_feed_loop(self) -> None:
+        while True:
+            await asyncio.sleep(FEED_FLUSH_SECONDS)
+            try:
+                await asyncio.to_thread(self.feed.flush_due)
+            except Exception as exc:  # a flusher hiccup must never take the bot down
+                self.log.event("bot.error", where="feed_flush", error=f"{type(exc).__name__}: {exc}")
 
     async def on_ready(self) -> None:
         self.brain.bot_user_id = str(self.user.id) if self.user else None
