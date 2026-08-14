@@ -114,8 +114,6 @@ The rules, all enforced in code and covered by tests:
 The salt lives in `data/.salt` (generated once) or `BABBLE_HASH_SALT`. **Never
 change it** — `!babble forget` finds your rows by re-deriving your hash.
 
-<<<<<<< ours
-=======
 ## Content filter
 
 **Be honest about what this is: a speed bump, not a guarantee.** A word list
@@ -155,7 +153,6 @@ babble rescan-blocklist   # purge stored rows that now match the current list
 
 Run this after extending the list, so history gets cleaned up along with it.
 
->>>>>>> theirs
 ## The trainer
 
 Training happens in the background, off checkpoints, never in the request path.
@@ -189,8 +186,6 @@ Corrections carry weight `1.0`, 👍 rows `0.25`. The `rejected` field is stored
 for the dataset but the current loop does not train against it; it is plain
 weighted next-byte prediction on accepted responses.
 
-<<<<<<< ours
-=======
 ## Training feed
 
 `babble train --loop` posts a short message to a Discord channel on trainer
@@ -227,7 +222,6 @@ behaviour as today.
   usual — the feed is a second, best-effort delivery of the same events, not a
   replacement for the log.
 
->>>>>>> theirs
 ## Watching it
 
 Everything meaningful is logged, twice: `logs/babble.jsonl` for machines and
@@ -250,12 +244,8 @@ Logged: startup and connect, every ping, every generation with its sampling
 params and checkpoint step, every consent prompt/accept/decline/withdraw, every
 captured correction and 👍, every skipped-for-no-consent event **with its reason
 but never its content**, every training cycle, every checkpoint, every
-<<<<<<< ours
-resume-after-kill, and every export.
-=======
 resume-after-kill, every export, every blocklist rejection **with a content hash
 but never the text**, and every Discord feed post that failed to send.
->>>>>>> theirs
 
 Reading a log never mutates it — logs are opened append-only, never truncated on
 read or on restart, and rotated by size (`babble.jsonl.1`, `.2`, …). Identifiers
@@ -274,30 +264,20 @@ plus a dataset card, containing consented rows only, with authors as salted
 hashes. Rows are content-addressed and stably sorted, so re-running produces
 byte-identical output and re-pushing is a no-op.
 
-<<<<<<< ours
-Two guards: the export **aborts** if an author field is not a pseudonym (that
-would mean a bug), and it **drops** any row whose text contains a known raw
-Discord id or mention markup rather than publishing it.
-=======
 Three guards: the export **aborts** if an author field is not a pseudonym (that
 would mean a bug), and it **drops** any row whose text contains a known raw
 Discord id or mention markup, or that matches the [content blocklist](#content-filter),
 rather than publishing it.
->>>>>>> theirs
 
 ## Configuration
 
 Copy `.env.example` to `.env`. The only thing the bot strictly needs is
 `BABBLE_DISCORD_TOKEN` (create the app at
 <https://discord.com/developers/applications> and enable the **Message Content**
-<<<<<<< ours
-privileged intent). Everything else has a working default.
-=======
 privileged intent). Everything else has a working default, including the
 [training feed](#training-feed) (`BABBLE_LOG_WEBHOOK_URL`) and the
 [content blocklist](#content-filter) (`BABBLE_BLOCKLIST_PATH`), both of which
 are entirely optional.
->>>>>>> theirs
 
 ## Running it for real
 
@@ -350,18 +330,12 @@ babble/
   core.py        ALL bot behaviour, with zero Discord imports
   bot.py         thin discord.py adapter — the only file that imports discord
   consent.py     who agreed; fails closed
-<<<<<<< ours
-  store.py       the corpus of triples, pseudonymous on disk
-  exchanges.py   what it said and to whom, so corrections find their target
-  export_hf.py   dataset + card, consent re-checked, identifiers guarded
-=======
   blocklist.py   content filter -- normalisation + word-boundary matching
   blocklist.txt  the (small, starter) list itself
   store.py       the corpus of triples, pseudonymous on disk
   exchanges.py   what it said and to whom, so corrections find their target
   export_hf.py   dataset + card, consent and blocklist re-checked, ids guarded
   discord_feed.py training progress -> a Discord webhook, best-effort
->>>>>>> theirs
   logs.py        append-only structured + prose event log
   stats.py       snapshot and loss curve rendering
   cli.py         `babble <command>`

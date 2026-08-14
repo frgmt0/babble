@@ -20,10 +20,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-<<<<<<< ours
-=======
 from .blocklist import Blocklist
->>>>>>> theirs
 from .config import Settings
 from .consent import ConsentStore
 from .identity import Pseudonymiser
@@ -45,10 +42,7 @@ class ExportResult:
     rows: int
     excluded_no_consent: int
     dropped_leaky: int
-<<<<<<< ours
-=======
     dropped_blocklist: int
->>>>>>> theirs
     corrections: int
     approvals: int
     contributors: int
@@ -69,18 +63,11 @@ def _leak_candidates(known_ids: list[str]) -> list[str]:
 
 
 def select_rows(
-<<<<<<< ours
-    settings: Settings, ids: Pseudonymiser | None = None
-) -> tuple[list[Interaction], int, int]:
-    """(publishable rows, excluded for consent, dropped for leaks)."""
-    ids = ids or Pseudonymiser.load(settings)
-=======
     settings: Settings, ids: Pseudonymiser | None = None, blocklist: Blocklist | None = None
 ) -> tuple[list[Interaction], int, int, int]:
     """(publishable rows, excluded for consent, dropped for leaks, dropped for the blocklist)."""
     ids = ids or Pseudonymiser.load(settings)
     blocklist = blocklist if blocklist is not None else Blocklist.load()
->>>>>>> theirs
     consent = ConsentStore(settings.consent_path)
     raw_ids = _leak_candidates(consent.known_ids())
     allowed = {ids.user(uid) for uid in consent.granted_ids()}
@@ -89,19 +76,11 @@ def select_rows(
     consented = [r for r in rows if r.prompt_author in allowed and r.signal_author in allowed]
     excluded = len(rows) - len(consented)
 
-<<<<<<< ours
-    clean = []
-=======
     leak_free = []
->>>>>>> theirs
     for row in consented:
         blob = "\n".join(_text_fields(row))
         if MENTION.search(blob) or any(uid and uid in blob for uid in raw_ids):
             continue  # someone typed a raw id into their message; do not publish it
-<<<<<<< ours
-        clean.append(row)
-    dropped = len(consented) - len(clean)
-=======
         leak_free.append(row)
     dropped_leaky = len(consented) - len(leak_free)
 
@@ -109,16 +88,11 @@ def select_rows(
     # term was added must not survive to be published once it is.
     clean = [r for r in leak_free if not blocklist.matches(r.prompt, r.chosen, r.rejected)]
     dropped_blocklist = len(leak_free) - len(clean)
->>>>>>> theirs
 
     # Deterministic order, and one row per fact, so re-running is a no-op.
     unique = {row.id: row for row in clean}
     ordered = sorted(unique.values(), key=lambda r: (r.created_at, r.id))
-<<<<<<< ours
-    return ordered, excluded, dropped
-=======
     return ordered, excluded, dropped_leaky, dropped_blocklist
->>>>>>> theirs
 
 
 def assert_pseudonymous(rows: list[Interaction], known_raw_ids: list[str]) -> None:
@@ -156,20 +130,13 @@ def build_export(
     out_dir: Path | None = None,
     log: EventLog | None = None,
     ids: Pseudonymiser | None = None,
-<<<<<<< ours
-=======
     blocklist: Blocklist | None = None,
->>>>>>> theirs
 ) -> ExportResult:
     log = log or NullLog()
     ids = ids or Pseudonymiser.load(settings)
     out_dir = out_dir or settings.export_dir
 
-<<<<<<< ours
-    rows, excluded, dropped = select_rows(settings, ids)
-=======
     rows, excluded, dropped_leaky, dropped_blocklist = select_rows(settings, ids, blocklist)
->>>>>>> theirs
     assert_pseudonymous(rows, ConsentStore(settings.consent_path).known_ids())
 
     corrections = sum(1 for r in rows if r.signal == CORRECTION)
@@ -185,12 +152,8 @@ def build_export(
         path=out_dir,
         rows=len(rows),
         excluded_no_consent=excluded,
-<<<<<<< ours
-        dropped_leaky=dropped,
-=======
         dropped_leaky=dropped_leaky,
         dropped_blocklist=dropped_blocklist,
->>>>>>> theirs
         corrections=corrections,
         approvals=approvals,
         contributors=contributors,
@@ -204,12 +167,8 @@ def build_export(
         approvals=approvals,
         contributors=contributors,
         excluded_no_consent=excluded,
-<<<<<<< ours
-        dropped_leaky=dropped,
-=======
         dropped_leaky=dropped_leaky,
         dropped_blocklist=dropped_blocklist,
->>>>>>> theirs
         out=str(out_dir),
     )
     return result
@@ -307,13 +266,9 @@ rows locally as well.
 
 Discord ids and usernames are never stored in the dataset at all: authors appear
 only as salted hashes, and the salt is not published. Messages containing raw
-<<<<<<< ours
-Discord ids or mention markup are dropped rather than published.
-=======
 Discord ids or mention markup are dropped rather than published, and so is any
 row where either side matches babble's content blocklist — a speed bump
 against slurs and hate terms, not a guarantee.
->>>>>>> theirs
 
 Because withdrawal is retroactive, **rows can disappear between exports**. That
 is the consent model working, not corruption.

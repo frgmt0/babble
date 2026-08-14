@@ -14,10 +14,7 @@ import pytest
 import torch
 
 from babble.consent import ConsentStore
-<<<<<<< ours
-=======
 from babble.discord_feed import TrainingFeed
->>>>>>> theirs
 from babble.fakedata import seed_fake_data
 from babble.identity import Pseudonymiser
 from babble.store import CORRECTION, Interaction, InteractionStore, make_row_id
@@ -31,8 +28,6 @@ def seeded(settings):
     return settings
 
 
-<<<<<<< ours
-=======
 class FakeSender:
     """Records what the trainer tried to post; can be made to explode."""
 
@@ -46,7 +41,6 @@ class FakeSender:
         self.calls.append((url, content))
 
 
->>>>>>> theirs
 # --- batching -----------------------------------------------------------
 
 
@@ -215,8 +209,6 @@ def test_killing_the_trainer_mid_run_leaves_a_loadable_checkpoint(settings, tmp_
     assert resumed.final_step == killed_at + 2
 
 
-<<<<<<< ours
-=======
 # --- the discord training feed -------------------------------------------
 
 
@@ -292,7 +284,6 @@ def test_the_feed_carries_cycle_step_loss_delta_rows_and_sample(seeded):
     assert "(" in second and ("+" in second or "-" in second)
 
 
->>>>>>> theirs
 # --- consent at training time -------------------------------------------
 
 
