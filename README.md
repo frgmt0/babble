@@ -114,6 +114,48 @@ The rules, all enforced in code and covered by tests:
 The salt lives in `data/.salt` (generated once) or `BABBLE_HASH_SALT`. **Never
 change it** — `!babble forget` finds your rows by re-deriving your hash.
 
+<<<<<<< ours
+=======
+## Content filter
+
+**Be honest about what this is: a speed bump, not a guarantee.** A word list
+with some normalisation catches copy-pasted slurs and the lazy attempts to get
+around them — dots or spaces jammed between letters, a leetspeak substitution,
+an accent. It will not stop someone determined to get past it. Treat it as one
+layer, not the whole plan.
+
+If the prompt, the correction, or the model's own generated output matches a
+blocked term, **the whole row is rejected** — never stored, never trained on,
+never published. This is checked in the same three places consent is: at
+capture time, again at training time, and again at export time, so a row
+stored before a term was added can never sneak through once the list is
+extended. The model's own output is checked at the one place every generation
+passes through, before it is ever sent to Discord.
+
+The list lives in `babble/blocklist.py`'s companion file, `babble/blocklist.txt`
+— a small, starter set across a few categories, deliberately not an attempt at
+an exhaustive one (no such list exists). One term per line, `#` for comments.
+Edit it directly, or point `BABBLE_BLOCKLIST_PATH` at your own file entirely.
+
+Matching happens on a **normalised** form: lowercased, accents stripped,
+common leetspeak folded back to letters, repeated characters collapsed, and
+separator punctuation (dots, dashes, underscores, zero-width characters, and
+letters spaced one at a time) glued back together — so `s.l.u.r`, `sluuur` and
+`s l u r` all fold to the same form a plainly-typed term would. Matching still
+requires the *whole word*, not a substring, so ordinary words that happen to
+contain a blocked fragment (`class`, `assassin`) are not false-positived.
+
+A rejection is logged — the reason and a content hash, never the text itself —
+and the person is told briefly that it wasn't accepted, without the term being
+repeated back to them.
+
+```bash
+babble rescan-blocklist   # purge stored rows that now match the current list
+```
+
+Run this after extending the list, so history gets cleaned up along with it.
+
+>>>>>>> theirs
 ## The trainer
 
 Training happens in the background, off checkpoints, never in the request path.
@@ -147,6 +189,45 @@ Corrections carry weight `1.0`, 👍 rows `0.25`. The `rejected` field is stored
 for the dataset but the current loop does not train against it; it is plain
 weighted next-byte prediction on accepted responses.
 
+<<<<<<< ours
+=======
+## Training feed
+
+`babble train --loop` posts a short message to a Discord channel on trainer
+start, resume-after-kill, going idle, and every checkpoint — cycle, step,
+current loss and its delta from the last checkpoint, how many trainable rows
+are in the corpus, and the sample generation, which is the actual point:
+
+```
+🔁 cycle 3 · step 650 · loss 2.1840 (-0.312) · 128 rows
+> 'hello' → `heoll wrold hi`
+```
+
+**The trainer and the bot are separate processes** — `babble train --loop` has
+no Discord login and never will, that separation is deliberate. So this posts
+over a plain Discord **webhook** (one HTTPS POST, no login, no gateway, nothing
+to keep alive) rather than merging the two processes or building a file-tailing
+relay between them. Set `BABBLE_LOG_WEBHOOK_URL` and it turns on; leave it unset
+and nothing changes — no channel configured means no posting, no errors, same
+behaviour as today.
+
+- **Best-effort, always.** A bad URL, no network, Discord being down or rate
+  limited — every failure is logged and swallowed. Posting never touches
+  training; a failed post is exactly as consequential as a dropped log line.
+- **One post per checkpoint**, and `BABBLE_LOG_EVERY_N` throttles further (post
+  only every Nth checkpoint) so a long run doesn't flood the channel.
+- **Never a ping.** The sample is arbitrary model output — escaped, truncated,
+  and sent with `allowed_mentions` cleared, with mention markup broken on top
+  of that as a second layer. It cannot ping `@everyone`, a role, or a user, no
+  matter what the model emits.
+- **The same content filter applies here too.** A sample that matches the
+  [content blocklist](#content-filter) is withheld from the post rather than
+  sent, the same as anywhere else the model's output reaches Discord.
+- Everything posted also lands in `logs/babble.jsonl` / `logs/babble.log` as
+  usual — the feed is a second, best-effort delivery of the same events, not a
+  replacement for the log.
+
+>>>>>>> theirs
 ## Watching it
 
 Everything meaningful is logged, twice: `logs/babble.jsonl` for machines and
@@ -169,7 +250,12 @@ Logged: startup and connect, every ping, every generation with its sampling
 params and checkpoint step, every consent prompt/accept/decline/withdraw, every
 captured correction and 👍, every skipped-for-no-consent event **with its reason
 but never its content**, every training cycle, every checkpoint, every
+<<<<<<< ours
 resume-after-kill, and every export.
+=======
+resume-after-kill, every export, every blocklist rejection **with a content hash
+but never the text**, and every Discord feed post that failed to send.
+>>>>>>> theirs
 
 Reading a log never mutates it — logs are opened append-only, never truncated on
 read or on restart, and rotated by size (`babble.jsonl.1`, `.2`, …). Identifiers
@@ -188,16 +274,30 @@ plus a dataset card, containing consented rows only, with authors as salted
 hashes. Rows are content-addressed and stably sorted, so re-running produces
 byte-identical output and re-pushing is a no-op.
 
+<<<<<<< ours
 Two guards: the export **aborts** if an author field is not a pseudonym (that
 would mean a bug), and it **drops** any row whose text contains a known raw
 Discord id or mention markup rather than publishing it.
+=======
+Three guards: the export **aborts** if an author field is not a pseudonym (that
+would mean a bug), and it **drops** any row whose text contains a known raw
+Discord id or mention markup, or that matches the [content blocklist](#content-filter),
+rather than publishing it.
+>>>>>>> theirs
 
 ## Configuration
 
 Copy `.env.example` to `.env`. The only thing the bot strictly needs is
 `BABBLE_DISCORD_TOKEN` (create the app at
 <https://discord.com/developers/applications> and enable the **Message Content**
+<<<<<<< ours
 privileged intent). Everything else has a working default.
+=======
+privileged intent). Everything else has a working default, including the
+[training feed](#training-feed) (`BABBLE_LOG_WEBHOOK_URL`) and the
+[content blocklist](#content-filter) (`BABBLE_BLOCKLIST_PATH`), both of which
+are entirely optional.
+>>>>>>> theirs
 
 ## Running it for real
 
@@ -250,9 +350,18 @@ babble/
   core.py        ALL bot behaviour, with zero Discord imports
   bot.py         thin discord.py adapter — the only file that imports discord
   consent.py     who agreed; fails closed
+<<<<<<< ours
   store.py       the corpus of triples, pseudonymous on disk
   exchanges.py   what it said and to whom, so corrections find their target
   export_hf.py   dataset + card, consent re-checked, identifiers guarded
+=======
+  blocklist.py   content filter -- normalisation + word-boundary matching
+  blocklist.txt  the (small, starter) list itself
+  store.py       the corpus of triples, pseudonymous on disk
+  exchanges.py   what it said and to whom, so corrections find their target
+  export_hf.py   dataset + card, consent and blocklist re-checked, ids guarded
+  discord_feed.py training progress -> a Discord webhook, best-effort
+>>>>>>> theirs
   logs.py        append-only structured + prose event log
   stats.py       snapshot and loss curve rendering
   cli.py         `babble <command>`

@@ -219,6 +219,10 @@ def test_select_rows_deduplicates(settings):
     with open(settings.interactions_path, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(row.to_dict()) + "\n")
 
+<<<<<<< ours
     rows, _, _ = select_rows(settings)
+=======
+    rows, _, _, _ = select_rows(settings)
+>>>>>>> theirs
 
     assert len(rows) == 1

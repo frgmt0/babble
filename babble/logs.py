@@ -42,6 +42,10 @@ URGENT = frozenset(
         "capture.correction",
         "capture.approval",
         "capture.skipped",
+<<<<<<< ours
+=======
+        "capture.blocked",
+>>>>>>> theirs
         "train.start",
         "train.resume",
         "train.checkpoint",

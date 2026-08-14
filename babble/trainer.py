@@ -26,8 +26,15 @@ from pathlib import Path
 
 import torch
 
+<<<<<<< ours
 from .config import Settings
 from .consent import ConsentStore
+=======
+from .blocklist import Blocklist
+from .config import Settings
+from .consent import ConsentStore
+from .discord_feed import TrainingFeed
+>>>>>>> theirs
 from .generate import sample
 from .identity import Pseudonymiser
 from .logs import EventLog
@@ -56,11 +63,18 @@ def be_polite(settings: Settings, log: EventLog) -> None:
     log.event("train.polite", nice=applied_nice, threads=threads, cpus=os.cpu_count())
 
 
+<<<<<<< ours
 def consented_rows(settings: Settings, ids: Pseudonymiser | None = None) -> list[Interaction]:
+=======
+def consented_rows(
+    settings: Settings, ids: Pseudonymiser | None = None, blocklist: Blocklist | None = None
+) -> list[Interaction]:
+>>>>>>> theirs
     """Rows both of whose participants still consent, checked right now.
 
     Withdrawal already purges rows, so this is belt and braces -- but "used to
     train the model" is a promise made in the consent notice, and it should be
+<<<<<<< ours
     enforced at the moment of training, not only at the moment of capture.
     """
     ids = ids or Pseudonymiser.load(settings)
@@ -68,6 +82,24 @@ def consented_rows(settings: Settings, ids: Pseudonymiser | None = None) -> list
     allowed = {ids.user(uid) for uid in consent.granted_ids()}
     rows = InteractionStore(settings.interactions_path).all()
     return [r for r in rows if r.prompt_author in allowed and r.signal_author in allowed]
+=======
+    enforced at the moment of training, not only at the moment of capture. The
+    blocklist gets the same belt-and-braces treatment: a row stored before a
+    term was added must not survive to be trained on once it is.
+    """
+    ids = ids or Pseudonymiser.load(settings)
+    blocklist = blocklist if blocklist is not None else Blocklist.load()
+    consent = ConsentStore(settings.consent_path)
+    allowed = {ids.user(uid) for uid in consent.granted_ids()}
+    rows = InteractionStore(settings.interactions_path).all()
+    return [
+        r
+        for r in rows
+        if r.prompt_author in allowed
+        and r.signal_author in allowed
+        and not blocklist.matches(r.prompt, r.chosen, r.rejected)
+    ]
+>>>>>>> theirs
 
 
 def to_examples(rows: list[Interaction], block_size: int) -> list[Example]:
@@ -190,13 +222,24 @@ def train(
     loop: bool = False,
     max_cycles: int | None = None,
     log: EventLog | None = None,
+<<<<<<< ours
+=======
+    feed: TrainingFeed | None = None,
+>>>>>>> theirs
     echo: bool = True,
     seed: int | None = None,
 ) -> RunResult:
     settings.ensure_dirs()
     ids = Pseudonymiser.load(settings)
+<<<<<<< ours
     owns_log = log is None  # if we opened it, we close it
     log = log or EventLog(settings, ids, component="trainer", echo=echo)
+=======
+    blocklist = Blocklist.load()
+    owns_log = log is None  # if we opened it, we close it
+    log = log or EventLog(settings, ids, component="trainer", echo=echo)
+    feed = feed or TrainingFeed.from_env(log)
+>>>>>>> theirs
     be_polite(settings, log)
 
     budget = steps if steps is not None else settings.steps_per_cycle
@@ -217,11 +260,19 @@ def train(
         batch_size=settings.batch_size,
         lr=settings.learning_rate,
     )
+<<<<<<< ours
+=======
+    feed.start(resumed=resumed, step=step)
+>>>>>>> theirs
 
     steps_run = 0
     checkpoints = 0
     cycles = 0
     last_loss: float | None = None
+<<<<<<< ours
+=======
+    prev_checkpoint_loss: float | None = None
+>>>>>>> theirs
     reason = "budget_exhausted"
 
     while True:
@@ -232,16 +283,28 @@ def train(
             reason = "max_cycles"
             break
 
+<<<<<<< ours
         rows = consented_rows(settings, ids)
         examples = to_examples(rows, model.config.block_size)
         if not examples:
             log.event("train.idle", reason="no_consented_rows", rows=len(rows))
+=======
+        rows = consented_rows(settings, ids, blocklist)
+        examples = to_examples(rows, model.config.block_size)
+        if not examples:
+            log.event("train.idle", reason="no_consented_rows", rows=len(rows))
+            feed.idle()
+>>>>>>> theirs
             if not loop:
                 reason = "no_data"
                 break
             interrupt.sleep(settings.rest_seconds)
             continue
 
+<<<<<<< ours
+=======
+        feed.active()
+>>>>>>> theirs
         cycles += 1
         cycle_started = time.perf_counter()
         log.event(
@@ -274,14 +337,28 @@ def train(
             last_loss = value
 
             if step % settings.checkpoint_every == 0:
+<<<<<<< ours
                 _checkpoint(settings, log, model, optimizer, step, window, len(rows), echo)
+=======
+                prev_checkpoint_loss = _checkpoint(
+                    settings, log, feed, blocklist, model, optimizer, step, window, len(rows),
+                    cycles, prev_checkpoint_loss, echo,
+                )
+>>>>>>> theirs
                 checkpoints += 1
                 window = []
 
         # Never end a cycle with unsaved work: a kill during the rest period
         # would otherwise throw away everything since the last checkpoint.
         if window:
+<<<<<<< ours
             _checkpoint(settings, log, model, optimizer, step, window, len(rows), echo)
+=======
+            prev_checkpoint_loss = _checkpoint(
+                settings, log, feed, blocklist, model, optimizer, step, window, len(rows),
+                cycles, prev_checkpoint_loss, echo,
+            )
+>>>>>>> theirs
             checkpoints += 1
 
         log.event(
@@ -362,13 +439,25 @@ def _resume_or_init(settings: Settings, log: EventLog) -> tuple[Babbler, torch.o
 def _checkpoint(
     settings: Settings,
     log: EventLog,
+<<<<<<< ours
+=======
+    feed: TrainingFeed,
+    blocklist: Blocklist,
+>>>>>>> theirs
     model: Babbler,
     optimizer,
     step: int,
     window: list[float],
     rows: int,
+<<<<<<< ours
     echo: bool,
 ) -> None:
+=======
+    cycle: int,
+    prev_loss: float | None,
+    echo: bool,
+) -> float:
+>>>>>>> theirs
     mean_loss = sum(window) / len(window) if window else float("nan")
     started = time.perf_counter()
     prompt = SAMPLE_PROMPTS[step // max(1, settings.checkpoint_every) % len(SAMPLE_PROMPTS)]
@@ -395,3 +484,20 @@ def _checkpoint(
     if echo:
         shown = text.replace("\n", "\\n")
         print(f"step {step:>7,} | loss {mean_loss:8.4f} | {prompt!r} -> {shown!r}", flush=True)
+<<<<<<< ours
+=======
+
+    # The sample is what leaves the machine via the feed -- filter it the same
+    # way any other model output headed for Discord gets filtered.
+    feed_sample = text if blocklist.hit(text) is None else "*(withheld — matched the content filter)*"
+    feed.checkpoint(
+        cycle=cycle,
+        step=step,
+        loss=mean_loss,
+        prev_loss=prev_loss,
+        rows=rows,
+        prompt=prompt,
+        sample=feed_sample,
+    )
+    return mean_loss
+>>>>>>> theirs

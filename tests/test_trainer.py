@@ -14,6 +14,10 @@ import pytest
 import torch
 
 from babble.consent import ConsentStore
+<<<<<<< ours
+=======
+from babble.discord_feed import TrainingFeed
+>>>>>>> theirs
 from babble.fakedata import seed_fake_data
 from babble.identity import Pseudonymiser
 from babble.store import CORRECTION, Interaction, InteractionStore, make_row_id
@@ -27,6 +31,22 @@ def seeded(settings):
     return settings
 
 
+<<<<<<< ours
+=======
+class FakeSender:
+    """Records what the trainer tried to post; can be made to explode."""
+
+    def __init__(self, fail: bool = False) -> None:
+        self.calls: list[tuple[str, str]] = []
+        self.fail = fail
+
+    def __call__(self, url: str, content: str) -> None:
+        if self.fail:
+            raise ConnectionError("discord is unreachable")
+        self.calls.append((url, content))
+
+
+>>>>>>> theirs
 # --- batching -----------------------------------------------------------
 
 
@@ -195,6 +215,84 @@ def test_killing_the_trainer_mid_run_leaves_a_loadable_checkpoint(settings, tmp_
     assert resumed.final_step == killed_at + 2
 
 
+<<<<<<< ours
+=======
+# --- the discord training feed -------------------------------------------
+
+
+def test_a_configured_feed_gets_a_post_per_checkpoint(seeded):
+    sender = FakeSender()
+    feed = TrainingFeed(webhook_url="https://discord.example/webhook", sender=sender)
+
+    result = train(seeded, steps=6, echo=False, seed=1, feed=feed)
+
+    assert result.checkpoints_written >= 1
+    checkpoint_posts = [c for c in sender.calls if "cycle" in c[1].lower()]
+    assert len(checkpoint_posts) == result.checkpoints_written
+
+
+def test_a_failing_feed_post_never_breaks_training(seeded):
+    feed = TrainingFeed(webhook_url="https://discord.example/webhook", sender=FakeSender(fail=True))
+
+    result = train(seeded, steps=6, echo=False, seed=1, feed=feed)
+
+    assert result.steps_run == 6
+    assert result.checkpoints_written >= 1
+    assert seeded.latest_checkpoint.exists()
+
+
+def test_an_unconfigured_feed_makes_no_network_calls(seeded, monkeypatch):
+    monkeypatch.delenv("BABBLE_LOG_WEBHOOK_URL", raising=False)
+
+    def explode(*a, **k):
+        raise AssertionError("should never be called when unconfigured")
+
+    monkeypatch.setattr("babble.discord_feed.post_webhook", explode)
+
+    result = train(seeded, steps=6, echo=False, seed=1)  # feed defaults from env: disabled
+
+    assert result.steps_run == 6
+
+
+def test_start_is_reported_fresh_then_resumed(seeded):
+    sender = FakeSender()
+    first_feed = TrainingFeed(webhook_url="https://discord.example/webhook", sender=sender)
+    train(seeded, steps=2, echo=False, seed=1, feed=first_feed)
+
+    second_feed = TrainingFeed(webhook_url="https://discord.example/webhook", sender=sender)
+    train(seeded, steps=2, echo=False, seed=1, feed=second_feed)
+
+    starts = [c for c in sender.calls if "started" in c[1].lower() or "resum" in c[1].lower()]
+    assert "started" in starts[0][1].lower()
+    assert "resum" in starts[1][1].lower()
+
+
+def test_going_idle_posts_once_not_every_check(settings):
+    sender = FakeSender()
+    feed = TrainingFeed(webhook_url="https://discord.example/webhook", sender=sender)
+
+    train(settings, steps=2, echo=False, feed=feed)  # no data at all -> idle immediately, loop=False
+
+    idle_posts = [c for c in sender.calls if "idle" in c[1].lower()]
+    assert len(idle_posts) == 1
+
+
+def test_the_feed_carries_cycle_step_loss_delta_rows_and_sample(seeded):
+    seeded.checkpoint_every = 3
+    sender = FakeSender()
+    feed = TrainingFeed(webhook_url="https://discord.example/webhook", sender=sender)
+
+    train(seeded, steps=6, echo=False, seed=1, feed=feed)
+
+    checkpoint_posts = [c for c in sender.calls if "loss" in c[1].lower()]
+    assert len(checkpoint_posts) >= 2
+    first, second = checkpoint_posts[0][1], checkpoint_posts[1][1]
+    assert "rows" in first.lower()
+    # the second post carries a delta against the first checkpoint's loss
+    assert "(" in second and ("+" in second or "-" in second)
+
+
+>>>>>>> theirs
 # --- consent at training time -------------------------------------------
 
 

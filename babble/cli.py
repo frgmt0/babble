@@ -8,6 +8,10 @@
     babble logs --follow      watch it live (read-only, never mutates)
     babble export             build the HuggingFace dataset directory
     babble bot                connect to Discord (needs BABBLE_DISCORD_TOKEN)
+<<<<<<< ours
+=======
+    babble rescan-blocklist   purge stored rows that now match the blocklist
+>>>>>>> theirs
 """
 
 from __future__ import annotations
@@ -60,6 +64,14 @@ def build_parser() -> argparse.ArgumentParser:
     fake = sub.add_parser("fake-data", help="seed made-up corrections for offline testing")
     fake.add_argument("--user", default=None, help="fake user id to attribute them to")
 
+<<<<<<< ours
+=======
+    sub.add_parser(
+        "rescan-blocklist",
+        help="purge stored rows that now match the content blocklist",
+    )
+
+>>>>>>> theirs
     return parser
 
 
@@ -173,6 +185,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  excluded {result.excluded_no_consent} row(s): no consent", flush=True)
         if result.dropped_leaky:
             print(f"  dropped {result.dropped_leaky} row(s): contained a raw id", flush=True)
+<<<<<<< ours
+=======
+        if result.dropped_blocklist:
+            print(f"  dropped {result.dropped_blocklist} row(s): matched the content filter", flush=True)
+>>>>>>> theirs
 
         if args.push:
             repo = args.repo or settings.hf_repo
@@ -200,6 +217,24 @@ def main(argv: list[str] | None = None) -> int:
         log.close()
         return 0
 
+<<<<<<< ours
+=======
+    if args.command == "rescan-blocklist":
+        from .blocklist import Blocklist
+        from .identity import Pseudonymiser
+        from .logs import EventLog
+        from .store import InteractionStore
+
+        log = EventLog(settings, Pseudonymiser.load(settings), component="cli")
+        blocklist = Blocklist.load()
+        store = InteractionStore(settings.interactions_path)
+        removed = store.purge(lambda r: blocklist.matches(r.prompt, r.chosen, r.rejected))
+        log.event("blocklist.rescan", terms=len(blocklist.terms), purged=removed)
+        print(f"rescanned against {len(blocklist.terms)} term(s), purged {removed} row(s)", flush=True)
+        log.close()
+        return 0
+
+>>>>>>> theirs
     build_parser().print_help()
     return 1
 

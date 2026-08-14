@@ -15,6 +15,10 @@ import re
 from dataclasses import dataclass
 from typing import Callable, Sequence
 
+<<<<<<< ours
+=======
+from .blocklist import Blocklist, row_fingerprint
+>>>>>>> theirs
 from .config import Settings
 from .consent import (
     CAPTURE_OK,
@@ -31,6 +35,11 @@ from .logs import EventLog, NullLog
 from .store import APPROVAL, CORRECTION, Interaction, InteractionStore, make_row_id
 from .util import truncate, utcnow_iso
 
+<<<<<<< ours
+=======
+BLOCKED_OUTPUT = "*…(that one didn't clear the content filter — regenerate by pinging me again)*"
+
+>>>>>>> theirs
 DISCORD_LIMIT = 2000
 COMMAND_PREFIX = "!babble"
 THUMBS_UP = "👍"
@@ -176,6 +185,10 @@ class Babble:
         exchanges: ExchangeLog | None = None,
         ids: Pseudonymiser | None = None,
         log: EventLog | None = None,
+<<<<<<< ours
+=======
+        blocklist: Blocklist | None = None,
+>>>>>>> theirs
         bot_user_id: str | None = None,
     ) -> None:
         settings.ensure_dirs()
@@ -186,6 +199,10 @@ class Babble:
         self.store = store or InteractionStore(settings.interactions_path)
         self.exchanges = exchanges or ExchangeLog(settings.exchanges_path)
         self.log = log or NullLog()
+<<<<<<< ours
+=======
+        self.blocklist = blocklist if blocklist is not None else Blocklist.load()
+>>>>>>> theirs
         self.bot_user_id = str(bot_user_id) if bot_user_id else None
 
     # --- entry points ---------------------------------------------------
@@ -236,6 +253,13 @@ class Babble:
             self._log_skip(APPROVAL, evt.user_id, exchange.prompt_author_id)
             return []
 
+<<<<<<< ours
+=======
+        if self.blocklist.matches(exchange.prompt, exchange.response):
+            self._log_blocked("approval", exchange.prompt, exchange.response, evt.user_id)
+            return []
+
+>>>>>>> theirs
         row = Interaction(
             id=make_row_id(
                 APPROVAL,
@@ -291,6 +315,17 @@ class Babble:
         generation = _as_generation(self.generator(prompt))
         body = clean_for_discord(generation.text, DISCORD_LIMIT - len(FOOTER) - 1)
 
+<<<<<<< ours
+=======
+        # The model can emit anything, including a blocked term. Catch it here,
+        # before it is ever sent, not after -- this is the one send site every
+        # generation passes through.
+        blocked = self.blocklist.matches(body)
+        if blocked:
+            self._log_blocked("generate", prompt, body, msg.author_id)
+            body = BLOCKED_OUTPUT
+
+>>>>>>> theirs
         preview = self.log.preview(prompt, allowed=allowed)
         self.log.event(
             "bot.generate",
@@ -309,6 +344,11 @@ class Babble:
         )
 
         # Only remember the exchange if a correction to it could ever be stored.
+<<<<<<< ours
+=======
+        # A blocked generation is never remembered either -- there is nothing
+        # here worth teaching the model to reproduce or correct.
+>>>>>>> theirs
         exchange = (
             Exchange(
                 prompt=prompt,
@@ -317,7 +357,11 @@ class Babble:
                 created_at=utcnow_iso(),
                 step=generation.step,
             )
+<<<<<<< ours
             if allowed
+=======
+            if allowed and not blocked
+>>>>>>> theirs
             else None
         )
         footer = FOOTER if allowed else FOOTER_UNCONSENTED
@@ -364,6 +408,22 @@ class Babble:
                 )
             ]
 
+<<<<<<< ours
+=======
+        # The old, rejected answer is checked too: the blocklist can be extended
+        # after a generation was sent and remembered, and that generation is
+        # about to be published in this row's `rejected` field.
+        if self.blocklist.matches(exchange.prompt, exchange.response, correction):
+            self._log_blocked("correction", exchange.prompt, correction, corrector)
+            return [
+                Reply(
+                    "-# that correction wasn't accepted — it matched the content filter.",
+                    reply_to=msg.message_id,
+                    kind="ack",
+                )
+            ]
+
+>>>>>>> theirs
         row = Interaction(
             id=make_row_id(
                 CORRECTION,
@@ -499,6 +559,18 @@ class Babble:
             prompt_author_state=blockers["prompt_author"],
         )
 
+<<<<<<< ours
+=======
+    def _log_blocked(self, stage: str, prompt: str, chosen: str, user_id: object) -> None:
+        """Record a blocklist rejection: the reason and a fingerprint, never the text."""
+        self.log.event(
+            "capture.blocked",
+            stage=stage,
+            user=self.log.user(user_id),
+            row=row_fingerprint(prompt, chosen),
+        )
+
+>>>>>>> theirs
 
 def _parse_command(content: str) -> tuple[str, list[str]] | None:
     """`!babble [verb] [args]`, or None if this is an ordinary message."""

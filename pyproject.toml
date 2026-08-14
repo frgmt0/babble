@@ -27,6 +27,12 @@ babble = "babble.cli:main"
 [tool.setuptools.packages.find]
 include = ["babble*"]
 
+<<<<<<< ours
+=======
+[tool.setuptools.package-data]
+babble = ["blocklist.txt"]
+
+>>>>>>> theirs
 # uv users get the CPU-only torch build automatically -- no multi-GB CUDA wheels.
 [[tool.uv.index]]
 name = "pytorch-cpu"
