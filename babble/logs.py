@@ -145,6 +145,12 @@ class EventLog:
     def channel(self, channel_id: object) -> str:
         return self._ids.channel(channel_id) if self._ids else f"c_raw:{channel_id}"
 
+    def guild(self, guild_id: object) -> str | None:
+        """Pseudonym for a guild id, or None (dropped from the record) if there isn't one."""
+        if guild_id is None:
+            return None
+        return self._ids.guild(guild_id) if self._ids else f"g_raw:{guild_id}"
+
     def preview(self, text: str | None, *, allowed: bool) -> dict:
         """Describe a piece of user text for the log.
 
@@ -225,6 +231,9 @@ class NullLog(EventLog):
 
     def channel(self, channel_id: object) -> str:
         return "c_null"
+
+    def guild(self, guild_id: object) -> str:
+        return "g_null"
 
     def preview(self, text: str | None, *, allowed: bool) -> dict:
         return {"chars": len(text or "")}

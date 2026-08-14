@@ -89,6 +89,7 @@ class IncomingMessage:
     author_id: str
     content: str = ""
     channel_id: str = "0"
+    guild_id: str | None = None
     author_is_bot: bool = False
     mentions_bot: bool = False
     reply_to_message_id: str | None = None
@@ -102,6 +103,7 @@ class ReactionEvent:
     emoji: str
     user_id: str
     channel_id: str = "0"
+    guild_id: str | None = None
     user_is_bot: bool = False
 
 
@@ -197,6 +199,7 @@ class Babble:
 
     def handle_message(self, msg: IncomingMessage) -> list[Reply]:
         if msg.author_is_bot:
+            self._log_drop(msg, "author_is_bot")
             return []
 
         command = _parse_command(msg.content)
@@ -204,12 +207,14 @@ class Babble:
             return self._handle_command(msg, *command)
 
         if not (msg.mentions_bot or msg.reply_to_is_bot):
+            self._log_drop(msg, "not_addressed")
             return []
 
         self.log.event(
             "bot.ping",
             user=self.log.user(msg.author_id),
             channel=self.log.channel(msg.channel_id),
+            guild=self.log.guild(msg.guild_id),
             is_reply=msg.reply_to_is_bot,
             chars=len(msg.content),
             attachments=len(msg.attachment_urls) or None,
@@ -233,6 +238,8 @@ class Babble:
             self.log.event(
                 "reaction.ignored",
                 user=self.log.user(evt.user_id),
+                channel=self.log.channel(evt.channel_id),
+                guild=self.log.guild(evt.guild_id),
                 reason="no_matching_exchange",
             )
             return []
@@ -291,6 +298,7 @@ class Babble:
                 "consent.prompt",
                 user=self.log.user(msg.author_id),
                 channel=self.log.channel(msg.channel_id),
+                guild=self.log.guild(msg.guild_id),
                 trigger="first_ping",
             )
             return [Reply(CONSENT_NOTICE, reply_to=msg.message_id, kind="consent")]
@@ -313,6 +321,7 @@ class Babble:
             "bot.generate",
             user=self.log.user(msg.author_id),
             channel=self.log.channel(msg.channel_id),
+            guild=self.log.guild(msg.guild_id),
             step=generation.step,
             temperature=generation.temperature,
             top_k=generation.top_k,
@@ -358,6 +367,7 @@ class Babble:
                 "consent.prompt",
                 user=self.log.user(corrector),
                 channel=self.log.channel(msg.channel_id),
+                guild=self.log.guild(msg.guild_id),
                 trigger="first_correction",
             )
             return [Reply(CONSENT_NOTICE, reply_to=msg.message_id, kind="consent")]
@@ -445,6 +455,7 @@ class Babble:
             verb=verb or "help",
             user=self.log.user(msg.author_id),
             channel=self.log.channel(msg.channel_id),
+            guild=self.log.guild(msg.guild_id),
         )
         reply = lambda text: [Reply(text, reply_to=msg.message_id, kind="command")]  # noqa: E731
 
@@ -513,6 +524,17 @@ class Babble:
         if msg.attachment_urls:
             text = " ".join(filter(None, [text, *msg.attachment_urls])).strip()
         return re.sub(r"[ \t]{2,}", " ", text)
+
+    def _log_drop(self, msg: IncomingMessage, reason: str) -> None:
+        """Record that an incoming message was not acted on, and why. Never the text."""
+        self.log.event(
+            "bot.dropped",
+            reason=reason,
+            user=self.log.user(msg.author_id),
+            channel=self.log.channel(msg.channel_id),
+            guild=self.log.guild(msg.guild_id),
+            chars=len(msg.content),
+        )
 
     def _log_skip(self, signal: str, signal_author: object, prompt_author: object) -> None:
         """Record that we threw data away, and why. Never what the data was."""

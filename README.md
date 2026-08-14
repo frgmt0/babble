@@ -279,6 +279,15 @@ but never its content**, every training cycle, every checkpoint, every
 resume-after-kill, every export, every blocklist rejection **with a content hash
 but never the text**, and every Discord feed post that failed to send.
 
+A message the bot decides *not* to answer is never silent either: `bot.dropped`
+records the reason (not addressed to it, author is a bot, …) plus the
+pseudonymised channel and guild it came from, and a failed reply logs `bot.error`
+with `reason=forbidden` (missing permissions) or `reason=http_error` (anything
+else) so a permissions gap in one server doesn't read the same as a bug. On
+connect, `bot.guild` logs each guild it's in and how many of its text channels it
+can actually see and send in — the fastest way to catch "the bot can see the
+server but not this channel" without a manual API poke.
+
 Reading a log never mutates it — logs are opened append-only, never truncated on
 read or on restart, and rotated by size (`babble.jsonl.1`, `.2`, …). Identifiers
 are pseudonymised with the same hash the dataset uses, and message content is

@@ -34,6 +34,9 @@ class Pseudonymiser:
     def channel(self, channel_id: object) -> str:
         return "c_" + self._digest(f"channel:{channel_id}")[:12]
 
+    def guild(self, guild_id: object) -> str:
+        return "g_" + self._digest(f"guild:{guild_id}")[:12]
+
     def _digest(self, value: str) -> str:
         return hashlib.sha256(self._salt + b"|" + value.encode("utf-8")).hexdigest()
 
