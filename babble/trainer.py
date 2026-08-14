@@ -188,6 +188,79 @@ def overfit_signal(
     return val_loss > prev_val_loss and train_loss < prev_train_loss
 
 
+@dataclass
+class DatasetStats:
+    """The full picture behind `consented_rows` -- not just the count that made it."""
+
+    stored: int
+    trained: int
+    dropped_consent: int
+    dropped_blocklist: int
+
+
+def dataset_stats(
+    settings: Settings, ids: Pseudonymiser | None = None, blocklist: Blocklist | None = None
+) -> DatasetStats:
+    """How much of the stored corpus actually reaches training, and why the rest doesn't.
+
+    Mirrors `consented_rows`'s filter exactly, just bucketing the rejects instead
+    of discarding them, so the two can never quietly disagree about who trains.
+    """
+    ids = ids or Pseudonymiser.load(settings)
+    blocklist = blocklist if blocklist is not None else Blocklist.load()
+    consent = ConsentStore(settings.consent_path)
+    allowed = {ids.user(uid) for uid in consent.granted_ids()}
+    all_rows = InteractionStore(settings.interactions_path).all()
+
+    trained = dropped_consent = dropped_blocklist = 0
+    for row in all_rows:
+        if row.prompt_author not in allowed or row.signal_author not in allowed:
+            dropped_consent += 1
+        elif blocklist.matches(row.prompt, row.chosen, row.rejected):
+            dropped_blocklist += 1
+        else:
+            trained += 1
+    return DatasetStats(
+        stored=len(all_rows),
+        trained=trained,
+        dropped_consent=dropped_consent,
+        dropped_blocklist=dropped_blocklist,
+    )
+
+
+def distinct_prompts(rows: list[Interaction]) -> list[tuple[str, str]]:
+    """Ordered, de-duplicated (prompt, chosen) pairs.
+
+    Order follows first appearance, so the rotation walks the dataset in a
+    stable sequence as new rows are only ever appended. The `chosen` half uses
+    the *latest* row for that prompt, since that is what the dataset currently
+    says the right answer is.
+    """
+    order: list[str] = []
+    latest: dict[str, str] = {}
+    for row in rows:
+        if not row.prompt:
+            continue
+        if row.prompt not in latest:
+            order.append(row.prompt)
+        latest[row.prompt] = row.chosen
+    return [(prompt, latest[prompt]) for prompt in order]
+
+
+def probe_prompt(rows: list[Interaction], index: int) -> tuple[str, str]:
+    """The prompt (and its expected answer) for checkpoint `index`.
+
+    Cycles deterministically through every distinct prompt in the consented
+    dataset, one per checkpoint, wrapping around once it reaches the end.
+    Falls back to the hardcoded pair only when there is nothing to probe with.
+    """
+    pairs = distinct_prompts(rows)
+    if not pairs:
+        return SAMPLE_PROMPTS[index % len(SAMPLE_PROMPTS)], ""
+    prompt, chosen = pairs[index % len(pairs)]
+    return prompt, chosen
+
+
 def make_batch(
     examples: list[Example], batch_size: int, rng: random.Random
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -386,6 +459,7 @@ def train(
     steps_run = 0
     checkpoints = 0
     cycles = 0
+    probe_index = 0  # never reset: a checkpoint counter, not a dataset index
     last_loss: float | None = None
     prev_checkpoint_loss: float | None = None
     prev_val_loss: float | None = None
@@ -416,6 +490,7 @@ def train(
         feed.active()
         cycles += 1
         cycle_started = time.perf_counter()
+        stats = dataset_stats(settings, ids, blocklist)
         log.event(
             "train.cycle.start",
             cycle=cycles,
@@ -426,6 +501,19 @@ def train(
             val_rows=len(split.val),
             val_enabled=split.enabled,
             val_disabled_reason=None if split.enabled else split.disabled_reason,
+            stored=stats.stored,
+            dropped_consent=stats.dropped_consent,
+            dropped_blocklist=stats.dropped_blocklist,
+        )
+        feed.cycle_start(
+            cycle=cycles,
+            stored=stats.stored,
+            trained=stats.trained,
+            dropped_consent=stats.dropped_consent,
+            dropped_blocklist=stats.dropped_blocklist,
+            examples=len(examples),
+            batch_size=settings.batch_size,
+            lr=settings.learning_rate,
         )
 
         window: list[float] = []
@@ -450,14 +538,15 @@ def train(
 
             if step % settings.checkpoint_every == 0:
                 prev_checkpoint_loss, prev_val_loss = _checkpoint(
-                    settings, log, feed, blocklist, model, optimizer, step, window, len(rows),
-                    cycles, prev_checkpoint_loss, echo,
+                    settings, log, feed, blocklist, model, optimizer, step, window, split.train,
+                    probe_index, cycles, prev_checkpoint_loss, echo,
                     val_examples=val_examples,
                     val_enabled=split.enabled,
                     val_disabled_reason=split.disabled_reason,
                     val_rows=len(split.val),
                     prev_val_loss=prev_val_loss,
                 )
+                probe_index += 1
                 checkpoints += 1
                 window = []
                 publish_state = _maybe_auto_publish(settings, log, feed, checkpoints, publish_state)
@@ -466,25 +555,28 @@ def train(
         # would otherwise throw away everything since the last checkpoint.
         if window:
             prev_checkpoint_loss, prev_val_loss = _checkpoint(
-                settings, log, feed, blocklist, model, optimizer, step, window, len(rows),
-                cycles, prev_checkpoint_loss, echo,
+                settings, log, feed, blocklist, model, optimizer, step, window, split.train,
+                probe_index, cycles, prev_checkpoint_loss, echo,
                 val_examples=val_examples,
                 val_enabled=split.enabled,
                 val_disabled_reason=split.disabled_reason,
                 val_rows=len(split.val),
                 prev_val_loss=prev_val_loss,
             )
+            probe_index += 1
             checkpoints += 1
             publish_state = _maybe_auto_publish(settings, log, feed, checkpoints, publish_state)
 
+        cycle_seconds = round(time.perf_counter() - cycle_started, 2)
         log.event(
             "train.cycle.end",
             cycle=cycles,
             step=step,
             steps=cycle_steps,
-            seconds=round(time.perf_counter() - cycle_started, 2),
+            seconds=cycle_seconds,
             loss=round(last_loss, 6) if last_loss is not None else None,
         )
+        feed.cycle_end(cycle=cycles, steps=cycle_steps, seconds=cycle_seconds)
 
         if interrupt.requested:
             reason = f"signal:{interrupt.signal_name}"
@@ -552,6 +644,9 @@ def _resume_or_init(settings: Settings, log: EventLog) -> tuple[Babbler, torch.o
         return model, optimizer, 0, False
 
 
+WITHHELD = "*(withheld — matched the content filter)*"
+
+
 def _checkpoint(
     settings: Settings,
     log: EventLog,
@@ -561,7 +656,8 @@ def _checkpoint(
     optimizer,
     step: int,
     window: list[float],
-    rows: int,
+    rows: list[Interaction],
+    probe_index: int,
     cycle: int,
     prev_loss: float | None,
     echo: bool,
@@ -574,7 +670,7 @@ def _checkpoint(
 ) -> tuple[float, float | None]:
     mean_loss = sum(window) / len(window) if window else float("nan")
     started = time.perf_counter()
-    prompt = SAMPLE_PROMPTS[step // max(1, settings.checkpoint_every) % len(SAMPLE_PROMPTS)]
+    prompt, expected = probe_prompt(rows, probe_index)
     text = sample(
         model,
         prompt,
@@ -588,7 +684,7 @@ def _checkpoint(
     overfitting = val_enabled and overfit_signal(mean_loss, prev_loss, val_loss, prev_val_loss)
 
     path = save_checkpoint(settings, model, optimizer, step, mean_loss)
-    append_curve(settings, step, mean_loss, text, rows)
+    append_curve(settings, step, mean_loss, text, len(rows))
 
     log.event(
         "train.checkpoint",
@@ -599,10 +695,11 @@ def _checkpoint(
         val_enabled=val_enabled,
         val_disabled_reason=None if val_enabled else val_disabled_reason,
         overfit_signal=overfitting,
-        rows=rows,
+        rows=len(rows),
         file=path.name,
         seconds=round(time.perf_counter() - started, 2),
         prompt=prompt,
+        expected=expected,
         sample=text.replace("\n", "\\n")[:200],
     )
     if echo:
@@ -616,21 +713,25 @@ def _checkpoint(
         overfit_part = "  ⚠ overfitting" if overfitting else ""
         print(
             f"step {step:>7,} | loss {mean_loss:8.4f} | {val_part}{overfit_part} | "
-            f"{prompt!r} -> {shown!r}",
+            f"{prompt!r} -> {shown!r} (expected {expected!r})",
             flush=True,
         )
 
-    # The sample is what leaves the machine via the feed -- filter it the same
-    # way any other model output headed for Discord gets filtered.
-    feed_sample = text if blocklist.hit(text) is None else "*(withheld — matched the content filter)*"
+    # Everything below leaves the machine via the feed -- filter it the same
+    # way any other model output headed for Discord gets filtered, prompt and
+    # expected answer included, since both come straight out of the dataset.
+    feed_sample = text if blocklist.hit(text) is None else WITHHELD
+    feed_prompt = prompt if blocklist.hit(prompt) is None else WITHHELD
+    feed_expected = expected if blocklist.hit(expected) is None else WITHHELD
     feed.checkpoint(
         cycle=cycle,
         step=step,
         loss=mean_loss,
         prev_loss=prev_loss,
-        rows=rows,
-        prompt=prompt,
+        rows=len(rows),
+        prompt=feed_prompt,
         sample=feed_sample,
+        expected=feed_expected,
         val_loss=val_loss,
         prev_val_loss=prev_val_loss,
         val_rows=val_rows,
