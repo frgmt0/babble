@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import io
+import urllib.error
+
+from babble import __version__
 from babble.discord_feed import TrainingFeed, neuter_sample, post_webhook
 
 
@@ -87,6 +91,35 @@ def test_post_webhook_sets_allowed_mentions_to_none(monkeypatch):
     assert captured["body"]["content"] == "hello @everyone"
 
 
+def test_post_webhook_sends_a_real_user_agent(monkeypatch):
+    """Discord's edge 403s urllib's default UA before the request reaches the webhook."""
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b""
+
+    def fake_urlopen(request, timeout):
+        captured["user_agent"] = request.get_header("User-agent")
+        return FakeResponse()
+
+    monkeypatch.setattr("babble.discord_feed.urllib.request.urlopen", fake_urlopen)
+
+    post_webhook("https://discord.example/webhook", "hello")
+
+    ua = captured["user_agent"]
+    assert ua is not None
+    assert not ua.startswith("Python-urllib")  # urllib's default -- the exact thing that 403s
+    assert ua.startswith("DiscordBot")
+    assert __version__ in ua
+
+
 # --- TrainingFeed -----------------------------------------------------------
 
 
@@ -127,6 +160,49 @@ def test_a_failing_post_never_raises_and_gets_logged(read_log, log):
     entries = read_log("feed.post_failed")
     assert len(entries) == 1
     assert "TimeoutError" in entries[0]["error"]
+
+
+def test_a_failing_post_logs_the_response_body_but_never_the_url(read_log, log):
+    def raise_http_error(url, content):
+        raise urllib.error.HTTPError(
+            url,
+            403,
+            "Forbidden",
+            hdrs=None,
+            fp=io.BytesIO(b'{"message": "401: Unauthorized", "code": 0}'),
+        )
+
+    feed = TrainingFeed(
+        webhook_url="https://discord.example/webhooks/1/topsecrettoken",
+        sender=raise_http_error,
+        log=log,
+    )
+
+    feed.checkpoint(cycle=1, step=50, loss=1.0, prev_loss=None, rows=3, prompt="hi", sample="hi")
+
+    entries = read_log("feed.post_failed")
+    assert len(entries) == 1
+    error = entries[0]["error"]
+    assert "401: Unauthorized" in error
+    assert "topsecrettoken" not in error
+    assert "discord.example" not in error
+
+
+def test_a_failing_post_with_a_long_body_is_truncated(read_log, log):
+    long_body = ("x" * 500).encode("utf-8")
+
+    def raise_http_error(url, content):
+        raise urllib.error.HTTPError(
+            url, 500, "Server Error", hdrs=None, fp=io.BytesIO(long_body)
+        )
+
+    feed = TrainingFeed(webhook_url="https://discord.example/webhook", sender=raise_http_error, log=log)
+
+    feed.checkpoint(cycle=1, step=50, loss=1.0, prev_loss=None, rows=3, prompt="hi", sample="hi")
+
+    error = read_log("feed.post_failed")[0]["error"]
+    assert "x" * 300 in error
+    assert "x" * 301 not in error
 
 
 def test_throttling_only_posts_every_nth_checkpoint():
