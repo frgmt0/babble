@@ -420,12 +420,12 @@ def test_checkpoint_wiring_flags_overfitting_across_two_checkpoints(seeded, monk
 
     mean1, val1 = _checkpoint(
         seeded, log, feed, blocklist, model, optimizer,
-        step=1, window=[5.0], rows=30, cycle=1, prev_loss=None, echo=False,
+        step=1, window=[5.0], rows=[], probe_index=0, cycle=1, prev_loss=None, echo=False,
         val_examples=[], val_enabled=True, val_disabled_reason=None, val_rows=6, prev_val_loss=None,
     )
     mean2, val2 = _checkpoint(
         seeded, log, feed, blocklist, model, optimizer,
-        step=2, window=[3.0], rows=30, cycle=1, prev_loss=mean1, echo=False,
+        step=2, window=[3.0], rows=[], probe_index=1, cycle=1, prev_loss=mean1, echo=False,
         val_examples=[], val_enabled=True, val_disabled_reason=None, val_rows=6, prev_val_loss=val1,
     )
 

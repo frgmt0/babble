@@ -253,6 +253,104 @@ def test_idle_posts_once_until_active_is_called():
     assert len(sender.calls) == 2
 
 
+def test_cycle_start_shows_the_dataset_shape_and_hyperparams():
+    sender = FakeSender()
+    feed = TrainingFeed(webhook_url="https://discord.example/webhook", sender=sender)
+
+    feed.cycle_start(
+        cycle=1, stored=13, trained=11, dropped_consent=1, dropped_blocklist=1,
+        examples=11, batch_size=8, lr=0.0003,
+    )
+
+    assert len(sender.calls) == 1
+    content = sender.calls[0][1]
+    assert "13 stored" in content
+    assert "11 training" in content
+    assert "2 dropped" in content
+    assert "1 no consent" in content
+    assert "1 blocklist" in content
+    assert "11 examples" in content
+    assert "batch 8" in content
+
+
+def test_cycle_start_omits_the_drop_note_when_nothing_was_dropped():
+    sender = FakeSender()
+    feed = TrainingFeed(webhook_url="https://discord.example/webhook", sender=sender)
+
+    feed.cycle_start(
+        cycle=1, stored=5, trained=5, dropped_consent=0, dropped_blocklist=0,
+        examples=5, batch_size=8, lr=0.001,
+    )
+
+    content = sender.calls[0][1]
+    assert "0 dropped" in content
+    assert "no consent" not in content
+    assert "blocklist" not in content
+
+
+def test_cycle_end_shows_steps_and_duration():
+    sender = FakeSender()
+    feed = TrainingFeed(webhook_url="https://discord.example/webhook", sender=sender)
+
+    feed.cycle_end(cycle=2, steps=40, seconds=12.3)
+
+    assert len(sender.calls) == 1
+    content = sender.calls[0][1]
+    assert "40 steps" in content
+    assert "12.3s" in content
+
+
+def test_cycle_start_and_end_are_silent_when_unconfigured():
+    sender = FakeSender()
+    feed = TrainingFeed(webhook_url=None, sender=sender)
+
+    feed.cycle_start(
+        cycle=1, stored=1, trained=1, dropped_consent=0, dropped_blocklist=0,
+        examples=1, batch_size=1, lr=0.1,
+    )
+    feed.cycle_end(cycle=1, steps=1, seconds=1.0)
+
+    assert sender.calls == []
+
+
+def test_checkpoint_shows_the_expected_answer_alongside_the_sample():
+    sender = FakeSender()
+    feed = TrainingFeed(webhook_url="https://discord.example/webhook", sender=sender)
+
+    feed.checkpoint(
+        cycle=1, step=10, loss=1.0, prev_loss=None, rows=3,
+        prompt="boop", sample="garbled nonsense", expected="Beep",
+    )
+
+    content = sender.calls[0][1]
+    assert "Beep" in content
+    assert "expected" in content.lower()
+
+
+def test_checkpoint_omits_the_expected_line_when_theres_no_answer_to_show():
+    sender = FakeSender()
+    feed = TrainingFeed(webhook_url="https://discord.example/webhook", sender=sender)
+
+    feed.checkpoint(
+        cycle=1, step=10, loss=1.0, prev_loss=None, rows=3,
+        prompt="hello", sample="hi", expected="",
+    )
+
+    assert "expected" not in sender.calls[0][1].lower()
+
+
+def test_checkpoint_neuters_the_prompt_too_not_just_the_sample():
+    sender = FakeSender()
+    feed = TrainingFeed(webhook_url="https://discord.example/webhook", sender=sender)
+
+    feed.checkpoint(
+        cycle=1, step=10, loss=1.0, prev_loss=None, rows=3,
+        prompt="please @everyone look", sample="hi", expected="",
+    )
+
+    assert "@everyone" not in sender.calls[0][1]
+
+
 def test_from_env_is_disabled_without_a_webhook_url(monkeypatch):
     monkeypatch.delenv("BABBLE_LOG_WEBHOOK_URL", raising=False)
 

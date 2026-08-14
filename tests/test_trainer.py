@@ -13,13 +13,36 @@ import time
 import pytest
 import torch
 
+from babble.blocklist import Blocklist
 from babble.consent import ConsentStore
 from babble.discord_feed import TrainingFeed
 from babble.fakedata import seed_fake_data
 from babble.identity import Pseudonymiser
 from babble.store import CORRECTION, Interaction, InteractionStore, make_row_id
 from babble.tokenizer import PAD_ID, build_example
-from babble.trainer import consented_rows, make_batch, train
+from babble.trainer import (
+    SAMPLE_PROMPTS,
+    consented_rows,
+    dataset_stats,
+    distinct_prompts,
+    make_batch,
+    probe_prompt,
+    train,
+)
+
+
+def _row(prompt: str, chosen: str, *, row_id: str, author: str = "a") -> Interaction:
+    return Interaction(
+        id=row_id,
+        signal=CORRECTION,
+        prompt=prompt,
+        rejected="junk",
+        chosen=chosen,
+        prompt_author=author,
+        signal_author=author,
+        weight=1.0,
+        created_at="2026-01-01T00:00:00+00:00",
+    )
 
 
 @pytest.fixture
@@ -219,7 +242,7 @@ def test_a_configured_feed_gets_a_post_per_checkpoint(seeded):
     result = train(seeded, steps=6, echo=False, seed=1, feed=feed)
 
     assert result.checkpoints_written >= 1
-    checkpoint_posts = [c for c in sender.calls if "cycle" in c[1].lower()]
+    checkpoint_posts = [c for c in sender.calls if "🔁" in c[1]]
     assert len(checkpoint_posts) == result.checkpoints_written
 
 
@@ -282,6 +305,111 @@ def test_the_feed_carries_cycle_step_loss_delta_rows_and_sample(seeded):
     assert "rows" in first.lower()
     # the second post carries a delta against the first checkpoint's loss
     assert "(" in second and ("+" in second or "-" in second)
+
+
+def test_a_cycle_start_post_shows_the_dataset_shape_and_hyperparams(seeded):
+    sender = FakeSender()
+    feed = TrainingFeed(webhook_url="https://discord.example/webhook", sender=sender)
+
+    train(seeded, steps=2, echo=False, seed=1, feed=feed)
+
+    starts = [c[1] for c in sender.calls if "starting" in c[1].lower()]
+    assert len(starts) == 1
+    assert "13 stored" in starts[0]
+    assert "13 training" in starts[0]
+    assert "0 dropped" in starts[0]
+    assert "examples" in starts[0].lower()
+    assert "batch" in starts[0].lower()
+
+
+def test_a_cycle_end_post_shows_steps_and_duration(seeded):
+    sender = FakeSender()
+    feed = TrainingFeed(webhook_url="https://discord.example/webhook", sender=sender)
+
+    train(seeded, steps=3, echo=False, seed=1, feed=feed)
+
+    ends = [c[1] for c in sender.calls if "done" in c[1].lower()]
+    assert len(ends) == 1
+    assert "3 steps" in ends[0]
+
+
+def test_checkpoints_probe_different_real_prompts_across_a_cycle(seeded):
+    seeded.checkpoint_every = 1
+    sender = FakeSender()
+    feed = TrainingFeed(webhook_url="https://discord.example/webhook", sender=sender)
+
+    train(seeded, steps=4, echo=False, seed=1, feed=feed)
+
+    checkpoint_posts = [c[1] for c in sender.calls if "🔁" in c[1]]
+    assert len(checkpoint_posts) == 4
+    probed = [post.split("`")[1] for post in checkpoint_posts]
+    assert len(set(probed)) > 1  # not stuck on one or two hardcoded phrases
+    for a, b in zip(probed, probed[1:]):
+        assert a != b  # never the same prompt twice in a row
+    assert all("expected" in post.lower() for post in checkpoint_posts)
+
+
+# --- dataset visibility ---------------------------------------------------
+
+
+def test_probe_prompt_walks_the_whole_dataset_in_order_then_wraps():
+    rows = [_row(f"prompt-{i}", f"answer-{i}", row_id=str(i)) for i in range(4)]
+
+    walked = [probe_prompt(rows, i) for i in range(4)]
+
+    assert walked == [(f"prompt-{i}", f"answer-{i}") for i in range(4)]
+    assert probe_prompt(rows, 4) == probe_prompt(rows, 0)
+    assert probe_prompt(rows, 7) == probe_prompt(rows, 3)
+
+
+def test_probe_prompt_never_repeats_two_checkpoints_in_a_row():
+    rows = [_row(f"prompt-{i}", f"answer-{i}", row_id=str(i)) for i in range(5)]
+
+    probed = [probe_prompt(rows, i)[0] for i in range(20)]
+
+    for a, b in zip(probed, probed[1:]):
+        assert a != b
+
+
+def test_probe_prompt_dedupes_a_repeated_prompt_to_its_latest_answer():
+    rows = [
+        _row("boop", "Boop", row_id="1"),
+        _row("boop", "Beep", row_id="2"),  # a later correction supersedes the first
+        _row("git good", "never", row_id="3"),
+    ]
+
+    assert distinct_prompts(rows) == [("boop", "Beep"), ("git good", "never")]
+    assert probe_prompt(rows, 0) == ("boop", "Beep")
+    assert probe_prompt(rows, 1) == ("git good", "never")
+    assert probe_prompt(rows, 2) == ("boop", "Beep")  # wraps back around
+
+
+def test_probe_prompt_falls_back_to_the_hardcoded_pair_when_theres_nothing_to_probe():
+    assert probe_prompt([], 0) == (SAMPLE_PROMPTS[0], "")
+    assert probe_prompt([], 1) == (SAMPLE_PROMPTS[1], "")
+    assert probe_prompt([], 2) == (SAMPLE_PROMPTS[0], "")
+
+
+def test_dataset_stats_accounts_for_every_stored_row(settings):
+    ids = Pseudonymiser.load(settings)
+    consent = ConsentStore(settings.consent_path)
+    store = InteractionStore(settings.interactions_path)
+    good = ids.user("good-user")
+    stranger = ids.user("never-asked")
+    consent.grant("good-user")
+
+    for i in range(11):
+        store.append(_row(f"p{i}", f"c{i}", row_id=f"good-{i}", author=good))
+    store.append(_row("hi", "hey", row_id="stranger-1", author=stranger))
+    store.append(_row("slur prompt", "badword", row_id="blocked-1", author=good))
+
+    blocklist = Blocklist(frozenset({"badword"}))
+    stats = dataset_stats(settings, ids, blocklist)
+
+    assert stats.stored == 13
+    assert stats.trained == 11
+    assert stats.dropped_consent == 1
+    assert stats.dropped_blocklist == 1
 
 
 # --- consent at training time -------------------------------------------

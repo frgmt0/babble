@@ -140,6 +140,43 @@ class TrainingFeed:
         """A cycle actually ran: the next idle stretch is worth announcing again."""
         self._idle_posted = False
 
+    def cycle_start(
+        self,
+        *,
+        cycle: int,
+        stored: int,
+        trained: int,
+        dropped_consent: int,
+        dropped_blocklist: int,
+        examples: int,
+        batch_size: int,
+        lr: float,
+    ) -> None:
+        """One line per cycle for the numbers that barely change: the dataset
+        shape and the hyperparameters, so the per-checkpoint line doesn't have
+        to repeat them.
+        """
+        if not self.enabled:
+            return
+        dropped = dropped_consent + dropped_blocklist
+        note = ""
+        if dropped:
+            reasons = []
+            if dropped_consent:
+                reasons.append(f"{dropped_consent} no consent")
+            if dropped_blocklist:
+                reasons.append(f"{dropped_blocklist} blocklist")
+            note = f" ({', '.join(reasons)})"
+        self._post(
+            f"🚀 cycle **{cycle}** starting · {stored} stored → {trained} training, "
+            f"{dropped} dropped{note} · {examples} examples · batch {batch_size} @ lr {lr:g}"
+        )
+
+    def cycle_end(self, *, cycle: int, steps: int, seconds: float) -> None:
+        if not self.enabled:
+            return
+        self._post(f"✅ cycle **{cycle}** done · {steps} steps in {seconds:.1f}s")
+
     def checkpoint(
         self,
         *,
@@ -150,6 +187,7 @@ class TrainingFeed:
         rows: int,
         prompt: str,
         sample: str,
+        expected: str = "",
         val_loss: float | None = None,
         prev_val_loss: float | None = None,
         val_rows: int = 0,
@@ -180,7 +218,11 @@ class TrainingFeed:
         elif val_enabled is False:
             reason = f" — {val_disabled_reason}" if val_disabled_reason else ""
             lines.append(f"val: disabled{reason}")
-        lines.append(f"> {prompt!r} → `{neuter_sample(sample)}`")
+        # Prompt and sample both come out of the dataset / the model, so both are
+        # neutered before they hit Discord; the expected answer, when we have one.
+        lines.append(f"> `{neuter_sample(prompt)}` → `{neuter_sample(sample)}`")
+        if expected:
+            lines.append(f"> expected: `{neuter_sample(expected)}`")
         self._post("\n".join(lines))
 
     def publish(self, *, rows: int, url: str) -> None:
