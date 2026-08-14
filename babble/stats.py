@@ -11,7 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .config import Settings
-from .consent import ConsentStore
+from .consent import SCOPE_CORPUS, SCOPE_CORRECTIONS, ConsentStore
+from .corpus import CorpusStore
 from .store import APPROVAL, CORRECTION, InteractionStore
 
 
@@ -27,6 +28,9 @@ class Snapshot:
     corrections: int
     approvals: int
     trainable_rows: int
+    corpus_rows: int
+    corpus_trainable: int
+    corpus_chars: int
     log_bytes: int
     last_checkpoint_at: str | None
 
@@ -52,20 +56,27 @@ def snapshot(settings: Settings) -> Snapshot:
     store = InteractionStore(settings.interactions_path)
     consent = ConsentStore(settings.consent_path)
     rows = store.all()
+    corpus = CorpusStore(settings.corpus_path).all()
     history = loss_history(settings)
     tally = {}
     for row in rows:
         tally[row.signal] = tally.get(row.signal, 0) + 1
 
-    granted = set(consent.granted_ids())
-    # "Rows the trainer would actually use": both parties still consenting.
+    granted = set(consent.granted_ids(SCOPE_CORRECTIONS))
+    granted_corpus = set(consent.granted_ids(SCOPE_CORPUS))
+    # "Rows the trainer would actually use", per store and per grant: a
+    # correction needs both parties on the corrections grant, a corpus row needs
+    # its one author on the corpus grant.
     allowed: set[str] = set()
-    if granted:
+    allowed_corpus: set[str] = set()
+    if granted or granted_corpus:
         from .identity import Pseudonymiser
 
         ids = Pseudonymiser.load(settings)
         allowed = {ids.user(uid) for uid in granted}
+        allowed_corpus = {ids.user(uid) for uid in granted_corpus}
     trainable = sum(1 for r in rows if r.prompt_author in allowed and r.signal_author in allowed)
+    corpus_trainable = sum(1 for r in corpus if r.author in allowed_corpus)
 
     log_bytes = 0
     if settings.log_dir.exists():
@@ -78,12 +89,15 @@ def snapshot(settings: Settings) -> Snapshot:
         checkpoints=len(list(settings.checkpoint_dir.glob("ckpt-*.pt")))
         if settings.checkpoint_dir.exists()
         else 0,
-        consented_users=len(granted),
+        consented_users=len(granted_corpus),
         known_users=len(consent.known_ids()),
         stored_rows=len(rows),
         corrections=tally.get(CORRECTION, 0),
         approvals=tally.get(APPROVAL, 0),
         trainable_rows=trainable,
+        corpus_rows=len(corpus),
+        corpus_trainable=corpus_trainable,
+        corpus_chars=sum(len(r.text) for r in corpus),
         log_bytes=log_bytes,
         last_checkpoint_at=history[-1].get("at") if history else None,
     )
@@ -97,8 +111,10 @@ def render_snapshot(snap: Snapshot, markdown: bool = True) -> str:
         drift = f" ({snap.last_loss - snap.first_loss:+.4f} since the first checkpoint)"
     return (
         f"{b}step{b} {snap.step:,} · {b}loss{b} {loss}{drift}\n"
-        f"{b}checkpoints{b} {snap.checkpoints} · {b}corrections{b} {snap.corrections} · "
-        f"{b}👍{b} {snap.approvals} · {b}trainable rows{b} {snap.trainable_rows}\n"
+        f"{b}corpus{b} {snap.corpus_rows} rows ({snap.corpus_trainable} training, "
+        f"{snap.corpus_chars:,} chars) · {b}checkpoints{b} {snap.checkpoints}\n"
+        f"{b}corrections{b} {snap.corrections} · {b}👍{b} {snap.approvals} · "
+        f"{b}trainable pairs{b} {snap.trainable_rows}\n"
         f"{b}people opted in{b} {snap.consented_users} of {snap.known_users} asked"
     )
 

@@ -11,22 +11,39 @@ import json
 
 import pytest
 
+from babble.blocklist import Blocklist
 from babble.config import CORRECTION_MARKER
-from babble.consent import DECLINED, GRANTED, PENDING, WITHDRAWN
+from babble.consent import DECLINED, GRANTED, PENDING, SCOPE_CORPUS, SCOPE_CORRECTIONS, WITHDRAWN
 from babble.core import (
     CONSENT_NOTICE,
+    CORPUS_NOTICE,
     FOOTER,
+    FOOTER_CORPUS_PENDING,
     FOOTER_UNCONSENTED,
     HELP_TEXT,
+    Babble,
     IncomingMessage,
     is_correction,
     strip_correction_marker,
 )
+from babble.corpus import (
+    SOURCE_AMBIENT,
+    SOURCE_CORRECTION,
+    SOURCE_DM,
+    SOURCE_MENTION,
+    SOURCE_PROMPT,
+    SOURCE_REPLY,
+)
 from babble.store import APPROVAL, CORRECTION
+from conftest import FakeDiscord
 
 ALICE = "111111111111111111"
 BOB = "222222222222222222"
 CAROL = "333333333333333333"
+
+# ro's real Discord channel id, used at least once so the widening flow is
+# exercised against the exact id it will actually see in production.
+RO_CHANNEL = "1400209071017169116"
 
 
 # --- consent ------------------------------------------------------------
@@ -275,7 +292,11 @@ def test_an_unmarked_reply_is_answered_not_stored(fake, brain, generator, read_l
     assert not read_log("bot.dropped"), "the message was answered, so it was not dropped"
 
 
-def test_an_unmarked_reply_never_reaches_the_corpus_even_from_a_consenting_user(fake, brain):
+def test_an_unmarked_reply_is_never_filed_as_a_correction_pair_even_from_a_consenting_user(
+    fake, brain
+):
+    """It still lands in the text corpus as an ordinary reply -- see the corpus
+    capture tests below -- it just isn't treated as teaching a lesson."""
     fake.onboard(ALICE)
     answer = fake.ping(ALICE, "hello")[0]
 
@@ -324,6 +345,229 @@ def test_marker_helpers_agree_on_what_counts():
     assert strip_correction_marker(f"{CORRECTION_MARKER}") == ""
 
 
+# --- the corpus: what actually trains the model --------------------------
+
+
+def test_a_consented_mention_lands_in_the_corpus_under_the_senders_pseudonym(fake, brain):
+    fake.onboard(ALICE)
+
+    fake.ping(ALICE, "what a nice day for it")
+
+    (row,) = brain.corpus.all()
+    assert row.text == "what a nice day for it"
+    assert row.author.startswith("u_")
+    assert row.source == SOURCE_MENTION
+
+
+def test_a_reply_to_the_bot_is_filed_with_source_reply(fake, brain):
+    fake.onboard(ALICE)
+    answer = fake.ping(ALICE, "hello")[0]
+
+    fake.ping(ALICE, "lol what", reply_to=answer.id)
+
+    (row,) = [r for r in brain.corpus.all() if r.text == "lol what"]
+    assert row.source == SOURCE_REPLY
+
+
+def test_a_dm_is_filed_with_source_dm_and_no_guild(fake, brain):
+    fake.onboard(ALICE)
+
+    fake.dm(ALICE, "just the two of us")
+
+    (row,) = [r for r in brain.corpus.all() if r.text == "just the two of us"]
+    assert row.source == SOURCE_DM
+    assert row.guild is None
+
+
+def test_the_bots_own_generated_text_never_lands_in_the_corpus(fake, brain, generator):
+    fake.onboard(ALICE)
+
+    fake.ping(ALICE, "hello")
+
+    texts = [row.text for row in brain.corpus.all()]
+    assert generator.text not in texts
+
+
+def test_a_legacy_corrections_only_consenter_keeps_getting_answered_but_not_collected(
+    fake, brain
+):
+    """Someone who granted only the old `corrections` scope is a full participant
+    for corrections, but their plain messages wait for the new notice -- shown
+    exactly once, not on every ping."""
+    brain.consent.grant(ALICE, SCOPE_CORRECTIONS)
+
+    first = fake.ping(ALICE, "hello")
+    assert [r.kind for r in first] == ["generation", "consent"]
+    assert FOOTER_CORPUS_PENDING in first[0].content
+    assert first[1].content == CORPUS_NOTICE
+    assert brain.corpus.count() == 0
+
+    second = fake.ping(ALICE, "hello again")
+    assert [r.kind for r in second] == ["generation"], "the re-ask is shown only once"
+    assert brain.corpus.count() == 0
+
+    fake.accept(ALICE)
+    fake.ping(ALICE, "now I'm all the way in")
+
+    assert brain.corpus.count() == 1
+
+
+def test_babble_all_collects_everything_said_in_that_channel_as_ambient_with_no_reply(
+    fake, brain
+):
+    """Ro's real channel id, so the widening flow is exercised end to end
+    against the exact id it sees in production."""
+    fake.onboard(ALICE)
+
+    fake.collect_all(ALICE, channel=RO_CHANNEL)
+    replies = fake.say(ALICE, "just chatting, not pinging anybody", channel=RO_CHANNEL)
+
+    assert replies == []
+    (row,) = brain.corpus.all()
+    assert row.text == "just chatting, not pinging anybody"
+    assert row.source == SOURCE_AMBIENT
+
+
+def test_widening_does_not_follow_the_same_person_into_a_different_channel(fake, brain):
+    fake.onboard(ALICE)
+    fake.collect_all(ALICE, channel="chan-1")
+
+    fake.say(ALICE, "said somewhere else entirely", channel="chan-2")
+
+    assert brain.corpus.count() == 0
+
+
+def test_widening_does_not_affect_anybody_else_in_the_same_channel(fake, brain):
+    fake.onboard(ALICE)
+    fake.onboard(BOB)
+    fake.collect_all(ALICE, channel="chan-1")
+
+    fake.say(BOB, "bob never ran babble all", channel="chan-1")
+
+    assert brain.corpus.count() == 0
+
+
+def test_babble_pings_turns_ambient_capture_off_from_the_very_next_message(fake, brain):
+    fake.onboard(ALICE)
+    fake.collect_all(ALICE)
+    fake.say(ALICE, "captured while it's on")
+
+    fake.only_pings(ALICE)
+    fake.say(ALICE, "not captured anymore")
+
+    texts = [row.text for row in brain.corpus.all()]
+    assert texts == ["captured while it's on"]
+
+
+def test_babble_all_from_someone_who_has_not_opted_in_shows_the_consent_notice_and_widens_nothing(
+    fake, brain
+):
+    reply = fake.collect_all(BOB)[0]
+
+    assert CONSENT_NOTICE in reply.content
+    assert brain.consent.wide_channels(BOB) == []
+
+    fake.say(BOB, "still never opted in")
+
+    assert brain.corpus.count() == 0
+
+
+def test_forget_purges_the_corpus_too_and_clears_widened_channels(fake, brain):
+    fake.onboard(ALICE)
+    fake.collect_all(ALICE)
+    fake.say(ALICE, "ambient text of mine")
+    answer = fake.ping(ALICE, "hello")[0]
+    fake.correct(ALICE, "say hey", reply_to=answer.id)
+    assert brain.corpus.count() > 0
+    assert brain.consent.wide_channels(ALICE) == ["chan-1"]
+
+    fake.say(ALICE, "!babble forget")
+
+    assert brain.corpus.count() == 0
+    assert brain.consent.wide_channels(ALICE) == []
+
+
+def test_blocklisted_text_never_reaches_the_corpus_from_an_addressed_message(
+    settings, generator, log
+):
+    brain = Babble(
+        settings, generator=generator, log=log, blocklist=Blocklist(frozenset({"badword"}))
+    )
+    gw = FakeDiscord(brain)
+    gw.onboard(ALICE)
+
+    gw.ping(ALICE, "this has a badword right in it")
+
+    assert brain.corpus.count() == 0
+
+
+def test_blocklisted_text_never_reaches_the_corpus_from_an_ambient_message(
+    settings, generator, log
+):
+    brain = Babble(
+        settings, generator=generator, log=log, blocklist=Blocklist(frozenset({"badword"}))
+    )
+    gw = FakeDiscord(brain)
+    gw.onboard(ALICE)
+    gw.collect_all(ALICE)
+
+    gw.say(ALICE, "an ambient badword slipping through")
+
+    assert brain.corpus.count() == 0
+
+
+def test_a_correction_files_corpus_rows_for_both_halves_under_their_own_authors(fake, brain):
+    """The corrector's text and the original prompt each need their own
+    author's corpus grant -- one having it doesn't cover the other."""
+    brain.consent.grant(ALICE, SCOPE_CORRECTIONS)  # legacy: hasn't agreed to the corpus yet
+    answer = fake.ping(ALICE, "an original prompt")[0]  # too early to be collected
+    brain.consent.grant(ALICE, SCOPE_CORPUS)  # accepts the corpus before the correction lands
+    fake.onboard(BOB)
+
+    fake.correct(BOB, "a much better answer", reply_to=answer.id)
+
+    by_text = {row.text: row for row in brain.corpus.all()}
+    assert by_text["a much better answer"].source == SOURCE_CORRECTION
+    assert by_text["an original prompt"].source == SOURCE_PROMPT
+    assert by_text["a much better answer"].author != by_text["an original prompt"].author
+
+
+def test_a_correction_from_someone_without_a_corpus_grant_only_files_the_prompt_half(fake, brain):
+    fake.onboard(ALICE)
+    answer = fake.ping(ALICE, "an original prompt")[0]
+    brain.consent.grant(BOB, SCOPE_CORRECTIONS)  # legacy: corrections yes, corpus unknown
+
+    fake.correct(BOB, "a much better answer", reply_to=answer.id)
+
+    (row,) = brain.store.all()
+    assert row.signal == CORRECTION  # the correction pair is filed regardless
+
+    texts = {r.text for r in brain.corpus.all()}
+    assert "an original prompt" in texts
+    assert "a much better answer" not in texts, "bob never granted the corpus scope"
+
+
+def test_a_message_not_addressed_to_the_bot_is_still_dropped_when_nobody_has_widened(
+    fake, brain, read_log
+):
+    fake.onboard(ALICE)  # consented, but never ran `!babble all`
+
+    replies = fake.say(ALICE, "just chatting, not pinging the bot")
+
+    assert replies == []
+    assert brain.corpus.count() == 0
+    (event,) = read_log("bot.dropped")
+    assert event["reason"] == "not_addressed"
+
+
+def test_babble_commands_are_never_stored_in_the_corpus(fake, brain):
+    fake.onboard(ALICE)  # itself sent as `!babble accept`
+
+    fake.say(ALICE, "!babble status")
+    fake.say(ALICE, "!babble consent")
+    fake.collect_all(ALICE)
+
+    assert brain.corpus.count() == 0
 
 
 # --- reactions ----------------------------------------------------------

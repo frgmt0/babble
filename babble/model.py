@@ -159,11 +159,15 @@ def sequence_loss(
     mask: torch.Tensor,
     weights: torch.Tensor,
 ) -> torch.Tensor:
-    """Weighted next-byte cross-entropy over the response tokens only.
+    """Masked, per-example-weighted next-byte cross-entropy.
 
-    `weights` is per example: a correction counts fully, a thumbs-up counts for a
-    fraction of one. Dividing by the same weighted count keeps the number
-    comparable between batches, so the loss curve means something.
+    The corpus training path passes a bos-only mask and uniform `weights` of 1.0,
+    so in practice it is plain next-token loss over every real token -- there is
+    no response to isolate and no row to upweight any more. `mask` and `weights`
+    survive because this same function scores correction *pairs* in `generate.py`,
+    where masking the shared prefix and weighting a candidate still mean something.
+    Dividing by the same masked, weighted count keeps the number comparable
+    between batches, so the loss curve means something.
     """
     per_token = per_token_loss(model, tokens)
     scale = mask[:, 1:].to(per_token.dtype) * weights[:, None]

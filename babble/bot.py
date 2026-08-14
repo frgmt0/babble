@@ -133,6 +133,12 @@ class BabbleClient(discord.Client):
             reply_to_message_id=reply_to_id,
             reply_to_is_bot=reply_to_is_bot,
             attachment_urls=tuple(a.url for a in message.attachments),
+            # A one-to-one DM is by definition addressed to us: there is nobody
+            # else in it to address. A *group* DM is not -- it has other people
+            # in it, and `message.guild is None` is true there too, which would
+            # have made every member's every message collectable without a
+            # mention, a reply or a widening. `DMChannel` is the 1:1 one.
+            is_dm=isinstance(message.channel, discord.DMChannel),
         )
 
     async def _is_ours(self, message: discord.Message, ref: discord.MessageReference) -> bool:

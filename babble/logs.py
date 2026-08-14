@@ -232,8 +232,8 @@ class NullLog(EventLog):
     def channel(self, channel_id: object) -> str:
         return "c_null"
 
-    def guild(self, guild_id: object) -> str:
-        return "g_null"
+    def guild(self, guild_id: object) -> str | None:
+        return None if guild_id is None else "g_null"
 
     def preview(self, text: str | None, *, allowed: bool) -> dict:
         return {"chars": len(text or "")}

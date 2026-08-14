@@ -12,40 +12,37 @@ import torch
 
 from babble.blocklist import Blocklist
 from babble.config import Settings
+from babble.corpus import SOURCE_AMBIENT, CorpusRow, CorpusStore, make_corpus_id
 from babble.discord_feed import TrainingFeed
 from babble.fakedata import seed_fake_data
 from babble.identity import Pseudonymiser
 from babble.logs import EventLog
 from babble.model import Babbler, config_from_settings, sequence_loss
-from babble.store import CORRECTION, Interaction, InteractionStore, make_row_id
 from babble.tokenizer import build_example
 from babble.trainer import (
     _checkpoint,
-    consented_rows,
+    corpus_rows,
     eval_loss,
     overfit_signal,
     split_rows,
+    to_examples,
     train,
 )
 
 
-def make_row(n: int, weight: float = 1.0) -> Interaction:
-    """A distinct, consent-shaped row -- only its id needs to vary for split tests."""
-    return Interaction(
+def make_row(n: int) -> CorpusRow:
+    """A distinct corpus row -- only its id needs to vary for split tests."""
+    return CorpusRow(
         id=f"row-{n:05d}",
-        signal=CORRECTION,
-        prompt=f"prompt {n}",
-        rejected="junk",
-        chosen=f"answer {n}",
-        prompt_author="u_asker",
-        signal_author="u_helper",
-        weight=weight,
+        text=f"row {n} content",
+        author="u_helper",
+        source=SOURCE_AMBIENT,
         created_at="2026-01-01T00:00:00+00:00",
     )
 
 
 @pytest.fixture
-def many_rows() -> list[Interaction]:
+def many_rows() -> list[CorpusRow]:
     return [make_row(i) for i in range(200)]
 
 
@@ -192,26 +189,22 @@ def test_held_out_rows_are_drawn_only_from_already_consented_rows(settings):
     settings.val_fraction = 0.9
     ids = Pseudonymiser.load(settings)
     stranger = ids.user("someone-who-never-agreed")
-    InteractionStore(settings.interactions_path).append(
-        Interaction(
-            id=make_row_id(CORRECTION, "hi", "hey", stranger, stranger),
-            signal=CORRECTION,
-            prompt="hi",
-            rejected="junk",
-            chosen="hey",
-            prompt_author=stranger,
-            signal_author=stranger,
-            weight=1.0,
+    CorpusStore(settings.corpus_path).append(
+        CorpusRow(
+            id=make_corpus_id("hi", stranger),
+            text="hi",
+            author=stranger,
+            source=SOURCE_AMBIENT,
             created_at="2026-01-01T00:00:00+00:00",
         )
     )
-    seed_fake_data(settings)
+    seed_fake_data(settings)  # grants both scopes to the fake users, never to `stranger`
 
-    rows = consented_rows(settings)  # already filters consent + blocklist
+    rows = corpus_rows(settings)  # already filters consent + blocklist
     split = split_rows(rows, settings)
 
     combined = split.train + split.val
-    assert stranger not in {r.prompt_author for r in combined}
+    assert stranger not in {r.author for r in combined}
     assert {r.id for r in combined} == {r.id for r in rows}
 
 
@@ -302,8 +295,12 @@ def test_overfit_signal_false_otherwise(train_loss, prev_train_loss, val_loss, p
 
 
 def test_checkpoint_log_reports_validation_disabled_for_a_small_corpus(seeded, read_log):
-    """`seeded` writes the 12 fake rows -- below the default val_min_rows of
-    20 -- so validation must be explicitly reported off, never a number."""
+    """`seeded` backfills the 12 fake corrections into 24 corpus rows (a prompt
+    row and a correction row per interaction) -- comfortably below a
+    `val_min_rows` set above that, so validation must be explicitly reported
+    off, never a number."""
+    seeded.val_min_rows = 30
+
     train(seeded, steps=4, echo=False, seed=1)
 
     entries = read_log("train.checkpoint")
@@ -363,7 +360,7 @@ def test_feed_post_is_unchanged_when_no_validation_state_is_passed():
     sender = FakeSender()
     feed = TrainingFeed(webhook_url="https://discord.example/webhook", sender=sender)
 
-    feed.checkpoint(cycle=1, step=50, loss=1.0, prev_loss=None, rows=3, prompt="hi", sample="hi")
+    feed.checkpoint(cycle=1, step=50, loss=1.0, prev_loss=None, rows=3, prefix="hi", sample="hi")
 
     _, content = sender.calls[0]
     assert "val" not in content.lower()
@@ -379,7 +376,7 @@ def test_feed_post_reports_val_loss_when_enabled():
         loss=1.0,
         prev_loss=None,
         rows=30,
-        prompt="hi",
+        prefix="hi",
         sample="hi",
         val_loss=1.5,
         prev_val_loss=1.2,
@@ -402,7 +399,7 @@ def test_feed_post_reports_disabled_and_why():
         loss=1.0,
         prev_loss=None,
         rows=8,
-        prompt="hi",
+        prefix="hi",
         sample="hi",
         val_enabled=False,
         val_disabled_reason="only 8 consented rows, need at least 20",
@@ -423,7 +420,7 @@ def test_feed_post_flags_val_rising_while_train_falls():
         loss=1.0,
         prev_loss=1.5,
         rows=30,
-        prompt="hi",
+        prefix="hi",
         sample="hi",
         val_loss=2.0,
         prev_val_loss=1.5,
@@ -453,16 +450,19 @@ def test_checkpoint_wiring_flags_overfitting_across_two_checkpoints(seeded, monk
     val_losses = iter([1.0, 2.0])  # rising
     monkeypatch.setattr("babble.trainer.eval_loss", lambda *a, **k: next(val_losses))
 
+    rows = [make_row(i) for i in range(3)]
+    examples = to_examples(rows, seeded.block_size)
+
     mean1, val1 = _checkpoint(
         seeded, log, feed, blocklist, model, optimizer,
-        step=1, window=[5.0], rows=[], probe_index=0, cycle=1, prev_loss=None, echo=False,
-        train_examples=[], val_examples=[], val_enabled=True, val_disabled_reason=None,
+        step=1, window=[5.0], rows=rows, probe_index=0, cycle=1, prev_loss=None, echo=False,
+        train_examples=examples, val_examples=examples, val_enabled=True, val_disabled_reason=None,
         val_rows=6, prev_val_loss=None,
     )
     mean2, val2 = _checkpoint(
         seeded, log, feed, blocklist, model, optimizer,
-        step=2, window=[3.0], rows=[], probe_index=1, cycle=1, prev_loss=mean1, echo=False,
-        train_examples=[], val_examples=[], val_enabled=True, val_disabled_reason=None,
+        step=2, window=[3.0], rows=rows, probe_index=1, cycle=1, prev_loss=mean1, echo=False,
+        train_examples=examples, val_examples=examples, val_enabled=True, val_disabled_reason=None,
         val_rows=6, prev_val_loss=val1,
     )
 

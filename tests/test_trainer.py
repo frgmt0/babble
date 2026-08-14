@@ -15,38 +15,54 @@ import torch
 
 from babble.blocklist import Blocklist
 from babble.consent import ConsentStore
+from babble.corpus import SOURCE_MENTION, CorpusRow, CorpusStore, make_corpus_id
 from babble.discord_feed import TrainingFeed
 from babble.fakedata import seed_fake_data
 from babble.identity import Pseudonymiser
-from babble.store import CORRECTION, Interaction, InteractionStore, make_row_id
-from babble.tokenizer import PAD_ID, build_example
+from babble.tokenizer import BOS_ID, EOS_ID, PAD_ID, build_example
 from babble.trainer import (
+    PROBE_FALLBACK,
+    PROBE_PREFIX_BYTES,
     PROBE_TRAIN,
-    SAMPLE_PROMPTS,
+    SAMPLE_PREFIXES,
     SCRATCH_DIR,
-    sweep_scratch,
-    consented_rows,
+    corpus_rows,
     dataset_stats,
-    distinct_prompts,
+    distinct_texts,
+    leading_words,
     make_batch,
-    probe_prompt,
+    probe_prefix,
     split_rows,
+    sweep_scratch,
+    to_examples,
     train,
 )
 
 
-def _row(prompt: str, chosen: str, *, row_id: str, author: str = "a") -> Interaction:
-    return Interaction(
+def _row(text: str, *, row_id: str, author: str = "a") -> CorpusRow:
+    """A bare corpus row, in memory only -- for tests that exercise pure
+    functions over `list[CorpusRow]` and never touch a store on disk."""
+    return CorpusRow(
         id=row_id,
-        signal=CORRECTION,
-        prompt=prompt,
-        rejected="junk",
-        chosen=chosen,
-        prompt_author=author,
-        signal_author=author,
-        weight=1.0,
+        text=text,
+        author=author,
+        source=SOURCE_MENTION,
         created_at="2026-01-01T00:00:00+00:00",
     )
+
+
+def _seed_corpus_row(settings, text: str, author: str, *, source: str = SOURCE_MENTION) -> CorpusRow:
+    """Write one row straight into the corpus store, content-addressed the same
+    way the real capture path builds an id."""
+    row = CorpusRow(
+        id=make_corpus_id(text, author),
+        text=text,
+        author=author,
+        source=source,
+        created_at="2026-01-01T00:00:00+00:00",
+    )
+    CorpusStore(settings.corpus_path).append(row)
+    return row
 
 
 @pytest.fixture
@@ -355,10 +371,15 @@ def test_a_cycle_start_post_shows_the_dataset_shape_and_hyperparams(seeded):
 
     starts = [c[1] for c in sender.calls if "starting" in c[1].lower()]
     assert len(starts) == 1
-    assert "13 stored" in starts[0]
-    assert "13 training" in starts[0]
+    # 24 corpus rows: the 12 fake corrections flattened into a prompt row and a
+    # chosen row apiece, all from consenting fake users, none blocklisted.
+    assert "24 stored" in starts[0]
+    assert "24 training" in starts[0]
     assert "0 dropped" in starts[0]
+    assert "19 train" in starts[0]
+    assert "5 val" in starts[0]
     assert "examples" in starts[0].lower()
+    assert "tokens" in starts[0].lower()
     assert "batch" in starts[0].lower()
 
 
@@ -385,8 +406,11 @@ def test_checkpoints_probe_different_real_prompts_across_a_cycle(seeded):
     probed = [post.split("`")[1] for post in checkpoint_posts]
     assert len(set(probed)) > 1  # not stuck on one or two hardcoded phrases
     for a, b in zip(probed, probed[1:]):
-        assert a != b  # never the same prompt twice in a row
-    assert all("expected" in post.lower() for post in checkpoint_posts)
+        assert a != b  # never the same prefix twice in a row
+    # There is no answer in a corpus row, so the feed must never invent one --
+    # "continuation" is what actually happened, "expected" would be a lie.
+    assert all("continuation" in post.lower() for post in checkpoint_posts)
+    assert not any("expected" in post.lower() for post in checkpoint_posts)
 
 
 def test_the_probe_says_which_side_of_the_split_the_row_came_from(seeded):
@@ -416,69 +440,106 @@ def test_the_probe_only_ever_asks_about_rows_it_was_trained_on(seeded, read_log)
 
     checkpoints = read_log("train.checkpoint")
     assert checkpoints
-    split = split_rows(consented_rows(seeded), seeded)
-    held_out = {row.prompt for row in split.val}
-    trained = {row.prompt for row in split.train}
-    assert held_out, "this test is meaningless without a real holdout"
+    split = split_rows(corpus_rows(seeded), seeded)
+    trained_texts = [row.text for row in split.train]
+    held_out_texts = [row.text for row in split.val]
+    assert held_out_texts, "this test is meaningless without a real holdout"
     for entry in checkpoints:
         assert entry["probe_side"] == PROBE_TRAIN
-        assert entry["prompt"] in trained
-        assert entry["prompt"] not in held_out
+        prefix = entry["prefix"]
+        assert any(text.startswith(prefix) for text in trained_texts)
+        assert not any(text.startswith(prefix) for text in held_out_texts)
 
 
 # --- dataset visibility ---------------------------------------------------
 
 
-def test_probe_prompt_walks_the_whole_dataset_in_order_then_wraps():
-    rows = [_row(f"prompt-{i}", f"answer-{i}", row_id=str(i)) for i in range(4)]
+def test_probe_prefix_walks_the_whole_dataset_in_order_then_wraps():
+    rows = [_row(f"row-text-{i}", row_id=str(i)) for i in range(4)]
 
-    walked = [probe_prompt(rows, i) for i in range(4)]
+    walked = [probe_prefix(rows, i) for i in range(4)]
 
-    assert walked == [(f"prompt-{i}", f"answer-{i}") for i in range(4)]
-    assert probe_prompt(rows, 4) == probe_prompt(rows, 0)
-    assert probe_prompt(rows, 7) == probe_prompt(rows, 3)
+    assert walked == [(f"row-text-{i}", PROBE_TRAIN) for i in range(4)]
+    assert probe_prefix(rows, 4) == probe_prefix(rows, 0)
+    assert probe_prefix(rows, 7) == probe_prefix(rows, 3)
 
 
-def test_probe_prompt_never_repeats_two_checkpoints_in_a_row():
-    rows = [_row(f"prompt-{i}", f"answer-{i}", row_id=str(i)) for i in range(5)]
+def test_probe_prefix_never_repeats_two_checkpoints_in_a_row():
+    rows = [_row(f"row-text-{i}", row_id=str(i)) for i in range(5)]
 
-    probed = [probe_prompt(rows, i)[0] for i in range(20)]
+    probed = [probe_prefix(rows, i)[0] for i in range(20)]
 
     for a, b in zip(probed, probed[1:]):
         assert a != b
 
 
-def test_probe_prompt_dedupes_a_repeated_prompt_to_its_latest_answer():
+def test_probe_prefix_dedupes_a_row_whose_text_repeats():
     rows = [
-        _row("boop", "Boop", row_id="1"),
-        _row("boop", "Beep", row_id="2"),  # a later correction supersedes the first
-        _row("git good", "never", row_id="3"),
+        _row("boop", row_id="1", author="a"),
+        _row("boop", row_id="2", author="b"),  # same writing, different author
+        _row("git-good", row_id="3"),
     ]
 
-    assert distinct_prompts(rows) == [("boop", "Beep"), ("git good", "never")]
-    assert probe_prompt(rows, 0) == ("boop", "Beep")
-    assert probe_prompt(rows, 1) == ("git good", "never")
-    assert probe_prompt(rows, 2) == ("boop", "Beep")  # wraps back around
+    assert distinct_texts(rows) == ["boop", "git-good"]
+    assert probe_prefix(rows, 0) == ("boop", PROBE_TRAIN)
+    assert probe_prefix(rows, 1) == ("git-good", PROBE_TRAIN)
+    assert probe_prefix(rows, 2) == ("boop", PROBE_TRAIN)  # wraps back around
 
 
-def test_probe_prompt_falls_back_to_the_hardcoded_pair_when_theres_nothing_to_probe():
-    assert probe_prompt([], 0) == (SAMPLE_PROMPTS[0], "")
-    assert probe_prompt([], 1) == (SAMPLE_PROMPTS[1], "")
-    assert probe_prompt([], 2) == (SAMPLE_PROMPTS[0], "")
+def test_probe_prefix_falls_back_to_a_hardcoded_prefix_when_theres_nothing_to_probe():
+    assert probe_prefix([], 0) == (SAMPLE_PREFIXES[0], PROBE_FALLBACK)
+    assert probe_prefix([], 1) == (SAMPLE_PREFIXES[1], PROBE_FALLBACK)
+    assert probe_prefix([], 2) == (SAMPLE_PREFIXES[0], PROBE_FALLBACK)
+
+
+def test_the_probe_prefix_holds_a_word_back_so_there_is_something_to_continue():
+    """A "continuation" of the whole row only shows the model agreeing it ended."""
+    assert leading_words("hello there how are you") == "hello there how are"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "a" * 500,  # one enormous word
+        "日本語のテキストです これは長いです",  # multi-byte, over budget in bytes not chars
+        "supercalifragilisticexpialidocious antidisestablishmentarianism",
+    ],
+)
+def test_the_probe_prefix_respects_its_byte_budget_even_on_the_very_first_word(text):
+    """The budget has to apply to the first word too.
+
+    Exempting it -- which is what a `if prefix and over_budget` guard does --
+    means a row that is one 500-byte word comes back whole: the "prefix" is the
+    entire row, the model has nothing left to continue, and the feed line is a
+    wall of text. Byte length, not character length, is what the budget is in.
+    """
+    prefix = leading_words(text)
+
+    assert prefix
+    assert len(prefix.encode("utf-8")) <= PROBE_PREFIX_BYTES
+    assert text.startswith(prefix)
+
+
+def test_a_row_with_nothing_usable_in_it_is_probed_as_a_fallback_not_as_trained():
+    """`probe_side` is a claim about where the prefix came from, so it must not
+    say "trained" when the prefix is a hardcoded string the model never saw.
+    """
+    prefix, side = probe_prefix([_row("   ", row_id="1")], 0)
+
+    assert (prefix, side) == (SAMPLE_PREFIXES[0], PROBE_FALLBACK)
 
 
 def test_dataset_stats_accounts_for_every_stored_row(settings):
     ids = Pseudonymiser.load(settings)
     consent = ConsentStore(settings.consent_path)
-    store = InteractionStore(settings.interactions_path)
     good = ids.user("good-user")
     stranger = ids.user("never-asked")
-    consent.grant("good-user")
+    consent.grant("good-user")  # grants both the corrections and corpus scopes
 
     for i in range(11):
-        store.append(_row(f"p{i}", f"c{i}", row_id=f"good-{i}", author=good))
-    store.append(_row("hi", "hey", row_id="stranger-1", author=stranger))
-    store.append(_row("slur prompt", "badword", row_id="blocked-1", author=good))
+        _seed_corpus_row(settings, f"row text {i}", good)
+    _seed_corpus_row(settings, "hi from a stranger", stranger)
+    _seed_corpus_row(settings, "a badword right here", good)
 
     blocklist = Blocklist(frozenset({"badword"}))
     stats = dataset_stats(settings, ids, blocklist)
@@ -495,29 +556,68 @@ def test_dataset_stats_accounts_for_every_stored_row(settings):
 def test_rows_from_people_who_never_consented_are_not_trained_on(settings):
     ids = Pseudonymiser.load(settings)
     stranger = ids.user("someone-who-never-agreed")
-    InteractionStore(settings.interactions_path).append(
-        Interaction(
-            id=make_row_id(CORRECTION, "hi", "hey", stranger, stranger),
-            signal=CORRECTION,
-            prompt="hi",
-            rejected="junk",
-            chosen="hey",
-            prompt_author=stranger,
-            signal_author=stranger,
-            weight=1.0,
-            created_at="2026-01-01T00:00:00+00:00",
-        )
-    )
+    _seed_corpus_row(settings, "hi", stranger)
 
-    assert consented_rows(settings) == []
+    assert corpus_rows(settings) == []
     assert train(settings, steps=2, echo=False).stopped_because == "no_data"
 
 
 def test_withdrawing_consent_takes_rows_out_of_training(seeded):
+    """A corpus row has exactly one author, so withdrawing takes out that one
+    person's rows -- not the whole corpus, which the pair-level rule used to.
+    """
     from babble.fakedata import FAKE_USER
 
-    assert consented_rows(seeded)
+    ids = Pseudonymiser.load(seeded)
+    withdrawn_author = ids.user(FAKE_USER)
+    before = corpus_rows(seeded)
+    assert any(row.author == withdrawn_author for row in before)
 
     ConsentStore(seeded.consent_path).withdraw(FAKE_USER)
 
-    assert consented_rows(seeded) == []
+    after = corpus_rows(seeded)
+    assert len(after) < len(before)
+    assert all(row.author != withdrawn_author for row in after)
+
+
+# --- the plain next-token objective ---------------------------------------
+
+
+def test_to_examples_masks_nothing_after_the_bos_and_weights_every_row_equally():
+    """No prompt to hold back, no per-row weighting: every token past <bos> is
+    a target and every example counts the same as every other one.
+    """
+    rows = [
+        _row("a short row", row_id="1", author="a"),
+        _row("a somewhat longer row of plain text to tokenise", row_id="2", author="b"),
+    ]
+
+    examples = to_examples(rows, block_size=64)
+
+    assert len(examples) == 2
+    for example in examples:
+        assert example.mask == [0] + [1] * (len(example.tokens) - 1)
+        assert example.weight == 1.0
+
+
+def test_a_row_longer_than_the_block_becomes_several_examples_covering_all_of_it():
+    """A long row is chunked, not truncated: nothing about the input written to
+    the bot is thrown away just because it did not fit in one block.
+    """
+    text = "abcdefghij " * 40  # far longer than any block used in these tests
+    rows = [_row(text, row_id="1", author="a")]
+
+    examples = to_examples(rows, block_size=64)
+
+    assert len(examples) > 1
+    rebuilt = bytearray()
+    for index, example in enumerate(examples):
+        tokens = example.tokens
+        assert tokens[0] == BOS_ID
+        body = tokens[1:]
+        is_last = index == len(examples) - 1
+        assert (body[-1] == EOS_ID) == is_last
+        if is_last:
+            body = body[:-1]
+        rebuilt.extend(body)
+    assert bytes(rebuilt) == text.encode("utf-8")

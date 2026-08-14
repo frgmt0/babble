@@ -129,7 +129,7 @@ def test_unconfigured_feed_never_calls_the_sender():
 
     feed.start(resumed=False, step=0)
     feed.idle()
-    feed.checkpoint(cycle=1, step=50, loss=1.0, prev_loss=None, rows=3, prompt="hello", sample="hi")
+    feed.checkpoint(cycle=1, step=50, loss=1.0, prev_loss=None, rows=3, prefix="hello", sample="hi")
 
     assert sender.calls == []
 
@@ -139,7 +139,7 @@ def test_a_checkpoint_produces_a_well_formed_post():
     feed = TrainingFeed(webhook_url="https://discord.example/webhook", sender=sender)
 
     feed.checkpoint(
-        cycle=3, step=650, loss=2.184, prev_loss=2.5, rows=128, prompt="hello", sample="heoll wrold"
+        cycle=3, step=650, loss=2.184, prev_loss=2.5, rows=128, prefix="hello", sample="heoll wrold"
     )
 
     assert len(sender.calls) == 1
@@ -155,7 +155,7 @@ def test_a_checkpoint_produces_a_well_formed_post():
 def test_a_failing_post_never_raises_and_gets_logged(read_log, log):
     feed = TrainingFeed(webhook_url="https://discord.example/webhook", sender=FakeSender(fail=True), log=log)
 
-    feed.checkpoint(cycle=1, step=50, loss=1.0, prev_loss=None, rows=3, prompt="hi", sample="hi")
+    feed.checkpoint(cycle=1, step=50, loss=1.0, prev_loss=None, rows=3, prefix="hi", sample="hi")
 
     entries = read_log("feed.post_failed")
     assert len(entries) == 1
@@ -178,7 +178,7 @@ def test_a_failing_post_logs_the_response_body_but_never_the_url(read_log, log):
         log=log,
     )
 
-    feed.checkpoint(cycle=1, step=50, loss=1.0, prev_loss=None, rows=3, prompt="hi", sample="hi")
+    feed.checkpoint(cycle=1, step=50, loss=1.0, prev_loss=None, rows=3, prefix="hi", sample="hi")
 
     entries = read_log("feed.post_failed")
     assert len(entries) == 1
@@ -198,7 +198,7 @@ def test_a_failing_post_with_a_long_body_is_truncated(read_log, log):
 
     feed = TrainingFeed(webhook_url="https://discord.example/webhook", sender=raise_http_error, log=log)
 
-    feed.checkpoint(cycle=1, step=50, loss=1.0, prev_loss=None, rows=3, prompt="hi", sample="hi")
+    feed.checkpoint(cycle=1, step=50, loss=1.0, prev_loss=None, rows=3, prefix="hi", sample="hi")
 
     error = read_log("feed.post_failed")[0]["error"]
     assert "x" * 300 in error
@@ -210,7 +210,7 @@ def test_throttling_only_posts_every_nth_checkpoint():
     feed = TrainingFeed(webhook_url="https://discord.example/webhook", every_n=3, sender=sender)
 
     for step in (10, 20, 30, 40, 50, 60):
-        feed.checkpoint(cycle=1, step=step, loss=1.0, prev_loss=None, rows=1, prompt="hi", sample="hi")
+        feed.checkpoint(cycle=1, step=step, loss=1.0, prev_loss=None, rows=1, prefix="hi", sample="hi")
 
     assert len(sender.calls) == 2  # the 3rd and the 6th
 
@@ -220,7 +220,7 @@ def test_a_model_sample_containing_everyone_is_neutered_before_posting():
     feed = TrainingFeed(webhook_url="https://discord.example/webhook", sender=sender)
 
     feed.checkpoint(
-        cycle=1, step=10, loss=1.0, prev_loss=None, rows=1, prompt="hi", sample="@everyone free stuff"
+        cycle=1, step=10, loss=1.0, prev_loss=None, rows=1, prefix="hi", sample="@everyone free stuff"
     )
 
     _, content = sender.calls[0]
@@ -273,6 +273,24 @@ def test_cycle_start_shows_the_dataset_shape_and_hyperparams():
     assert "batch 8" in content
 
 
+def test_cycle_start_reports_token_count_and_train_val_split():
+    sender = FakeSender()
+    feed = TrainingFeed(webhook_url="https://discord.example/webhook", sender=sender)
+
+    feed.cycle_start(
+        cycle=1, stored=13, trained=11, dropped_consent=1, dropped_blocklist=1,
+        examples=15, batch_size=8, lr=0.0003,
+        tokens=4096, train_rows=9, val_rows=2,
+    )
+
+    content = sender.calls[0][1]
+    assert "4,096 tokens" in content
+    assert "9 train" in content
+    assert "2 val" in content
+    assert "batch 8" in content
+    assert "0.0003" in content
+
+
 def test_cycle_start_omits_the_drop_note_when_nothing_was_dropped():
     sender = FakeSender()
     feed = TrainingFeed(webhook_url="https://discord.example/webhook", sender=sender)
@@ -313,39 +331,41 @@ def test_cycle_start_and_end_are_silent_when_unconfigured():
     assert sender.calls == []
 
 
-def test_checkpoint_shows_the_expected_answer_alongside_the_sample():
+def test_checkpoint_labels_the_probe_line_a_continuation_from_prefix_to_sample():
     sender = FakeSender()
     feed = TrainingFeed(webhook_url="https://discord.example/webhook", sender=sender)
 
     feed.checkpoint(
         cycle=1, step=10, loss=1.0, prev_loss=None, rows=3,
-        prompt="boop", sample="garbled nonsense", expected="Beep",
+        prefix="boop", sample="garbled nonsense",
     )
 
     content = sender.calls[0][1]
-    assert "Beep" in content
-    assert "expected" in content.lower()
+    assert "continuation" in content.lower()
+    assert "boop" in content
+    assert "garbled nonsense" in content
+    assert "boop" in content.split("`")[1]  # the prefix, not the sample, fills the first backtick span
 
 
-def test_checkpoint_omits_the_expected_line_when_theres_no_answer_to_show():
+def test_checkpoint_never_prints_an_expected_field_whatever_is_passed():
+    """There is no answer key in an unlabelled corpus -- inventing one would be
+    the most misleading thing this line could do, so `expected=` isn't even an
+    accepted keyword anymore. Confirm the honesty property directly."""
     sender = FakeSender()
     feed = TrainingFeed(webhook_url="https://discord.example/webhook", sender=sender)
 
-    feed.checkpoint(
-        cycle=1, step=10, loss=1.0, prev_loss=None, rows=3,
-        prompt="hello", sample="hi", expected="",
-    )
+    feed.checkpoint(cycle=1, step=10, loss=1.0, prev_loss=None, rows=3, prefix="hello", sample="hi")
 
     assert "expected" not in sender.calls[0][1].lower()
 
 
-def test_checkpoint_neuters_the_prompt_too_not_just_the_sample():
+def test_checkpoint_neuters_the_prefix_too_not_just_the_sample():
     sender = FakeSender()
     feed = TrainingFeed(webhook_url="https://discord.example/webhook", sender=sender)
 
     feed.checkpoint(
         cycle=1, step=10, loss=1.0, prev_loss=None, rows=3,
-        prompt="please @everyone look", sample="hi", expected="",
+        prefix="please @everyone look", sample="hi",
     )
 
     assert "@everyone" not in sender.calls[0][1]

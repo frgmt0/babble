@@ -13,7 +13,7 @@ import json
 
 from babble.consent import ConsentStore
 from babble.core import FOOTER, Babble
-from babble.export_hf import DATA_FILE, build_export
+from babble.export_hf import CORPUS_FILE, DATA_FILE, build_export
 from babble.generate import CheckpointGenerator
 from babble.store import CORRECTION
 from babble.trainer import train
@@ -33,12 +33,19 @@ def test_ping_correct_train_reload_export(settings, log):
     answer = gw.ping(ALICE, "hello")[0]
     assert answer.kind == "generation"
     assert generator.step == 0
+    # The ping itself -- addressed to the bot, from a consented person -- is
+    # already a corpus row, independent of whatever happens to it next.
+    assert brain.corpus.count() == 1
 
     # 2. A human tells it what it should have said.
     gw.correct(ALICE, "hey!", reply_to=answer.id)
     (row,) = brain.store.all()
     assert row.signal == CORRECTION
     assert row.chosen == "hey!"
+    # The correction files its own text as a second corpus row; the original
+    # prompt is a duplicate of the one already there, so the count rises by
+    # exactly one, not two.
+    assert brain.corpus.count() == 2
 
     # 3. The trainer learns from exactly that row.
     result = train(settings, steps=4, echo=False, seed=1, log=log)
@@ -50,9 +57,12 @@ def test_ping_correct_train_reload_export(settings, log):
     second = gw.ping(ALICE, "hello")[0]
     assert second.kind == "generation"
 
-    # 5. And the correction is publishable, pseudonymously.
+    # 5. And both the correction and the corpus it fed are publishable,
+    # pseudonymously.
     export = build_export(settings, log=log)
-    assert export.rows == 1
+    assert export.correction_rows == 1
+    assert export.corpus_rows == 2
+    assert export.rows == 3
     published = json.loads((export.path / DATA_FILE).read_text(encoding="utf-8").strip())
     assert published["prompt"] == "hello"
     assert published["chosen"] == "hey!"
@@ -63,6 +73,11 @@ def test_ping_correct_train_reload_export(settings, log):
     assert published["rejected"] == answer.content[: -(len(FOOTER) + 1)]
     assert ALICE not in json.dumps(published)
 
+    corpus_body = (export.path / CORPUS_FILE).read_text(encoding="utf-8")
+    corpus_texts = {json.loads(line)["text"] for line in corpus_body.splitlines()}
+    assert corpus_texts == {"hello", "hey!"}
+    assert ALICE not in corpus_body
+
 
 def test_withdrawing_removes_the_row_from_training_and_publishing(settings, log):
     brain = Babble(settings, generator=CheckpointGenerator(settings, log), log=log)
@@ -70,12 +85,21 @@ def test_withdrawing_removes_the_row_from_training_and_publishing(settings, log)
     gw.onboard(ALICE)
     answer = gw.ping(ALICE, "hello")[0]
     gw.correct(ALICE, "hey!", reply_to=answer.id)
-    assert build_export(settings, log=log).rows == 1
+    assert brain.corpus.count() == 2
+    assert brain.store.count() == 1
+    result = build_export(settings, log=log)
+    assert result.correction_rows == 1
+    assert result.corpus_rows == 2
 
     gw.say(ALICE, "!babble forget")
 
+    # `!babble forget` empties both stores, not just the corrections one.
     assert brain.store.count() == 0
-    assert build_export(settings, log=log).rows == 0
+    assert brain.corpus.count() == 0
+    result = build_export(settings, log=log)
+    assert result.rows == 0
+    assert result.correction_rows == 0
+    assert result.corpus_rows == 0
     assert train(settings, steps=2, echo=False, log=log).stopped_because == "no_data"
 
 
@@ -97,6 +121,7 @@ def test_the_log_tells_the_whole_story_of_a_conversation(settings, log, read_log
         "bot.ping",
         "model.load",
         "bot.generate",
+        "capture.corpus",
         "capture.correction",
         "capture.approval",
         "train.start",

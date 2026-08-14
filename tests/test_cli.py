@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from babble.cli import main
+from babble.cli import build_parser, main
+from babble.config import Settings
+from babble.consent import ConsentStore
+from babble.corpus import SOURCE_MENTION, CorpusRow, CorpusStore, make_corpus_id
+from babble.identity import Pseudonymiser
+from babble.store import CORRECTION, Interaction, InteractionStore, make_row_id
 
 
 @pytest.fixture
@@ -55,8 +60,12 @@ def test_the_readme_quickstart_runs_end_to_end(cli, capsys):
 
     out = capsys.readouterr().out
     assert "fake row" in out
+    assert "flattened" in out  # fake-data also seeds the corpus, not just the pairs
     assert "checkpoint" in out
+    assert "corpus" in out  # the export breakdown names both configs
+    assert "corrections" in out
     assert "not pushed" in out
+    assert (cli / "export" / "data" / "corpus.jsonl").exists()
     assert (cli / "export" / "data" / "train.jsonl").exists()
     assert (cli / "export" / "README.md").exists()
 
@@ -91,3 +100,93 @@ def test_logs_are_written_and_readable_back(cli, capsys):
     out = capsys.readouterr().out
     assert "train.checkpoint" in out
     assert '"component": "trainer"' in out
+
+
+# --- backfill-corpus ------------------------------------------------------
+
+
+def test_backfill_corpus_appears_in_the_parser():
+    args = build_parser().parse_args(["backfill-corpus"])
+
+    assert args.command == "backfill-corpus"
+
+
+def _seed_one_correction_pair(cli) -> None:
+    """A single consented correction row, filed directly -- not through fake-data,
+    which already runs the backfill itself and would leave nothing left to add."""
+    settings = Settings.from_env()
+    settings.ensure_dirs()
+    ids = Pseudonymiser.load(settings)
+    consent = ConsentStore(settings.consent_path)
+    consent.grant("asker-1")
+    consent.grant("helper-1")
+    asker, helper = ids.user("asker-1"), ids.user("helper-1")
+    InteractionStore(settings.interactions_path).append(
+        Interaction(
+            id=make_row_id(CORRECTION, "hi", "hey", asker, helper),
+            signal=CORRECTION,
+            prompt="hi",
+            rejected="junk",
+            chosen="hey",
+            prompt_author=asker,
+            signal_author=helper,
+            weight=1.0,
+            created_at="2026-01-01T00:00:00+00:00",
+        )
+    )
+
+
+def test_backfill_corpus_adds_rows_the_first_time_and_nothing_the_second(cli, capsys):
+    _seed_one_correction_pair(cli)
+
+    assert main(["backfill-corpus"]) == 0
+    first = capsys.readouterr().out
+    assert "added 2 corpus row(s)" in first  # the prompt half and the chosen half
+
+    assert main(["backfill-corpus"]) == 0
+    second = capsys.readouterr().out
+    assert "added 0 corpus row(s)" in second
+    assert "already in the corpus" in second
+
+
+# --- rescan-blocklist -------------------------------------------------------
+
+
+def test_rescan_blocklist_reports_both_stores(cli, capsys, monkeypatch):
+    blocklist_path = cli / "blocklist.txt"
+    blocklist_path.write_text("badword\n", encoding="utf-8")
+    monkeypatch.setenv("BABBLE_BLOCKLIST_PATH", str(blocklist_path))
+
+    settings = Settings.from_env()
+    settings.ensure_dirs()
+    ids = Pseudonymiser.load(settings)
+    consent = ConsentStore(settings.consent_path)
+    consent.grant("alice-1")
+    author = ids.user("alice-1")
+
+    InteractionStore(settings.interactions_path).append(
+        Interaction(
+            id=make_row_id(CORRECTION, "hi", "a real badword", author, author),
+            signal=CORRECTION,
+            prompt="hi",
+            rejected="junk",
+            chosen="a real badword",
+            prompt_author=author,
+            signal_author=author,
+            weight=1.0,
+            created_at="2026-01-01T00:00:00+00:00",
+        )
+    )
+    CorpusStore(settings.corpus_path).append(
+        CorpusRow(
+            id=make_corpus_id("a real badword", author),
+            text="a real badword",
+            author=author,
+            source=SOURCE_MENTION,
+        )
+    )
+
+    assert main(["rescan-blocklist"]) == 0
+
+    out = capsys.readouterr().out
+    assert "purged 1 correction row(s) and 1 corpus row(s)" in out

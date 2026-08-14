@@ -4,7 +4,17 @@ from __future__ import annotations
 
 import json
 
-from babble.consent import DECLINED, GRANTED, PENDING, UNKNOWN, WITHDRAWN, ConsentStore
+from babble.consent import (
+    DECLINED,
+    GRANTED,
+    PENDING,
+    SCOPE_CORPUS,
+    SCOPE_CORRECTIONS,
+    UNKNOWN,
+    WITHDRAWN,
+    ConsentStore,
+)
+from babble.corpus import SOURCE_MENTION, CorpusRow, CorpusStore, make_corpus_id
 from babble.identity import Pseudonymiser
 from babble.store import CORRECTION, Interaction, InteractionStore, make_row_id
 
@@ -59,6 +69,142 @@ def test_a_corrupt_consent_file_means_nobody_consented(settings):
 
     assert store.granted_ids() == []
     assert not store.may_capture("alice")
+
+
+# --- two scopes -----------------------------------------------------------
+
+
+def test_a_legacy_grant_loads_as_corrections_granted_and_corpus_unknown(settings):
+    """A pre-corpus consent.json only ever answered the corrections notice."""
+    settings.consent_path.write_text(
+        json.dumps(
+            {
+                "alice": {
+                    "decision": GRANTED,
+                    "updated_at": "2025-01-01T00:00:00+00:00",
+                    "notice_version": 1,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    store = ConsentStore(settings.consent_path)
+
+    assert store.decision("alice", SCOPE_CORRECTIONS) == GRANTED
+    assert store.decision("alice", SCOPE_CORPUS) == UNKNOWN
+
+
+def test_a_legacy_decline_loads_as_declined_for_both_scopes(settings):
+    """A "no" needs no re-asking to stay a no, so it carries across scopes."""
+    settings.consent_path.write_text(
+        json.dumps({"bob": {"decision": DECLINED, "updated_at": "2025-01-01T00:00:00+00:00"}}),
+        encoding="utf-8",
+    )
+
+    store = ConsentStore(settings.consent_path)
+
+    assert store.decision("bob", SCOPE_CORRECTIONS) == DECLINED
+    assert store.decision("bob", SCOPE_CORPUS) == DECLINED
+
+
+def test_grant_with_no_scopes_named_grants_both(settings):
+    store = ConsentStore(settings.consent_path)
+    store.grant("alice")
+
+    assert store.decision("alice", SCOPE_CORRECTIONS) == GRANTED
+    assert store.decision("alice", SCOPE_CORPUS) == GRANTED
+
+
+def test_grant_with_one_scope_named_grants_only_that_one(settings):
+    store = ConsentStore(settings.consent_path)
+    store.grant("alice", SCOPE_CORPUS)
+
+    assert store.decision("alice", SCOPE_CORPUS) == GRANTED
+    assert store.decision("alice", SCOPE_CORRECTIONS) == UNKNOWN
+
+
+def test_withdraw_clears_widened_channels(settings):
+    store = ConsentStore(settings.consent_path)
+    store.grant("alice")
+    store.widen("alice", "chan-1")
+
+    store.withdraw("alice")
+
+    assert store.wide_channels("alice") == []
+
+
+def test_decline_clears_widened_channels(settings):
+    store = ConsentStore(settings.consent_path)
+    store.grant("alice")
+    store.widen("alice", "chan-1")
+
+    store.decline("alice")
+
+    assert store.wide_channels("alice") == []
+
+
+def test_may_capture_channel_is_false_without_the_corpus_grant_even_if_widened(settings):
+    store = ConsentStore(settings.consent_path)
+    store.grant("alice", SCOPE_CORRECTIONS)
+    store.widen("alice", "chan-1")
+
+    assert not store.may_capture_channel("alice", "chan-1")
+
+
+def test_may_capture_channel_is_false_in_a_different_channel(settings):
+    store = ConsentStore(settings.consent_path)
+    store.grant("alice")
+    store.widen("alice", "chan-1")
+
+    assert not store.may_capture_channel("alice", "chan-2")
+
+
+def test_may_capture_channel_is_true_only_for_the_exact_person_and_channel(settings):
+    store = ConsentStore(settings.consent_path)
+    store.grant("alice")
+    store.grant("bob")
+    store.widen("alice", "chan-1")
+
+    assert store.may_capture_channel("alice", "chan-1")
+    assert not store.may_capture_channel("bob", "chan-1")
+
+
+def test_widen_is_idempotent(settings):
+    store = ConsentStore(settings.consent_path)
+    store.grant("alice")
+
+    assert store.widen("alice", "chan-1") is True
+    assert store.widen("alice", "chan-1") is False
+
+
+def test_narrow_returns_false_if_the_channel_was_never_widened(settings):
+    store = ConsentStore(settings.consent_path)
+    store.grant("alice")
+
+    assert store.narrow("alice", "chan-1") is False
+
+
+def test_scopes_and_wide_channels_round_trip_through_a_restart(settings):
+    store = ConsentStore(settings.consent_path)
+    store.grant("alice")
+    store.widen("alice", "chan-1")
+
+    reloaded = ConsentStore(settings.consent_path)
+
+    assert reloaded.decision("alice", SCOPE_CORRECTIONS) == GRANTED
+    assert reloaded.decision("alice", SCOPE_CORPUS) == GRANTED
+    assert reloaded.wide_channels("alice") == ["chan-1"]
+
+
+def test_a_corrupt_consent_file_fails_closed_for_both_scopes(settings):
+    settings.consent_path.write_text("{ this is not json", encoding="utf-8")
+
+    store = ConsentStore(settings.consent_path)
+
+    assert store.decision("alice", SCOPE_CORRECTIONS) == UNKNOWN
+    assert store.decision("alice", SCOPE_CORPUS) == UNKNOWN
+    assert not store.may_capture("alice", scope=SCOPE_CORPUS)
 
 
 # --- store --------------------------------------------------------------
@@ -122,6 +268,43 @@ def test_unicode_survives_storage(settings):
 
     (loaded,) = store.all()
     assert loaded.chosen == "🫠 https://tenor.com/view/x こんにちは"
+
+
+# --- corpus store ---------------------------------------------------------
+
+
+def _corpus_row(text="hello there", author="u_" + "a" * 16, source=SOURCE_MENTION):
+    return CorpusRow(id=make_corpus_id(text, author), text=text, author=author, source=source)
+
+
+def test_identical_corpus_rows_collapse(settings):
+    store = CorpusStore(settings.corpus_path)
+
+    assert store.append(_corpus_row()) is True
+    assert store.append(_corpus_row()) is False
+    assert store.count() == 1
+
+
+def test_purge_author_removes_exactly_that_authors_corpus_rows(settings):
+    store = CorpusStore(settings.corpus_path)
+    alice, bob = "u_" + "a" * 16, "u_" + "b" * 16
+    store.append(_corpus_row(text="one", author=alice))
+    store.append(_corpus_row(text="two", author=bob))
+    store.append(_corpus_row(text="three", author=alice))
+
+    removed = store.purge_author(alice)
+
+    assert removed == 2
+    assert [r.author for r in store.all()] == [bob]
+
+
+def test_a_torn_corpus_line_is_skipped_rather_than_fatal(settings):
+    store = CorpusStore(settings.corpus_path)
+    store.append(_corpus_row(text="good"))
+    with open(settings.corpus_path, "a", encoding="utf-8") as fh:
+        fh.write('{"id": "truncated", "tex\n')  # killed mid-write
+
+    assert [r.text for r in store.all()] == ["good"]
 
 
 # --- identity -----------------------------------------------------------

@@ -1,5 +1,12 @@
 """The background trainer.
 
+The objective is plain next-token prediction over the unlabelled corpus: every
+token of every row is a target, every row counts the same, and nothing is paired
+with anything. There is no prompt to mask off and no chosen answer to upweight,
+because a corpus row is one piece of writing rather than a question and its
+answer. Correction pairs are still captured and still published -- they are just
+not what the loss is computed over any more.
+
 Three properties matter more than speed here:
 
 1. **It must not make the machine unusable.** It runs at nice 19 on a capped
@@ -29,10 +36,17 @@ import torch
 
 from .blocklist import Blocklist
 from .config import Settings
-from .consent import ConsentStore
+from .consent import SCOPE_CORPUS, ConsentStore
+from .corpus import CorpusRow, CorpusStore
 from .discord_feed import TrainingFeed
-from .export_hf import DATA_FILE, ExportBlocked, build_export, push as push_export
-from .generate import best_of
+from .export_hf import (
+    CORPUS_FILE,
+    DATA_FILE,
+    ExportBlocked,
+    build_export,
+    push as push_export,
+)
+from .generate import continue_text
 from .identity import Pseudonymiser
 from .logs import EventLog
 from .model import (
@@ -42,11 +56,23 @@ from .model import (
     per_token_loss,
     sequence_loss,
 )
-from .store import CORRECTION, Interaction, InteractionStore
-from .tokenizer import PAD_ID, Example, build_example
-from .util import utcnow_iso
+from .tokenizer import PAD_ID, Example, text_examples
+from .util import truncate, utcnow_iso
 
-SAMPLE_PROMPTS = ("hello", "how are you")
+#: Used only when the corpus is empty and there is nothing real to seed with.
+SAMPLE_PREFIXES = ("hello", "how are you")
+
+#: How many bytes of a real row to feed the model before asking it to carry on.
+PROBE_PREFIX_BYTES = 24
+
+# Where the probe prefix came from. Identical bad output means opposite things
+# depending on this: seeded from a hardcoded string the model has never seen,
+# nonsense is expected; seeded from a row it has trained on, nonsense is the bug.
+PROBE_TRAIN = "trained"
+PROBE_FALLBACK = "not in dataset"
+
+#: Posted in place of anything that matched the content filter on its way out.
+WITHHELD = "*(withheld — matched the content filter)*"
 
 
 def be_polite(settings: Settings, log: EventLog) -> None:
@@ -66,72 +92,42 @@ def be_polite(settings: Settings, log: EventLog) -> None:
     log.event("train.polite", nice=applied_nice, threads=threads, cpus=os.cpu_count())
 
 
-def consented_rows(
+def corpus_rows(
     settings: Settings, ids: Pseudonymiser | None = None, blocklist: Blocklist | None = None
-) -> list[Interaction]:
-    """Rows both of whose participants still consent, checked right now.
+) -> list[CorpusRow]:
+    """Corpus rows whose author still consents, checked right now.
 
     Withdrawal already purges rows, so this is belt and braces -- but "used to
     train the model" is a promise made in the consent notice, and it should be
     enforced at the moment of training, not only at the moment of capture. The
     blocklist gets the same belt-and-braces treatment: a row stored before a
     term was added must not survive to be trained on once it is.
+
+    A corpus row has one author, so one grant decides it -- and the grant that
+    decides it is `corpus`, never the older corrections one.
     """
     ids = ids or Pseudonymiser.load(settings)
     blocklist = blocklist if blocklist is not None else Blocklist.load()
     consent = ConsentStore(settings.consent_path)
-    allowed = {ids.user(uid) for uid in consent.granted_ids()}
-    rows = InteractionStore(settings.interactions_path).all()
-    return [
-        r
-        for r in rows
-        if r.prompt_author in allowed
-        and r.signal_author in allowed
-        and not blocklist.matches(r.prompt, r.chosen, r.rejected)
-    ]
+    allowed = {ids.user(uid) for uid in consent.granted_ids(SCOPE_CORPUS)}
+    rows = CorpusStore(settings.corpus_path).all()
+    return [r for r in rows if r.author in allowed and not blocklist.matches(r.text)]
 
 
-def row_weight(row: Interaction, settings: Settings) -> float:
-    """The row's stored weight, with corrections boosted on top of it.
+def to_examples(rows: list[CorpusRow], block_size: int) -> list[Example]:
+    """Corpus rows to training examples: plain text, plain next-token objective.
 
-    The stored weight already separates a correction from a thumbs-up. The boost
-    is a second, separate knob for a different problem: with a corpus this small
-    a brand new correction is one row among twenty and takes many checkpoints to
-    show up in the model's behaviour. Multiplying it makes the thing ro actually
-    typed count for more than the things the bot was merely not told off for.
+    There is no weight argument and no masking argument, because there is
+    nothing left to weight or mask. Every row counts once, every token in every
+    row is a target, and a row too long for one block becomes several examples
+    rather than a truncated one.
     """
-    weight = max(0.0, row.weight)
-    if row.signal == CORRECTION:
-        weight *= max(0.0, settings.correction_boost)
-    return weight
+    return [example for row in rows for example in text_examples(row.text, block_size)]
 
 
-def trainable_rows(rows: list[Interaction]) -> list[Interaction]:
-    """The rows that become examples: a row with no `chosen` teaches nothing.
-
-    Split out so anything that wants to line a row up with its example -- the
-    worst-row report, for one -- filters by exactly the same rule `to_examples`
-    does, instead of indexing into a list one filter out of step.
-    """
-    return [row for row in rows if row.chosen]
-
-
-def to_examples(
-    rows: list[Interaction], block_size: int, settings: Settings | None = None
-) -> list[Example]:
-    """Rows to supervised examples. Without `settings`, stored weights are used
-    as-is -- that is what an eval pass wants, since boosting corrections in the
-    held-out loss would make it incomparable to the training loss.
-    """
-    return [
-        build_example(
-            row.prompt,
-            row.chosen,
-            block_size,
-            weight=row_weight(row, settings) if settings else max(0.0, row.weight),
-        )
-        for row in trainable_rows(rows)
-    ]
+def count_tokens(examples: list[Example]) -> int:
+    """Total tokens across `examples`, padding excluded. What actually gets trained."""
+    return sum(len(e) for e in examples)
 
 
 # --- held-out validation --------------------------------------------------
@@ -170,13 +166,13 @@ class Split:
     `disabled_reason` says why.
     """
 
-    train: list[Interaction]
-    val: list[Interaction]
+    train: list[CorpusRow]
+    val: list[CorpusRow]
     enabled: bool
     disabled_reason: str | None = None
 
 
-def split_rows(rows: list[Interaction], settings: Settings) -> Split:
+def split_rows(rows: list[CorpusRow], settings: Settings) -> Split:
     """Deterministically hold out `settings.val_fraction` of `rows` by row id.
 
     The split takes the `val_holdout_size` rows with the **lowest** hash bucket,
@@ -234,46 +230,35 @@ def _stack_examples(examples: list[Example]) -> tuple[torch.Tensor, torch.Tensor
     return tokens, mask, weights
 
 
-def _real_mask(examples: list[Example], width: int) -> torch.Tensor:
-    """1 on every token that is really there, 0 on the right-padding."""
-    real = torch.zeros((len(examples), width), dtype=torch.long)
-    for i, example in enumerate(examples):
-        real[i, : len(example)] = 1
-    return real
-
-
 @dataclass
 class LossReport:
     """The checkpoint loss, taken apart into the numbers that mean something.
 
-    `response` is what training optimises. `prompt` is diagnostic: nothing ever
-    trains it, so it should stay high, and a prompt loss that starts falling
-    means the mask has broken.
+    `mean` is what training optimises, over every token of every example --
+    there is no held-back half of the sequence any more, so there is no second
+    loss to compare it against.
 
-    `worst_row` is the one that actually explains this bug. The training loss is
-    a mean over *tokens*, so a short row that the model has not learned barely
+    `worst_row` is the number that explains "loss 0.02 but it babbles". The mean
+    is a mean over *tokens*, so a short example the model has not learned barely
     moves it: four bad bytes among four hundred good ones is a rounding error in
-    the average and a completely broken answer to whoever typed that prompt.
-    Reporting the worst row alongside the mean makes "loss 0.02 but it babbles"
-    visible instead of mysterious.
+    the average and complete nonsense to whoever wrote that line. Reporting the
+    worst example alongside the mean makes that visible instead of mysterious.
     """
 
-    response: float | None = None
-    prompt: float | None = None
+    mean: float | None = None
     worst_row: float | None = None
-    worst_prompt: str | None = None
+    worst_text: str | None = None
 
 
 @torch.no_grad()
 def measure(
-    model: Babbler, examples: list[Example], rows: list[Interaction] | None = None
+    model: Babbler, examples: list[Example], rows: list[CorpusRow] | None = None
 ) -> LossReport:
-    """Response loss, prompt loss and the worst single row, in one forward pass.
+    """Mean loss and the worst single example, in one forward pass.
 
-    `rows` is only used to name the worst row, and must be the rows `examples`
-    was built from -- pass it through `trainable_rows` first, the way
-    `to_examples` does, or the name will belong to a different row than the
-    number.
+    `rows` is only used to name the worst example. One row can produce several
+    examples, so the two lists are lined up by walking the rows in the same order
+    `to_examples` does rather than by assuming they are the same length.
     """
     if not examples:
         return LossReport()
@@ -283,26 +268,31 @@ def measure(
         tokens, mask, _ = _stack_examples(examples)
         per_token = per_token_loss(model, tokens)
 
-        response_mask = mask[:, 1:].to(per_token.dtype)
-        real = _real_mask(examples, tokens.size(1))
-        prompt_mask = (real[:, 1:] - mask[:, 1:]).clamp(min=0).to(per_token.dtype)
-
-        per_row = (per_token * response_mask).sum(dim=1) / response_mask.sum(dim=1).clamp(min=1e-8)
+        target_mask = mask[:, 1:].to(per_token.dtype)
+        per_row = (per_token * target_mask).sum(dim=1) / target_mask.sum(dim=1).clamp(min=1e-8)
         worst = int(torch.argmax(per_row))
         return LossReport(
-            response=float(
-                (per_token * response_mask).sum() / response_mask.sum().clamp(min=1e-8)
-            ),
-            prompt=(
-                float((per_token * prompt_mask).sum() / prompt_mask.sum())
-                if float(prompt_mask.sum())
-                else None
-            ),
+            mean=float((per_token * target_mask).sum() / target_mask.sum().clamp(min=1e-8)),
             worst_row=float(per_row[worst]),
-            worst_prompt=rows[worst].prompt if rows and worst < len(rows) else None,
+            worst_text=_example_owner(rows, worst, model.config.block_size) if rows else None,
         )
     finally:
         model.train(was_training)
+
+
+def _example_owner(rows: list[CorpusRow], index: int, block_size: int) -> str | None:
+    """The text of the row that produced example `index`.
+
+    Rebuilding the counts is cheap and, unlike indexing straight into `rows`,
+    stays correct when a long row expands into several examples.
+    """
+    seen = 0
+    for row in rows:
+        produced = len(text_examples(row.text, block_size))
+        if seen <= index < seen + produced:
+            return row.text
+        seen += produced
+    return None
 
 
 @torch.no_grad()
@@ -340,7 +330,7 @@ def overfit_signal(
 
 @dataclass
 class DatasetStats:
-    """The full picture behind `consented_rows` -- not just the count that made it."""
+    """The full picture behind `corpus_rows` -- not just the count that made it."""
 
     stored: int
     trained: int
@@ -353,20 +343,20 @@ def dataset_stats(
 ) -> DatasetStats:
     """How much of the stored corpus actually reaches training, and why the rest doesn't.
 
-    Mirrors `consented_rows`'s filter exactly, just bucketing the rejects instead
-    of discarding them, so the two can never quietly disagree about who trains.
+    Mirrors `corpus_rows`'s filter exactly, just bucketing the rejects instead
+    of discarding them, so the two can never quietly disagree about what trains.
     """
     ids = ids or Pseudonymiser.load(settings)
     blocklist = blocklist if blocklist is not None else Blocklist.load()
     consent = ConsentStore(settings.consent_path)
-    allowed = {ids.user(uid) for uid in consent.granted_ids()}
-    all_rows = InteractionStore(settings.interactions_path).all()
+    allowed = {ids.user(uid) for uid in consent.granted_ids(SCOPE_CORPUS)}
+    all_rows = CorpusStore(settings.corpus_path).all()
 
     trained = dropped_consent = dropped_blocklist = 0
     for row in all_rows:
-        if row.prompt_author not in allowed or row.signal_author not in allowed:
+        if row.author not in allowed:
             dropped_consent += 1
-        elif blocklist.matches(row.prompt, row.chosen, row.rejected):
+        elif blocklist.matches(row.text):
             dropped_blocklist += 1
         else:
             trained += 1
@@ -378,37 +368,79 @@ def dataset_stats(
     )
 
 
-def distinct_prompts(rows: list[Interaction]) -> list[tuple[str, str]]:
-    """Ordered, de-duplicated (prompt, chosen) pairs.
+def distinct_texts(rows: list[CorpusRow]) -> list[str]:
+    """Ordered, de-duplicated row texts.
 
-    Order follows first appearance, so the rotation walks the dataset in a
-    stable sequence as new rows are only ever appended. The `chosen` half uses
-    the *latest* row for that prompt, since that is what the dataset currently
-    says the right answer is.
+    Order follows first appearance, so the probe rotation walks the corpus in a
+    stable sequence as new rows are only ever appended.
     """
     order: list[str] = []
-    latest: dict[str, str] = {}
+    seen: set[str] = set()
     for row in rows:
-        if not row.prompt:
+        if not row.text or row.text in seen:
             continue
-        if row.prompt not in latest:
-            order.append(row.prompt)
-        latest[row.prompt] = row.chosen
-    return [(prompt, latest[prompt]) for prompt in order]
+        seen.add(row.text)
+        order.append(row.text)
+    return order
 
 
-def probe_prompt(rows: list[Interaction], index: int) -> tuple[str, str]:
-    """The prompt (and its expected answer) for checkpoint `index`.
+def leading_words(text: str, budget: int = PROBE_PREFIX_BYTES) -> str:
+    """The opening of `text`, at most `budget` bytes, cut at a word boundary.
 
-    Cycles deterministically through every distinct prompt in the consented
-    dataset, one per checkpoint, wrapping around once it reaches the end.
-    Falls back to the hardcoded pair only when there is nothing to probe with.
+    Two properties, both load-bearing:
+
+    **It is a genuine byte-prefix of the row.** Rebuilding it from
+    `text.split()` joined by single spaces is not: a row containing a newline,
+    an indent or a double space comes back as a byte sequence that never
+    appeared in training. The model duly produces nonsense, the feed labels that
+    nonsense `trained`, and the reader concludes the model has forgotten a row it
+    has in fact memorised -- manufacturing exactly the failure `probe_side`
+    exists to detect. So this slices the row's own bytes and never rejoins them.
+
+    **Something is always held back**, whenever there is anything to hold back,
+    so the model has something to actually continue. A "continuation" of the
+    whole row only shows the model agreeing that the row has ended.
+
+    Cutting on a byte boundary can split a multi-byte character; `errors=
+    "ignore"` drops the fragment, which keeps the result a valid prefix.
     """
-    pairs = distinct_prompts(rows)
-    if not pairs:
-        return SAMPLE_PROMPTS[index % len(SAMPLE_PROMPTS)], ""
-    prompt, chosen = pairs[index % len(pairs)]
-    return prompt, chosen
+    raw = text.encode("utf-8")
+    if not raw.strip():
+        # Nothing but whitespace: there is no real word to seed with.
+        return ""
+    if len(raw) <= budget:
+        # The whole row fits. Hold back the last word so there is something to
+        # continue -- but a single word (no interior space) is handed back whole
+        # rather than truncated, since chopping it would corrupt the very text we
+        # are claiming the model trained on.
+        boundary = raw.rstrip().rfind(b" ")
+        head = raw[:boundary] if boundary > 0 else raw.rstrip()
+    else:
+        # Over budget: cut to the budget and back up to the last word boundary
+        # inside the slice. A single word longer than the budget has none, and is
+        # cut mid-word rather than handed back whole.
+        head = raw[:budget]
+        boundary = head.rfind(b" ")
+        if boundary > 0:
+            head = head[:boundary]
+    return head.decode("utf-8", errors="ignore")
+
+
+def probe_prefix(rows: list[CorpusRow], index: int) -> tuple[str, str]:
+    """The prefix to continue from at checkpoint `index`, and where it came from.
+
+    Cycles deterministically through every distinct text in the training split,
+    one per checkpoint, wrapping around once it reaches the end. Falls back to a
+    hardcoded prefix only when there is nothing real to seed with.
+    """
+    texts = distinct_texts(rows)
+    if texts:
+        prefix = leading_words(texts[index % len(texts)])
+        if prefix:
+            return prefix, PROBE_TRAIN
+    # Nothing real to seed with, or nothing usable left after trimming. Say so
+    # rather than labelling a hardcoded string as a row the model trained on.
+    return SAMPLE_PREFIXES[index % len(SAMPLE_PREFIXES)], PROBE_FALLBACK
 
 
 def make_batch(
@@ -521,7 +553,13 @@ def _auto_publish(
         feed.publish_failed(f"export blocked: {exc}")
         return state
 
-    content_hash = hashlib.sha256((result.path / DATA_FILE).read_bytes()).hexdigest()
+    # Both files, so a change to either one is a change worth pushing: the
+    # corrections can move while the corpus stands still, and vice versa.
+    digest = hashlib.sha256()
+    for name in (CORPUS_FILE, DATA_FILE):
+        path = result.path / name
+        digest.update(path.read_bytes() if path.exists() else b"")
+    content_hash = digest.hexdigest()
     if content_hash == state.content_hash and result.rows == state.rows:
         log.event("publish.skipped", reason="unchanged", rows=result.rows)
         return state
@@ -659,11 +697,12 @@ def train(
             reason = "max_cycles"
             break
 
-        rows = consented_rows(settings, ids, blocklist)
+        rows = corpus_rows(settings, ids, blocklist)
         split = split_rows(rows, settings)
-        examples = to_examples(split.train, model.config.block_size, settings)
-        # Held-out rows keep their stored weights: boosting corrections in the
-        # eval set would make val loss incomparable to train loss.
+        # Same call on both sides of the split: with no weighting and no masking
+        # left, a held-out example is built exactly like a trained one, which is
+        # what makes val loss comparable to train loss at all.
+        examples = to_examples(split.train, model.config.block_size)
         val_examples = to_examples(split.val, model.config.block_size)
         if not examples:
             log.event("train.idle", reason="no_consented_rows", rows=len(rows))
@@ -678,13 +717,21 @@ def train(
         cycles += 1
         cycle_started = time.perf_counter()
         stats = dataset_stats(settings, ids, blocklist)
+        # Train-split tokens only, because that is what sits next to the
+        # train-split example count everywhere it is reported. Adding the
+        # held-out tokens in would overstate what is actually being trained on
+        # by the size of the split -- about 25% at the default fraction.
+        train_tokens = count_tokens(examples)
         log.event(
             "train.cycle.start",
             cycle=cycles,
             step=step,
             rows=len(rows),
             examples=len(examples),
+            tokens=train_tokens,
+            val_tokens=count_tokens(val_examples),
             planned_steps=budget,
+            train_rows=len(split.train),
             val_rows=len(split.val),
             val_enabled=split.enabled,
             val_disabled_reason=None if split.enabled else split.disabled_reason,
@@ -699,6 +746,9 @@ def train(
             dropped_consent=stats.dropped_consent,
             dropped_blocklist=stats.dropped_blocklist,
             examples=len(examples),
+            tokens=train_tokens,
+            train_rows=len(split.train),
+            val_rows=len(split.val),
             batch_size=settings.batch_size,
             lr=settings.learning_rate,
         )
@@ -833,16 +883,6 @@ def _resume_or_init(settings: Settings, log: EventLog) -> tuple[Babbler, torch.o
         return model, optimizer, 0, False
 
 
-WITHHELD = "*(withheld — matched the content filter)*"
-
-# Which side of the split a probe row came from. Identical bad output means
-# opposite things depending on this: on a held-out row the model was never
-# trained on that prompt and garbage is expected; on a trained row it is the
-# memorisation bug. Nobody reading the feed could tell the two apart before.
-PROBE_TRAIN = "trained"
-PROBE_FALLBACK = "not in dataset"
-
-
 def _checkpoint(
     settings: Settings,
     log: EventLog,
@@ -852,7 +892,7 @@ def _checkpoint(
     optimizer,
     step: int,
     window: list[float],
-    rows: list[Interaction],
+    rows: list[CorpusRow],
     probe_index: int,
     cycle: int,
     prev_loss: float | None,
@@ -867,25 +907,22 @@ def _checkpoint(
 ) -> tuple[float, float | None]:
     mean_loss = sum(window) / len(window) if window else float("nan")
     started = time.perf_counter()
-    prompt, expected = probe_prompt(rows, probe_index)
-    # The probe walks the train split, so it is always asking about a row the
-    # model has actually been trained on. That is the only way the probe answers
-    # the question anyone is asking it -- garbage on a held-out row means
-    # nothing, garbage on a trained row is the bug.
-    probe_side = PROBE_TRAIN if rows else PROBE_FALLBACK
-    text = best_of(
+    # The probe walks the train split, so the prefix is always the opening of a
+    # row the model has actually been trained on. What comes back is a
+    # continuation of it, not an answer to it: there is no answer to show, and
+    # printing an "expected" field would be inventing one.
+    prefix, probe_side = probe_prefix(rows, probe_index)
+    text = continue_text(
         model,
-        prompt,
-        n=max(1, settings.best_of),
+        prefix,
         max_new_tokens=min(64, settings.max_new_tokens),
         temperature=settings.temperature,
         top_k=settings.top_k,
     )
-    # What the running mean hides: which row is worst, and whether the loss is
-    # really over the response and not over the prompt. `trainable_rows` keeps
-    # the row list lined up with `train_examples`, which was filtered the same
-    # way, so the worst row is named correctly.
-    report = measure(model, train_examples, trainable_rows(rows))
+    # What the running mean hides: which example is worst. `_example_owner`
+    # walks the rows the same way `to_examples` did, so a long row that became
+    # several examples still names the right one.
+    report = measure(model, train_examples, rows)
     # Eval-mode, no-grad, no optimizer step: this scores the held-out rows
     # without moving a single weight or optimizer moment.
     val_loss = eval_loss(model, val_examples) if val_enabled else None
@@ -898,10 +935,9 @@ def _checkpoint(
         "train.checkpoint",
         step=step,
         loss=round(mean_loss, 6),
-        response_loss=round(report.response, 6) if report.response is not None else None,
-        prompt_loss=round(report.prompt, 6) if report.prompt is not None else None,
+        mean_loss=round(report.mean, 6) if report.mean is not None else None,
         worst_row_loss=round(report.worst_row, 6) if report.worst_row is not None else None,
-        worst_row_prompt=report.worst_prompt,
+        worst_row_text=truncate(report.worst_text, 200) if report.worst_text else None,
         val_loss=round(val_loss, 6) if val_loss is not None else None,
         val_rows=val_rows,
         val_enabled=val_enabled,
@@ -910,9 +946,8 @@ def _checkpoint(
         rows=len(rows),
         file=path.name,
         seconds=round(time.perf_counter() - started, 2),
-        prompt=prompt,
+        prefix=prefix,
         probe_side=probe_side,
-        expected=expected,
         sample=text.replace("\n", "\\n")[:200],
     )
     if echo:
@@ -929,25 +964,23 @@ def _checkpoint(
         worst_part = f" | worst {report.worst_row:6.3f}" if report.worst_row is not None else ""
         print(
             f"step {step:>7,} | loss {mean_loss:8.4f}{worst_part} | {val_part}{overfit_part} | "
-            f"[{probe_side}] {prompt!r} -> {shown!r} (expected {expected!r})",
+            f"[{probe_side}] {prefix!r} -> {shown!r}",
             flush=True,
         )
 
     # Everything below leaves the machine via the feed -- filter it the same
-    # way any other model output headed for Discord gets filtered, prompt and
-    # expected answer included, since both come straight out of the dataset.
+    # way any other model output headed for Discord gets filtered, the prefix
+    # included, since it comes straight out of the corpus.
     feed_sample = text if blocklist.hit(text) is None else WITHHELD
-    feed_prompt = prompt if blocklist.hit(prompt) is None else WITHHELD
-    feed_expected = expected if blocklist.hit(expected) is None else WITHHELD
+    feed_prefix = prefix if blocklist.hit(prefix) is None else WITHHELD
     feed.checkpoint(
         cycle=cycle,
         step=step,
         loss=mean_loss,
         prev_loss=prev_loss,
         rows=len(rows),
-        prompt=feed_prompt,
+        prefix=feed_prefix,
         sample=feed_sample,
-        expected=feed_expected,
         probe_side=probe_side,
         val_loss=val_loss,
         prev_val_loss=prev_val_loss,

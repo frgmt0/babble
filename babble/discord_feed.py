@@ -151,10 +151,17 @@ class TrainingFeed:
         examples: int,
         batch_size: int,
         lr: float,
+        tokens: int = 0,
+        train_rows: int = 0,
+        val_rows: int = 0,
     ) -> None:
-        """One line per cycle for the numbers that barely change: the dataset
-        shape and the hyperparameters, so the per-checkpoint line doesn't have
-        to repeat them.
+        """One line per cycle for the numbers that barely change: the shape of
+        the corpus and the hyperparameters, so the per-checkpoint line doesn't
+        have to repeat them.
+
+        `stored`/`trained`/`dropped` count corpus **rows**; `examples` counts what
+        those rows tokenise into, which is larger whenever a row was long enough
+        to need more than one block.
         """
         if not self.enabled:
             return
@@ -167,9 +174,12 @@ class TrainingFeed:
             if dropped_blocklist:
                 reasons.append(f"{dropped_blocklist} blocklist")
             note = f" ({', '.join(reasons)})"
+        split = f" · {train_rows} train / {val_rows} val rows" if train_rows or val_rows else ""
+        token_part = f" ≈{tokens:,} tokens" if tokens else ""
         self._post(
             f"🚀 cycle **{cycle}** starting · {stored} stored → {trained} training, "
-            f"{dropped} dropped{note} · {examples} examples · batch {batch_size} @ lr {lr:g}"
+            f"{dropped} dropped{note}{split} · {examples} examples{token_part} · "
+            f"batch {batch_size} @ lr {lr:g}"
         )
 
     def cycle_end(self, *, cycle: int, steps: int, seconds: float) -> None:
@@ -185,9 +195,8 @@ class TrainingFeed:
         loss: float,
         prev_loss: float | None,
         rows: int,
-        prompt: str,
+        prefix: str,
         sample: str,
-        expected: str = "",
         probe_side: str = "",
         val_loss: float | None = None,
         prev_val_loss: float | None = None,
@@ -219,15 +228,18 @@ class TrainingFeed:
         elif val_enabled is False:
             reason = f" — {val_disabled_reason}" if val_disabled_reason else ""
             lines.append(f"val: disabled{reason}")
-        # Prompt and sample both come out of the dataset / the model, so both are
-        # neutered before they hit Discord; the expected answer, when we have one.
-        # `probe_side` says whether this row was trained on: without it, garbage
-        # here is unreadable, because a held-out row producing garbage is normal
-        # and a trained row producing garbage is a bug.
+        # Prefix and sample both come out of the corpus / the model, so both are
+        # neutered before they hit Discord. It is labelled a continuation because
+        # that is what it is: the model was seeded with the opening of a real row
+        # and asked to carry on. There is no expected answer to print alongside
+        # it -- the corpus has no answers in it -- and inventing a field to hold
+        # one would be the single most misleading thing this line could do.
+        # `probe_side` says whether the prefix came from a row it trained on:
+        # without it, nonsense here is unreadable.
         side = f" _({probe_side})_" if probe_side else ""
-        lines.append(f"> `{neuter_sample(prompt)}`{side} → `{neuter_sample(sample)}`")
-        if expected:
-            lines.append(f"> expected: `{neuter_sample(expected)}`")
+        lines.append(
+            f"> continuation{side}: `{neuter_sample(prefix)}` → `{neuter_sample(sample)}`"
+        )
         self._post("\n".join(lines))
 
     def publish(self, *, rows: int, url: str) -> None:

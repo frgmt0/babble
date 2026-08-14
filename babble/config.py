@@ -91,17 +91,17 @@ class Settings:
     # under a couple of seconds.
     best_of: int = 4
 
-    # How much each kind of feedback is worth. A correction is the real signal;
-    # a thumbs-up is a cheap nod, so it nudges the weights far less.
+    # How much each kind of feedback is worth. These no longer touch training:
+    # the objective is plain next-token prediction over unlabelled corpus text,
+    # where there is no "chosen" answer to weight and every row counts the same.
+    # They survive as metadata on the stored correction rows, which are still
+    # captured and still published as their own dataset config.
     correction_weight: float = 1.0
     approval_weight: float = 0.25
-    # ...and corrections get multiplied again on top of that, so a fresh
-    # correction is visible in the model's behaviour within a checkpoint or two
-    # instead of being averaged away by everything already learned.
     correction_boost: float = 3.0
 
-    # Held-out validation. A stable hash of each row's id decides its side of
-    # the split, so the same row always lands on the same side as the corpus
+    # Held-out validation. A stable hash of each corpus row's id decides its side
+    # of the split, so the same row always lands on the same side as the corpus
     # grows and as the trainer restarts. Below `val_min_rows`, holding out
     # `val_fraction` of a handful of rows could starve training entirely, so
     # validation is skipped and reported as disabled instead.
@@ -169,6 +169,10 @@ class Settings:
     @property
     def interactions_path(self) -> Path:
         return self.data_dir / "interactions.jsonl"
+
+    @property
+    def corpus_path(self) -> Path:
+        return self.data_dir / "corpus.jsonl"
 
     @property
     def consent_path(self) -> Path:

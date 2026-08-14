@@ -1,8 +1,9 @@
 """`babble <command>` -- everything you can do without a Discord token.
 
-    babble fake-data          write a dozen made-up corrections to play with
+    babble fake-data          write made-up rows into both stores to play with
+    babble backfill-corpus    flatten the stored correction pairs into the corpus
     babble train --loop       the polite background trainer
-    babble sample -p hello    generate from the latest checkpoint
+    babble sample -p hello    continue a prefix from the latest checkpoint
     babble curve              the loss curve, as a picture
     babble summary            one-shot state of the whole thing
     babble logs --follow      watch it live (read-only, never mutates)
@@ -23,22 +24,22 @@ from .config import Settings
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="babble",
-        description="A tiny from-scratch model that learns to talk from Discord corrections.",
+        description="A tiny from-scratch model that learns to talk from a Discord corpus.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sub = parser.add_subparsers(dest="command")
 
     sub.add_parser("bot", help="run the Discord bot (needs BABBLE_DISCORD_TOKEN)")
 
-    train = sub.add_parser("train", help="train from the stored corrections")
+    train = sub.add_parser("train", help="train from the stored corpus")
     train.add_argument("--steps", type=int, default=None, help="steps per cycle")
     train.add_argument("--loop", action="store_true", help="keep cycling: work, rest, repeat")
     train.add_argument("--cycles", type=int, default=None, help="stop after N cycles")
     train.add_argument("--seed", type=int, default=None, help="deterministic run")
     train.add_argument("--quiet", action="store_true", help="no per-checkpoint printing")
 
-    gen = sub.add_parser("sample", help="generate from the latest checkpoint")
-    gen.add_argument("-p", "--prompt", default="hello")
+    gen = sub.add_parser("sample", help="continue a prefix using the latest checkpoint")
+    gen.add_argument("-p", "--prompt", default="hello", help="the prefix to continue from")
     gen.add_argument("-n", "--tokens", type=int, default=None)
     gen.add_argument("--temperature", type=float, default=None)
     gen.add_argument("--top-k", type=int, default=None)
@@ -58,8 +59,13 @@ def build_parser() -> argparse.ArgumentParser:
     export.add_argument("--repo", default=None, help="dataset repo id")
     export.add_argument("--private", action="store_true")
 
-    fake = sub.add_parser("fake-data", help="seed made-up corrections for offline testing")
+    fake = sub.add_parser("fake-data", help="seed made-up rows for offline testing")
     fake.add_argument("--user", default=None, help="fake user id to attribute them to")
+
+    sub.add_parser(
+        "backfill-corpus",
+        help="flatten the stored correction pairs into the corpus (idempotent)",
+    )
 
     sub.add_parser(
         "rescan-blocklist",
@@ -95,8 +101,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         if result.steps_run == 0 and result.stopped_because == "no_data":
             print(
-                "Nothing to train on yet — no consented rows.\n"
-                "Try `babble fake-data` to make some up, or run the bot and get corrected.",
+                "Nothing to train on yet — no consented corpus rows.\n"
+                "Try `babble fake-data` to make some up, `babble backfill-corpus` if you have\n"
+                "old correction pairs lying around, or run the bot and talk to it.",
                 flush=True,
             )
         else:
@@ -108,13 +115,15 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "sample":
-        from .generate import load_model, sample
+        from .generate import continue_text, load_model
 
         model, step = load_model(settings)
         source = "checkpoint" if settings.latest_checkpoint.exists() else "random init (no checkpoint yet)"
         print(f"# step {step} · {source} · {model.num_params():,} params", flush=True)
         for _ in range(max(1, args.count)):
-            text = sample(
+            # A continuation, not an answer: the model is trained on plain text
+            # and has never once seen a prompt/response boundary.
+            text = continue_text(
                 model,
                 args.prompt,
                 max_new_tokens=args.tokens or settings.max_new_tokens,
@@ -171,16 +180,29 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
         print(
-            f"wrote {result.rows} rows ({result.corrections} corrections, "
-            f"{result.approvals} 👍) to {result.path}",
+            f"wrote {result.rows} rows to {result.path}\n"
+            f"  corpus       {result.corpus_rows} rows, {result.corpus_chars:,} chars\n"
+            f"  corrections  {result.correction_rows} rows "
+            f"({result.corrections} corrections, {result.approvals} 👍)",
             flush=True,
         )
-        if result.excluded_no_consent:
-            print(f"  excluded {result.excluded_no_consent} row(s): no consent", flush=True)
-        if result.dropped_leaky:
-            print(f"  dropped {result.dropped_leaky} row(s): contained a raw id", flush=True)
-        if result.dropped_blocklist:
-            print(f"  dropped {result.dropped_blocklist} row(s): matched the content filter", flush=True)
+        for label, consent_dropped, leaky, blocked in (
+            (
+                "corpus",
+                result.corpus_excluded_no_consent,
+                result.corpus_dropped_leaky,
+                result.corpus_dropped_blocklist,
+            ),
+            ("corrections", result.excluded_no_consent, result.dropped_leaky, result.dropped_blocklist),
+        ):
+            if consent_dropped:
+                print(f"  {label}: excluded {consent_dropped} row(s): no consent", flush=True)
+            if leaky:
+                print(f"  {label}: dropped {leaky} row(s): contained a raw id", flush=True)
+            if blocked:
+                print(
+                    f"  {label}: dropped {blocked} row(s): matched the content filter", flush=True
+                )
 
         if args.push:
             repo = args.repo or settings.hf_repo
@@ -204,12 +226,38 @@ def main(argv: list[str] | None = None) -> int:
         log = EventLog(settings, Pseudonymiser.load(settings), component="cli")
         added = seed_fake_data(settings, log=log, user_id=args.user or FAKE_USER)
         print(f"added {added} fake row(s) to {settings.interactions_path}", flush=True)
+        print(f"and flattened them into {settings.corpus_path}", flush=True)
         print("now try: babble train --steps 100", flush=True)
+        log.close()
+        return 0
+
+    if args.command == "backfill-corpus":
+        from .backfill import backfill_corpus
+        from .identity import Pseudonymiser
+        from .logs import EventLog
+
+        log = EventLog(settings, Pseudonymiser.load(settings), component="cli")
+        result = backfill_corpus(settings, log=log)
+        print(
+            f"scanned {result.scanned} correction row(s) → "
+            f"added {result.added} corpus row(s) to {settings.corpus_path}",
+            flush=True,
+        )
+        if result.skipped_duplicate:
+            print(f"  skipped {result.skipped_duplicate}: already in the corpus", flush=True)
+        if result.skipped_consent:
+            print(f"  skipped {result.skipped_consent}: no consent", flush=True)
+        if result.skipped_blocklist:
+            print(f"  skipped {result.skipped_blocklist}: matched the content filter", flush=True)
+        if result.skipped_empty:
+            print(f"  skipped {result.skipped_empty}: nothing to store", flush=True)
+        print("  (safe to run again — it will add nothing the second time)", flush=True)
         log.close()
         return 0
 
     if args.command == "rescan-blocklist":
         from .blocklist import Blocklist
+        from .corpus import CorpusStore
         from .identity import Pseudonymiser
         from .logs import EventLog
         from .store import InteractionStore
@@ -218,8 +266,20 @@ def main(argv: list[str] | None = None) -> int:
         blocklist = Blocklist.load()
         store = InteractionStore(settings.interactions_path)
         removed = store.purge(lambda r: blocklist.matches(r.prompt, r.chosen, r.rejected))
-        log.event("blocklist.rescan", terms=len(blocklist.terms), purged=removed)
-        print(f"rescanned against {len(blocklist.terms)} term(s), purged {removed} row(s)", flush=True)
+        corpus_removed = CorpusStore(settings.corpus_path).purge(
+            lambda r: blocklist.matches(r.text)
+        )
+        log.event(
+            "blocklist.rescan",
+            terms=len(blocklist.terms),
+            purged=removed,
+            corpus_purged=corpus_removed,
+        )
+        print(
+            f"rescanned against {len(blocklist.terms)} term(s), purged {removed} correction "
+            f"row(s) and {corpus_removed} corpus row(s)",
+            flush=True,
+        )
         log.close()
         return 0
 

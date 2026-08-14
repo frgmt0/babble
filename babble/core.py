@@ -2,11 +2,19 @@
 
 `Babble` takes plain dataclasses in and returns `Reply` objects out. It never
 sends anything and never awaits anything, which is why the whole feedback loop --
-consent gate, correction capture, thumbs-up, purge -- is testable without a
-token, a gateway connection or an event loop.
+consent gate, corpus capture, correction capture, thumbs-up, purge -- is testable
+without a token, a gateway connection or an event loop.
 
 `bot.py` is the only file that knows discord.py exists; it translates events into
 these dataclasses and posts the replies that come back.
+
+There are two things being collected here and they are not the same thing:
+
+* the **corpus** (`corpus.py`) -- the plain text of what people send the bot.
+  This is what the model trains on. Collecting it needs a `corpus` grant.
+* **corrections** (`store.py`) -- the `(prompt, rejected, chosen)` triples. No
+  longer a training objective, still captured and still published, still under
+  the older, narrower `corrections` grant.
 """
 
 from __future__ import annotations
@@ -22,9 +30,22 @@ from .consent import (
     DECLINED,
     GRANTED,
     PENDING,
+    SCOPE_CORPUS,
+    SCOPE_CORRECTIONS,
     UNKNOWN,
     WITHDRAWN,
     ConsentStore,
+)
+from .corpus import (
+    SOURCE_AMBIENT,
+    SOURCE_CORRECTION,
+    SOURCE_DM,
+    SOURCE_MENTION,
+    SOURCE_PROMPT,
+    SOURCE_REPLY,
+    CorpusRow,
+    CorpusStore,
+    make_corpus_id,
 )
 from .exchanges import Exchange, ExchangeLog
 from .identity import Pseudonymiser
@@ -41,9 +62,8 @@ THUMBS_UP = "👍"
 # --- copy ----------------------------------------------------------------
 
 FOOTER = (
-    f"-# like this response? react with 👍 — if not, teach me by replying with "
-    f"`{CORRECTION_MARKER} what i should have said`. corrections teach me a lot more "
-    f"than reactions do."
+    f"-# what you send me goes into the corpus i learn from. react 👍 if this one was fine, or "
+    f"teach me something specific by replying with `{CORRECTION_MARKER} what i should have said`."
 )
 
 FOOTER_UNCONSENTED = (
@@ -51,43 +71,74 @@ FOOTER_UNCONSENTED = (
     "`!babble consent` for the details."
 )
 
+# Shown to someone who opted in under the old corrections-only notice. They are
+# still a full participant for corrections; their ordinary messages are simply
+# not being collected until they answer the new one.
+FOOTER_CORPUS_PENDING = (
+    "-# i keep more than corrections now, and i'm not keeping yours until you say so. "
+    "`!babble consent`"
+)
+
 CONSENT_NOTICE = f"""**first time we've talked — here's the deal before we start.**
 
 i'm a language model with **random weights**. i wasn't trained on the internet, on this server's \
-history, or on anything at all. the only way i ever learn is from people correcting me here.
+history, or on anything at all. everything i know comes from what people send me here.
 
-if you opt in, this gets **stored, used to train me, and published to a public HuggingFace \
-dataset** that anyone can download:
-· the messages you send me
-· what i answered
-· your corrections and 👍 reactions
+if you opt in, **the messages you send me** — @mentions, replies to me, DMs — get **stored, used \
+to train me, and published to a public HuggingFace dataset** that anyone can download. i learn \
+from them as plain text: there's no right answer attached, it's just a pool of real writing.
 
-what never leaves this machine: your discord id, your username, anything you say that isn't \
-addressed to me. in the published data you are a salted hash like `u_9f2c…`.
+what never leaves this machine: your discord id, your username, and **anything you say that isn't \
+addressed to me**. in the published data you are a salted hash like `u_9f2c…`.
 
 **nothing of yours is stored until you say yes.**
 
-corrections are explicit: a reply only teaches me if it starts with `{CORRECTION_MARKER}`, and \
-the marker is stripped before anything is stored. an unmarked reply is just a message to me.
+teaching me is explicit and still counts for something on its own: a reply that starts with \
+`{CORRECTION_MARKER}` is filed as a correction as well as going in the pool, and 👍 says the \
+answer was fine. the marker is stripped before anything is stored.
 
 **`!babble accept`** — opt in
 **`!babble decline`** — no thanks. i'll still reply, i just won't keep anything
-**`!babble forget`** — any time later: opt out *and* delete everything of yours i've kept"""
+**`!babble all`** — later, in one channel: collect *everything you say there*, not just pings at \
+me. one person, one channel, `!babble pings` to undo
+**`!babble forget`** — any time: opt out *and* delete everything of yours i've kept"""
 
-HELP_TEXT = f"""**babble** — a from-scratch model that only learns from you.
+# The re-ask. Anyone who said yes to the old notice said yes to something
+# narrower than this, so their existing corrections stand and their ordinary
+# messages wait here until they answer again.
+CORPUS_NOTICE = f"""**heads up — what i collect has changed.**
 
-ping me and i'll answer. react 👍 if it was fine.
+you opted in back when the only thing i kept was **corrections**. i now keep **the messages you \
+send me** — @mentions, replies, DMs — as plain text, to train on and to publish in the same \
+public HuggingFace dataset.
 
-**to correct me, start your reply with `{CORRECTION_MARKER}`:**
+that's more than you agreed to, so **i'm not collecting your messages until you say yes again.** \
+the corrections you already gave me stay exactly as they are, under the consent you already gave.
+
+**`!babble accept`** — opt in to this
+**`!babble decline`** — no thanks
+**`!babble forget`** — opt out *and* delete everything of yours i've kept
+
+-# still the same rules underneath: no discord ids, no usernames, nothing you say that isn't \
+addressed to me, and you're a salted hash like `u_9f2c…` in anything published."""
+
+HELP_TEXT = f"""**babble** — a from-scratch model learning to talk from what you send it.
+
+ping me and i'll carry on from whatever you said. it will be nonsense for a long time.
+
+everything you send me goes into an unlabelled corpus, and that corpus is the whole
+of my training data. there's no right answer attached to any of it.
+
+**to teach me something specific, start your reply with `{CORRECTION_MARKER}`:**
 > `{CORRECTION_MARKER} hey, what's up`
 
-that marker is how i tell teaching apart from talking — a reply without it is just
-another message to me, so i'll answer it instead of learning from it. the marker is
-stripped before anything is stored, so it never ends up in what i learn.
-corrections are worth far more than reactions — they're the only strong signal i get.
+that marker is how i tell teaching apart from talking. the marker is stripped before
+anything is stored. corrections are filed separately *and* go into the corpus.
 
 `!babble consent` — what i store, and your current choice
 `!babble accept` / `!babble decline` — opt in or out
+`!babble all` — in this channel, collect everything you say, not just pings at me
+`!babble pings` — undo that here
 `!babble forget` — opt out and delete everything of yours
 `!babble status` — how training is going"""
 
@@ -106,6 +157,26 @@ class IncomingMessage:
     reply_to_message_id: str | None = None
     reply_to_is_bot: bool = False
     attachment_urls: Sequence[str] = ()
+    #: A direct message. Explicit rather than inferred from a missing guild id,
+    #: so a message that simply forgot to say which guild it came from is never
+    #: silently promoted to "addressed to the bot".
+    is_dm: bool = False
+
+    def addressed_to_bot(self) -> bool:
+        """Did this person mean this message for the bot?
+
+        The three ways to talk to it, and the boundary of the default grant:
+        everything else someone says is theirs and is not collected.
+        """
+        return bool(self.mentions_bot or self.reply_to_is_bot or self.is_dm)
+
+    def source(self) -> str:
+        """Which of those three ways it was, for the corpus row's provenance."""
+        if self.is_dm:
+            return SOURCE_DM
+        if self.mentions_bot:
+            return SOURCE_MENTION
+        return SOURCE_REPLY
 
 
 @dataclass(frozen=True)
@@ -206,6 +277,7 @@ class Babble:
         generator: Callable[[str], Generation | str],
         consent: ConsentStore | None = None,
         store: InteractionStore | None = None,
+        corpus: CorpusStore | None = None,
         exchanges: ExchangeLog | None = None,
         ids: Pseudonymiser | None = None,
         log: EventLog | None = None,
@@ -218,6 +290,7 @@ class Babble:
         self.ids = ids or Pseudonymiser.load(settings)
         self.consent = consent or ConsentStore(settings.consent_path)
         self.store = store or InteractionStore(settings.interactions_path)
+        self.corpus = corpus or CorpusStore(settings.corpus_path)
         self.exchanges = exchanges or ExchangeLog(settings.exchanges_path)
         self.log = log or NullLog()
         self.blocklist = blocklist if blocklist is not None else Blocklist.load()
@@ -234,9 +307,8 @@ class Babble:
         if command is not None:
             return self._handle_command(msg, *command)
 
-        if not (msg.mentions_bot or msg.reply_to_is_bot):
-            self._log_drop(msg, "not_addressed")
-            return []
+        if not msg.addressed_to_bot():
+            return self._handle_ambient(msg)
 
         self.log.event(
             "bot.ping",
@@ -270,6 +342,21 @@ class Babble:
 
         return self._respond(msg)
 
+    def _handle_ambient(self, msg: IncomingMessage) -> list[Reply]:
+        """A message that wasn't for us. Normally we never see it again.
+
+        The one exception is somebody who ran `!babble all` in this exact
+        channel: they asked for everything they type here to be collected, so it
+        is -- silently, with no reply, and only for them. Nobody else in the
+        channel is affected and nothing is ever said that would prompt someone
+        who has not opted in.
+        """
+        if not self.consent.may_capture_channel(msg.author_id, msg.channel_id):
+            self._log_drop(msg, "not_addressed")
+            return []
+        self._capture_corpus(msg, self._message_text(msg), SOURCE_AMBIENT)
+        return []
+
     def handle_reaction(self, evt: ReactionEvent) -> list[Reply]:
         if evt.user_is_bot or _normalise_emoji(evt.emoji) != THUMBS_UP:
             return []
@@ -286,7 +373,9 @@ class Babble:
             )
             return []
 
-        if not self.consent.may_capture(evt.user_id, exchange.prompt_author_id):
+        if not self.consent.may_capture(
+            evt.user_id, exchange.prompt_author_id, scope=SCOPE_CORRECTIONS
+        ):
             self._log_skip(APPROVAL, evt.user_id, exchange.prompt_author_id)
             return []
 
@@ -328,24 +417,111 @@ class Babble:
         if reply.exchange is not None:
             self.exchanges.record(bot_message_id, reply.exchange)
 
+    # --- corpus capture --------------------------------------------------
+
+    def _capture_corpus(
+        self,
+        msg: IncomingMessage,
+        text: str,
+        source: str,
+        *,
+        author_id: object | None = None,
+    ) -> bool:
+        """File one piece of somebody's writing, if everything says we may.
+
+        `author_id` names whose writing it is, defaulting to whoever sent the
+        message. It differs only for a correction, where the prompt half belongs
+        to the person who was answered, not to the person doing the correcting --
+        and each half is gated on its own author's grant, because a corpus row
+        has exactly one author and nobody else's consent is relevant to it.
+        """
+        author_id = msg.author_id if author_id is None else author_id
+        text = text.strip()
+        if not text:
+            return False
+        state = self.consent.decision(author_id, SCOPE_CORPUS)
+        if state not in CAPTURE_OK:
+            self.log.event(
+                "capture.skipped",
+                signal="corpus",
+                scope=SCOPE_CORPUS,
+                reason="no_consent",
+                source=source,
+                user=self.log.user(author_id),
+                author_state=state,
+            )
+            return False
+        if self.blocklist.matches(text):
+            self._log_blocked("corpus", text, "", author_id)
+            return False
+
+        row = CorpusRow(
+            id=make_corpus_id(text, self.ids.user(author_id)),
+            text=text,
+            author=self.ids.user(author_id),
+            source=source,
+            # Straight off the pseudonymiser, not off the log: a stored row must
+            # not depend on which logger happens to be wired up.
+            guild=self.ids.guild(msg.guild_id) if msg.guild_id else None,
+            channel=self.ids.channel(msg.channel_id),
+            created_at=utcnow_iso(),
+        )
+        fresh = self.corpus.append(row)
+        self.log.event(
+            "capture.corpus",
+            row=row.id,
+            user=self.log.user(author_id),
+            source=source,
+            duplicate=None if fresh else True,
+            chars=len(text),
+            total_rows=self.corpus.count(),
+        )
+        return fresh
+
     # --- behaviour ------------------------------------------------------
 
     def _respond(self, msg: IncomingMessage) -> list[Reply]:
-        decision = self.consent.decision(msg.author_id)
+        corrections_state = self.consent.decision(msg.author_id, SCOPE_CORRECTIONS)
+        corpus_state = self.consent.decision(msg.author_id, SCOPE_CORPUS)
 
         # First contact is the consent moment. No generation, no storage.
-        if decision == UNKNOWN:
-            self.consent.mark_prompted(msg.author_id)
+        if corrections_state == UNKNOWN and corpus_state == UNKNOWN:
+            self.consent.mark_prompted(msg.author_id, SCOPE_CORRECTIONS)
+            self.consent.mark_prompted(msg.author_id, SCOPE_CORPUS)
             self.log.event(
                 "consent.prompt",
                 user=self.log.user(msg.author_id),
                 channel=self.log.channel(msg.channel_id),
                 guild=self.log.guild(msg.guild_id),
                 trigger="first_ping",
+                scope="all",
             )
             return [Reply(CONSENT_NOTICE, reply_to=msg.message_id, kind="consent")]
 
-        allowed = decision in CAPTURE_OK
+        # Somebody who opted in before the corpus existed. They keep every right
+        # the old notice gave them; what they have not agreed to is this, so they
+        # get asked exactly once and nothing of theirs is collected meanwhile.
+        #
+        # Only for someone actually *granted* under the old notice: the re-ask
+        # opens with "you opted in back when", which is not true of a person who
+        # was shown the old notice and never answered it. They keep the standing
+        # ask they already have, and `!babble consent` shows them today's terms.
+        reask = (
+            corrections_state in CAPTURE_OK
+            and corpus_state == UNKNOWN
+            and self.consent.mark_prompted(msg.author_id, SCOPE_CORPUS)
+        )
+        if reask:
+            self.log.event(
+                "consent.prompt",
+                user=self.log.user(msg.author_id),
+                channel=self.log.channel(msg.channel_id),
+                guild=self.log.guild(msg.guild_id),
+                trigger="corpus_reask",
+                scope=SCOPE_CORPUS,
+            )
+
+        allowed = corrections_state in CAPTURE_OK
         prompt = self._message_text(msg)
         generation = _as_generation(self.generator(prompt))
         body = clean_for_discord(generation.text, DISCORD_LIMIT - len(FOOTER) - 1)
@@ -376,6 +552,12 @@ class Babble:
             capturable=allowed,
         )
 
+        # What they wrote is the corpus. Their own message, under their own
+        # pseudonym, gated on their own grant -- the bot's reply is not stored
+        # anywhere, because a corpus of what a random model emitted is not a
+        # corpus of human writing.
+        self._capture_corpus(msg, prompt, msg.source())
+
         # Only remember the exchange if a correction to it could ever be stored.
         # A blocked generation is never remembered either -- there is nothing
         # here worth teaching the model to reproduce or correct.
@@ -390,8 +572,13 @@ class Babble:
             if allowed and not blocked
             else None
         )
-        footer = FOOTER if allowed else FOOTER_UNCONSENTED
-        return [
+        if not allowed:
+            footer = FOOTER_UNCONSENTED
+        elif corpus_state in CAPTURE_OK:
+            footer = FOOTER
+        else:
+            footer = FOOTER_CORPUS_PENDING
+        replies = [
             Reply(
                 f"{body}\n{footer}",
                 reply_to=msg.message_id,
@@ -399,22 +586,29 @@ class Babble:
                 exchange=exchange,
             )
         ]
+        if reask:
+            replies.append(Reply(CORPUS_NOTICE, reply_to=msg.message_id, kind="consent"))
+        return replies
 
     def _handle_correction(self, msg: IncomingMessage, exchange: Exchange) -> list[Reply]:
         corrector = msg.author_id
 
-        if self.consent.decision(corrector) == UNKNOWN:
-            self.consent.mark_prompted(corrector)
+        if self.consent.decision(corrector, SCOPE_CORRECTIONS) == UNKNOWN:
+            self.consent.mark_prompted(corrector, SCOPE_CORRECTIONS)
+            self.consent.mark_prompted(corrector, SCOPE_CORPUS)
             self.log.event(
                 "consent.prompt",
                 user=self.log.user(corrector),
                 channel=self.log.channel(msg.channel_id),
                 guild=self.log.guild(msg.guild_id),
                 trigger="first_correction",
+                scope="all",
             )
             return [Reply(CONSENT_NOTICE, reply_to=msg.message_id, kind="consent")]
 
-        if not self.consent.may_capture(corrector, exchange.prompt_author_id):
+        if not self.consent.may_capture(
+            corrector, exchange.prompt_author_id, scope=SCOPE_CORRECTIONS
+        ):
             self._log_skip(CORRECTION, corrector, exchange.prompt_author_id)
             return [
                 Reply(
@@ -482,6 +676,14 @@ class Babble:
             step=exchange.step,
             total_rows=total,
         )
+
+        # A correction is human writing too, on both sides: what was asked and
+        # what somebody typed as the better answer. Each half goes in under its
+        # own author's corpus grant, or not at all.
+        self._capture_corpus(msg, correction, SOURCE_CORRECTION)
+        self._capture_corpus(
+            msg, exchange.prompt, SOURCE_PROMPT, author_id=exchange.prompt_author_id
+        )
         return [
             Reply(
                 f"-# got it — correction #{total} filed. i'll pick it up on the next training cycle.",
@@ -504,55 +706,141 @@ class Babble:
 
         if verb in ("accept", "yes", "agree", "optin", "opt-in"):
             self.consent.grant(msg.author_id)
-            self.log.event("consent.accept", user=self.log.user(msg.author_id))
+            self.log.event("consent.accept", user=self.log.user(msg.author_id), scope="all")
             return reply(
-                "you're in — thank you. from now on our exchanges and your corrections go into "
-                "the training set and the public dataset.\n"
-                "-# change your mind whenever with `!babble forget`, which also deletes what i've kept."
+                "you're in — thank you. from now on the messages you send me go into the "
+                "training corpus and the public dataset, and so do your corrections.\n"
+                "-# `!babble all` in a channel widens that to *everything you say there*. "
+                "`!babble forget` any time, which also deletes what i've kept."
             )
 
         if verb in ("decline", "no", "nope", "optout", "opt-out"):
             self.consent.decline(msg.author_id)
-            self.log.event("consent.decline", user=self.log.user(msg.author_id))
+            self.log.event("consent.decline", user=self.log.user(msg.author_id), scope="all")
             return reply(
                 "understood — nothing of yours will be stored, trained on, or published.\n"
                 "-# i'll still reply if you ping me. `!babble accept` if you ever change your mind."
             )
 
+        if verb in ("all", "everything", "all-in"):
+            if args and args[0].lower() in ("off", "stop", "no", "none", "undo"):
+                return self._narrow_channel(msg, reply)
+            return self._widen_channel(msg, reply)
+
+        if verb in ("pings", "only-pings", "just-pings", "notall", "not-all"):
+            return self._narrow_channel(msg, reply)
+
         if verb in ("forget", "delete", "withdraw", "erase"):
             author = self.ids.user(msg.author_id)
             purged = self.store.purge_author(author)
+            purged_corpus = self.corpus.purge_author(author)
             dropped = self.exchanges.forget_author(msg.author_id)
             self.consent.withdraw(msg.author_id)
             self.log.event(
                 "consent.withdraw",
                 user=author,
                 rows_purged=purged,
+                corpus_purged=purged_corpus,
                 pending_dropped=dropped,
             )
+            total = purged + purged_corpus
             return reply(
-                f"done. consent withdrawn and **{purged}** stored "
-                f"{'row' if purged == 1 else 'rows'} of yours deleted.\n"
+                f"done. consent withdrawn and **{total}** stored "
+                f"{'row' if total == 1 else 'rows'} of yours deleted "
+                f"({purged_corpus} from the corpus, {purged} correction "
+                f"{'row' if purged == 1 else 'rows'}).\n"
                 "-# anything already published to HuggingFace in a previous export won't vanish "
                 "from people's downloads, but it's gone from here and from every export after this."
             )
 
         if verb in ("consent", "privacy", "data"):
-            state = self.consent.decision(msg.author_id)
-            return reply(f"{CONSENT_NOTICE}\n\n-# your current setting: **{_describe(state)}**")
+            return reply(f"{CONSENT_NOTICE}\n\n{self._describe_consent(msg)}")
 
         if verb in ("status", "stats"):
             from .stats import render_snapshot, snapshot  # local: keeps core import cheap
 
-            state = self.consent.decision(msg.author_id)
             return reply(
-                f"{render_snapshot(snapshot(self.settings))}\n"
-                f"-# you: **{_describe(state)}**"
+                f"{render_snapshot(snapshot(self.settings))}\n{self._describe_consent(msg)}"
             )
 
         return reply(HELP_TEXT)
 
+    def _widen_channel(self, msg: IncomingMessage, reply: Callable[[str], list[Reply]]) -> list[Reply]:
+        """`!babble all` — collect everything this person says in this channel."""
+        if self.consent.decision(msg.author_id, SCOPE_CORPUS) not in CAPTURE_OK:
+            # Widening a collection nobody has agreed to is not a thing. Show
+            # them what they would be agreeing to first.
+            self.consent.mark_prompted(msg.author_id, SCOPE_CORRECTIONS)
+            self.consent.mark_prompted(msg.author_id, SCOPE_CORPUS)
+            self.log.event(
+                "consent.prompt",
+                user=self.log.user(msg.author_id),
+                channel=self.log.channel(msg.channel_id),
+                guild=self.log.guild(msg.guild_id),
+                trigger="widen_without_consent",
+                scope=SCOPE_CORPUS,
+            )
+            return reply(
+                f"{CONSENT_NOTICE}\n\n"
+                "-# **`!babble accept` first** — then `!babble all` here again and i'll widen it."
+            )
+
+        added = self.consent.widen(msg.author_id, msg.channel_id)
+        self.log.event(
+            "consent.widen",
+            user=self.log.user(msg.author_id),
+            channel=self.log.channel(msg.channel_id),
+            guild=self.log.guild(msg.guild_id),
+            already_on=None if added else True,
+            channels=len(self.consent.wide_channels(msg.author_id)),
+        )
+        if not added:
+            return reply(
+                "already on in this channel — everything you say here is going into the corpus.\n"
+                "-# `!babble pings` turns it back off here."
+            )
+        return reply(
+            "done — from now on **every message you send in this channel** goes into the corpus, "
+            "not just the ones aimed at me. it's only you and it's only here: nobody else in this "
+            "channel is affected, and it doesn't follow you anywhere else.\n"
+            "-# `!babble pings` turns it back off here, straight away. `!babble forget` opts you "
+            "out entirely and deletes everything of yours."
+        )
+
+    def _narrow_channel(self, msg: IncomingMessage, reply: Callable[[str], list[Reply]]) -> list[Reply]:
+        """`!babble pings` — back to collecting only what is aimed at the bot."""
+        removed = self.consent.narrow(msg.author_id, msg.channel_id)
+        self.log.event(
+            "consent.narrow",
+            user=self.log.user(msg.author_id),
+            channel=self.log.channel(msg.channel_id),
+            guild=self.log.guild(msg.guild_id),
+            was_on=removed or None,
+            channels=len(self.consent.wide_channels(msg.author_id)),
+        )
+        if not removed:
+            return reply(
+                "that wasn't on here — in this channel i only keep what you send me directly.\n"
+                "-# `!babble all` if you want me to keep everything you say here."
+            )
+        return reply(
+            "done — from now on i only keep what you send me directly in this channel. "
+            "that takes effect immediately.\n"
+            "-# what's already stored stays until you `!babble forget`, which deletes all of it."
+        )
+
     # --- helpers --------------------------------------------------------
+
+    def _describe_consent(self, msg: IncomingMessage) -> str:
+        """One line telling this person exactly where they stand, per grant."""
+        corpus = _describe(self.consent.decision(msg.author_id, SCOPE_CORPUS))
+        corrections = _describe(self.consent.decision(msg.author_id, SCOPE_CORRECTIONS))
+        wide = str(msg.channel_id) in self.consent.wide_channels(msg.author_id)
+        here = "everything you say here" if wide else "only what you send me"
+        return (
+            f"-# you: messages **{corpus}** · corrections **{corrections}** · "
+            f"in this channel i keep **{here}**"
+        )
 
     def _message_text(self, msg: IncomingMessage) -> str:
         """The user's words, minus our own @mention, minus any raw ids.
@@ -579,16 +867,23 @@ class Babble:
             chars=len(msg.content),
         )
 
-    def _log_skip(self, signal: str, signal_author: object, prompt_author: object) -> None:
+    def _log_skip(
+        self,
+        signal: str,
+        signal_author: object,
+        prompt_author: object,
+        scope: str = SCOPE_CORRECTIONS,
+    ) -> None:
         """Record that we threw data away, and why. Never what the data was."""
         blockers = {
-            "signal_author": self.consent.decision(signal_author),
-            "prompt_author": self.consent.decision(prompt_author),
+            "signal_author": self.consent.decision(signal_author, scope),
+            "prompt_author": self.consent.decision(prompt_author, scope),
         }
         missing = [role for role, state in blockers.items() if state not in CAPTURE_OK]
         self.log.event(
             "capture.skipped",
             signal=signal,
+            scope=scope,
             reason="no_consent",
             missing=",".join(missing),
             user=self.log.user(signal_author),

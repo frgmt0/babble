@@ -1,9 +1,13 @@
 """A dozen made-up corrections, so the trainer has something to chew on offline.
 
-This is **not** a corpus and **not** a seed. It exists so that `babble train` can
-be run and watched before the bot has a token, and so the tests have realistic
-rows. It is written by an explicit command, into the same store the bot writes
-to, attributed to a fake user who "consented" locally.
+This is **not** real data and **not** a seed for the real corpus. It exists so
+that `babble train` can be run and watched before the bot has a token, and so the
+tests have realistic rows. It is written by an explicit command, into the same
+stores the bot writes to, attributed to fake users who "consented" locally.
+
+Both stores get filled: the correction pairs go in as pairs, and then the same
+backfill the real migration uses flattens them into corpus rows, because the
+corpus is what the trainer reads.
 
 If you are running this for real: delete `data/` before you go live, or these
 lines will end up in your export looking like things a person said.
@@ -86,5 +90,21 @@ def seed_fake_data(
     )
     added += int(store.append(approval))
 
-    log.event("fakedata.seed", added=added, total=store.count())
+    # The trainer reads the corpus, not the pairs, so seeding pairs alone would
+    # leave `babble train` with nothing to do. Same one-shot migration the real
+    # data goes through, so what gets trained here is shaped like the real thing.
+    from .backfill import backfill_corpus  # local: keeps this module import-cheap
+    from .corpus import CorpusStore
+
+    backfilled = backfill_corpus(settings, log=log, ids=ids)
+
+    log.event(
+        "fakedata.seed",
+        added=added,
+        total=store.count(),
+        corpus_added=backfilled.added,
+        # How big the corpus actually is, not how much this backfill walked --
+        # a real deployment has rows in there that no correction ever produced.
+        corpus_total=CorpusStore(settings.corpus_path).count(),
+    )
     return added

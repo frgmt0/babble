@@ -1,9 +1,11 @@
 """The content filter: bounces a whole row, never edits it, never logs the text.
 
 A blocklist is a speed bump, not a guarantee -- these tests are about the
-normalisation defeating the lazy/obvious evasions and the three enforcement
-points (capture, train, export) actually refusing a matching row, not about
-having a "complete" list of terms.
+normalisation defeating the lazy/obvious evasions and the four enforcement
+points (capture, train, export, rescan) actually refusing a matching row, not
+about having a "complete" list of terms. The corpus -- what the model actually
+trains on -- gets its own proof at every one of those points, alongside the
+older correction-pair proofs that still apply to `store.py`.
 """
 
 from __future__ import annotations
@@ -13,11 +15,12 @@ import pytest
 from babble.blocklist import Blocklist, normalise, row_fingerprint
 from babble.consent import ConsentStore
 from babble.core import Babble
+from babble.corpus import SOURCE_MENTION, CorpusRow, CorpusStore, make_corpus_id
 from babble.exchanges import Exchange
-from babble.export_hf import DATA_FILE, build_export
+from babble.export_hf import CORPUS_FILE, DATA_FILE, build_export, select_corpus_rows
 from babble.identity import Pseudonymiser
 from babble.store import CORRECTION, Interaction, InteractionStore, make_row_id
-from babble.trainer import consented_rows
+from babble.trainer import corpus_rows
 
 ALICE = "111111111111111111"
 BOB = "222222222222222222"
@@ -47,6 +50,20 @@ def _store_row(
         created_at="2026-01-01T00:00:00+00:00",
     )
     InteractionStore(settings.interactions_path).append(row)
+    return row
+
+
+def _store_corpus_row(settings, author_id, text="hi there", source=SOURCE_MENTION):
+    ids = Pseudonymiser.load(settings)
+    author = ids.user(author_id)
+    row = CorpusRow(
+        id=make_corpus_id(text, author),
+        text=text,
+        author=author,
+        source=source,
+        created_at="2026-01-01T00:00:00+00:00",
+    )
+    CorpusStore(settings.corpus_path).append(row)
     return row
 
 
@@ -177,38 +194,76 @@ def test_a_match_in_the_models_own_output_is_caught_before_send(fake, brain, gen
     assert brain.exchanges.get(sent[-1].id) is None  # nothing rememberable was ever sent
 
 
+def test_a_message_addressed_to_the_bot_matching_the_blocklist_is_never_stored_in_the_corpus(
+    fake, brain, settings, read_log
+):
+    fake.onboard("alice")
+
+    fake.ping("alice", "tell me a badword right now")
+
+    assert CorpusStore(settings.corpus_path).all() == []
+    entries = read_log("capture.blocked")
+    assert len(entries) == 1
+    assert entries[0]["stage"] == "corpus"
+    assert "badword" not in str(entries[0])
+
+
+def test_a_clean_message_with_an_awkward_substring_is_still_stored_in_the_corpus(fake, brain, settings):
+    fake.onboard("alice")
+
+    fake.ping("alice", "a classy assassin in glass armour")
+
+    assert len(CorpusStore(settings.corpus_path).all()) == 1
+
+
+def test_an_ambient_capture_matching_the_blocklist_is_never_stored_in_the_corpus(
+    fake, brain, settings, read_log
+):
+    """Ambient capture (`!babble all`) never replies and never re-checks
+    consent on the way in -- it still has to run every message past the
+    blocklist before it lands in the corpus."""
+    fake.onboard("alice")
+    fake.collect_all("alice")
+
+    replies = fake.say("alice", "just talking about a badword here")
+
+    assert replies == []  # ambient capture is always silent
+    assert CorpusStore(settings.corpus_path).all() == []
+    entries = read_log("capture.blocked")
+    assert len(entries) == 1
+    assert entries[0]["stage"] == "corpus"
+    assert "badword" not in str(entries[0])
+
+
+def test_ambient_capture_of_a_clean_message_is_still_stored(fake, brain, settings):
+    fake.onboard("alice")
+    fake.collect_all("alice")
+
+    fake.say("alice", "an entirely ordinary sentence")
+
+    assert len(CorpusStore(settings.corpus_path).all()) == 1
+
+
 # --- training time (trainer.py) -----------------------------------------
 
 
-def test_a_row_stored_before_the_term_was_blocked_is_excluded_at_training_time(settings):
+def test_a_corpus_row_stored_before_the_term_was_blocked_is_excluded_at_training_time(settings):
     ConsentStore(settings.consent_path).grant(ALICE)
-    _store_row(settings, ALICE, prompt="hi", chosen="a real badword")
+    _store_corpus_row(settings, ALICE, text="a real badword")
 
-    rows = consented_rows(settings, blocklist=_blocklist("badword"))
+    rows = corpus_rows(settings, blocklist=_blocklist("badword"))
 
     assert rows == []
 
 
-def test_a_blocked_term_hiding_in_the_rejected_field_is_also_caught(settings):
-    """The blocklist can be extended after a generation was sent and remembered;
-    the row it produced must not survive on the strength of a clean prompt and
-    chosen text alone if the old, rejected answer is now blocked too."""
+def test_corpus_training_time_filtering_only_drops_matching_rows(settings):
     ConsentStore(settings.consent_path).grant(ALICE)
-    _store_row(settings, ALICE, prompt="hi", chosen="fine response", rejected="a real badword")
+    _store_corpus_row(settings, ALICE, text="a real badword")
+    _store_corpus_row(settings, ALICE, text="a fine sentence")
 
-    rows = consented_rows(settings, blocklist=_blocklist("badword"))
+    rows = corpus_rows(settings, blocklist=_blocklist("badword"))
 
-    assert rows == []
-
-
-def test_training_time_filtering_only_drops_matching_rows(settings):
-    ConsentStore(settings.consent_path).grant(ALICE)
-    _store_row(settings, ALICE, prompt="hi", chosen="a real badword")
-    _store_row(settings, ALICE, prompt="clean prompt", chosen="a fine response")
-
-    rows = consented_rows(settings, blocklist=_blocklist("badword"))
-
-    assert [r.chosen for r in rows] == ["a fine response"]
+    assert [r.text for r in rows] == ["a fine sentence"]
 
 
 # --- export time (export_hf.py) -----------------------------------------
@@ -249,6 +304,41 @@ def test_export_keeps_clean_rows_and_drops_only_blocked_ones(settings):
     assert result.dropped_blocklist == 1
 
 
+def test_select_corpus_rows_drops_a_blocked_row(settings):
+    ConsentStore(settings.consent_path).grant(ALICE)
+    _store_corpus_row(settings, ALICE, text="a real badword")
+
+    rows, _excluded, _dropped_leaky, dropped_blocklist = select_corpus_rows(
+        settings, blocklist=_blocklist("badword")
+    )
+
+    assert rows == []
+    assert dropped_blocklist == 1
+
+
+def test_a_blocked_corpus_row_is_absent_from_export(settings):
+    ConsentStore(settings.consent_path).grant(ALICE)
+    _store_corpus_row(settings, ALICE, text="a real badword")
+
+    result = build_export(settings, blocklist=_blocklist("badword"))
+
+    assert result.corpus_rows == 0
+    assert result.corpus_dropped_blocklist == 1
+    body = (result.path / CORPUS_FILE).read_text(encoding="utf-8")
+    assert "badword" not in body
+
+
+def test_export_keeps_clean_corpus_rows_and_drops_only_blocked_ones(settings):
+    ConsentStore(settings.consent_path).grant(ALICE)
+    _store_corpus_row(settings, ALICE, text="a real badword")
+    _store_corpus_row(settings, ALICE, text="a fine sentence")
+
+    result = build_export(settings, blocklist=_blocklist("badword"))
+
+    assert result.corpus_rows == 1
+    assert result.corpus_dropped_blocklist == 1
+
+
 # --- rescan / purge -------------------------------------------------------
 
 
@@ -266,11 +356,26 @@ def test_rescan_purges_rows_that_now_match_an_extended_blocklist(settings):
     assert [r.chosen for r in store.all()] == ["fine response"]
 
 
+def test_rescan_purges_corpus_rows_that_now_match_an_extended_blocklist(settings):
+    ConsentStore(settings.consent_path).grant(ALICE)
+    _store_corpus_row(settings, ALICE, text="a real badword")
+    _store_corpus_row(settings, ALICE, text="a fine sentence")
+    store = CorpusStore(settings.corpus_path)
+    assert len(store.all()) == 2
+
+    blocklist = _blocklist("badword")
+    removed = store.purge(lambda r: blocklist.matches(r.text))
+
+    assert removed == 1
+    assert [r.text for r in store.all()] == ["a fine sentence"]
+
+
 def test_rescan_via_the_cli(settings, monkeypatch, capsys, tmp_path):
     from babble.cli import main
 
     ConsentStore(settings.consent_path).grant(ALICE)
     _store_row(settings, ALICE, prompt="hi", chosen="a real badword")
+    _store_corpus_row(settings, ALICE, text="a real badword too")
 
     custom = tmp_path / "custom.txt"
     custom.write_text("badword\n", encoding="utf-8")
@@ -282,6 +387,8 @@ def test_rescan_via_the_cli(settings, monkeypatch, capsys, tmp_path):
 
     code = main(["rescan-blocklist"])
 
+    out = capsys.readouterr().out
     assert code == 0
-    assert "purged 1" in capsys.readouterr().out
+    assert "purged 1 correction row(s) and 1 corpus row(s)" in out
     assert InteractionStore(settings.interactions_path).all() == []
+    assert CorpusStore(settings.corpus_path).all() == []

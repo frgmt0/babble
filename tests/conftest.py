@@ -94,6 +94,7 @@ class FakeDiscord:
         *,
         reply_to: str | None = None,
         attachments: tuple[str, ...] = (),
+        channel: str = "chan-1",
     ) -> list[SentMessage]:
         """@mention the bot, or reply to one of its messages."""
         return self._dispatch(
@@ -102,11 +103,24 @@ class FakeDiscord:
                 message_id=self._next_id(),
                 author_id=user,
                 content=text,
-                channel_id="chan-1",
+                channel_id=channel,
                 mentions_bot=reply_to is None,
                 reply_to_message_id=reply_to,
                 reply_to_is_bot=reply_to is not None,
                 attachment_urls=attachments,
+            ),
+        )
+
+    def dm(self, user: str, text: str = "hello", *, channel: str = "dm-1") -> list[SentMessage]:
+        """A direct message: addressed to the bot without mentioning anybody."""
+        return self._dispatch(
+            self.brain.handle_message,
+            IncomingMessage(
+                message_id=self._next_id(),
+                author_id=user,
+                content=text,
+                channel_id=channel,
+                is_dm=True,
             ),
         )
 
@@ -123,12 +137,12 @@ class FakeDiscord:
             user, f"{CORRECTION_MARKER} {text}", reply_to=reply_to, attachments=attachments
         )
 
-    def say(self, user: str, text: str) -> list[SentMessage]:
+    def say(self, user: str, text: str, *, channel: str = "chan-1") -> list[SentMessage]:
         """An ordinary channel message that does not mention the bot."""
         return self._dispatch(
             self.brain.handle_message,
             IncomingMessage(
-                message_id=self._next_id(), author_id=user, content=text, channel_id="chan-1"
+                message_id=self._next_id(), author_id=user, content=text, channel_id=channel
             ),
         )
 
@@ -145,6 +159,14 @@ class FakeDiscord:
 
     def decline(self, user: str) -> list[SentMessage]:
         return self.say(user, "!babble decline")
+
+    def collect_all(self, user: str, *, channel: str = "chan-1") -> list[SentMessage]:
+        """`!babble all` — widen collection to everything this person says here."""
+        return self.say(user, "!babble all", channel=channel)
+
+    def only_pings(self, user: str, *, channel: str = "chan-1") -> list[SentMessage]:
+        """`!babble pings` — the opposite command, undoing the widening."""
+        return self.say(user, "!babble pings", channel=channel)
 
     def onboard(self, user: str) -> None:
         """Get a user past the consent gate the way a real one would."""

@@ -1,6 +1,7 @@
-"""Auto-publish: every `hf_publish_every` checkpoints, push the corrections
-dataset to HuggingFace through the same consent/blocklist gate as a manual
-`babble export --push` -- and never let a failed push touch training.
+"""Auto-publish: every `hf_publish_every` checkpoints, push the corpus and the
+corrections dataset beside it to HuggingFace, through the same consent/
+blocklist gate as a manual `babble export --push` -- and never let a failed
+push touch training.
 """
 
 from __future__ import annotations
@@ -10,14 +11,22 @@ from pathlib import Path
 import pytest
 
 from babble.config import Settings
+from babble.consent import ConsentStore
+from babble.corpus import SOURCE_MENTION, CorpusRow, CorpusStore, make_corpus_id
 from babble.discord_feed import TrainingFeed
-from babble.export_hf import DATA_FILE
+from babble.export_hf import CORPUS_FILE, DATA_FILE
 from babble.fakedata import FAKE_HELPER, FAKE_USER, seed_fake_data
 from babble.identity import Pseudonymiser
 from babble.store import CORRECTION, Interaction, InteractionStore, make_row_id
 from babble.trainer import train
 
 FAKE_ROW_COUNT = 13  # 12 corrections + 1 approval, see babble/fakedata.py
+# The backfill flattens each pair's prompt and chosen text into the corpus, one
+# row per distinct (text, author): 12 distinct prompts + 12 distinct chosen
+# answers. The approval reuses the first correction's prompt and chosen text
+# verbatim, so it contributes no new corpus rows of its own.
+FAKE_CORPUS_ROW_COUNT = 24
+FAKE_TOTAL_ROW_COUNT = FAKE_ROW_COUNT + FAKE_CORPUS_ROW_COUNT
 
 
 @pytest.fixture
@@ -101,6 +110,7 @@ def test_it_publishes_once_every_configured_number_of_checkpoints(seeded, monkey
     repo_id, out_dir = pusher.calls[0]
     assert repo_id == seeded.hf_repo
     assert (out_dir / DATA_FILE).exists()
+    assert (out_dir / CORPUS_FILE).exists()
 
 
 def test_zero_disables_auto_publish(seeded, monkeypatch):
@@ -136,7 +146,8 @@ def test_default_cadence_publishes_after_20_checkpoints(seeded, monkeypatch):
     assert len(pusher.calls) == 1
     publish_posts = [c for c in sender.calls if "published" in c[1].lower()]
     assert len(publish_posts) == 1
-    assert str(FAKE_ROW_COUNT) in publish_posts[0][1]
+    # The feed reports the total across both configs, not just the corrections.
+    assert str(FAKE_TOTAL_ROW_COUNT) in publish_posts[0][1]
     assert "huggingface.co/datasets" in publish_posts[0][1]
 
 
@@ -151,6 +162,52 @@ def test_nothing_changed_since_the_last_publish_is_not_repushed(seeded, monkeypa
 
     assert len(pusher.calls) == 1
     assert len(read_log("publish.skipped")) == 1
+
+
+def test_a_change_to_only_the_corpus_still_triggers_a_republish(seeded, monkeypatch):
+    """The skip-if-unchanged hash covers both files, so a corpus-only change
+    must not be mistaken for "nothing changed" just because the corrections
+    file -- which the old, single-file hash used to key off -- is identical.
+    """
+    seeded.hf_publish_every = 2
+    seeded.checkpoint_every = 2
+
+    class CorpusMutatingPush(FakePush):
+        """Behaves like a real push, then simulates someone else appending to
+        the corpus in between -- exactly as `!babble all` capture would while
+        training runs in the background.
+        """
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.mutated = False
+
+        def __call__(self, settings, repo_id, out_dir, log=None, private=False):
+            result = super().__call__(settings, repo_id, out_dir, log=log, private=private)
+            if not self.mutated:
+                self.mutated = True
+                ConsentStore(settings.consent_path).grant("fresh-corpus-voice-000")
+                author = Pseudonymiser.load(settings).user("fresh-corpus-voice-000")
+                text = "a brand new sentence nobody corrected"
+                CorpusStore(settings.corpus_path).append(
+                    CorpusRow(
+                        id=make_corpus_id(text, author),
+                        text=text,
+                        author=author,
+                        source=SOURCE_MENTION,
+                    )
+                )
+            return result
+
+    pusher = CorpusMutatingPush()
+    monkeypatch.setattr("babble.trainer.push_export", pusher)
+
+    # 4 checkpoints -> two scheduled publishes. The corrections file never
+    # changes between them, but the corpus gains a row right after the first
+    # publish, so the second one must still go out rather than be skipped.
+    train(seeded, steps=8, echo=False, seed=1)
+
+    assert len(pusher.calls) == 2
 
 
 def test_reuses_the_existing_exporter_rather_than_a_second_one(seeded, monkeypatch, log, read_log):
