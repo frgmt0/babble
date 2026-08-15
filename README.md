@@ -554,20 +554,30 @@ best-of off.
 ## CPU-first decode
 
 babble is built for a couple of CPU threads, not a GPU. The user-visible win is
-**decode**, not train (~4% on the training step, within noise):
+**decode**. The training step is slightly *slower* — about 5% (362 ms → 381 ms
+per step at batch 16, block 128, two threads), which is the tanh-GELU tradeoff
+below paying off at decode shapes and costing at train shapes. A background
+trainer that already rests between cycles can afford that; a Discord reply
+cannot afford the decode cost.
 
 - **CPU-only torch** via uv's pytorch-cpu index — no CUDA wheel, no device
   offload in train or inference (`babble/cpu_runtime.py`).
 - **KV-cached decode** in `model.py` / `generate.py` so Discord replies do not
-  recompute the growing prefix every byte (about 7–14× on `best_of=4` at two
-  threads, depending on `max_new_tokens`).
+  recompute the growing prefix every byte. On `best_of=4` at two threads: 5.5×
+  at `max_new_tokens=64`, 9.4× at 128, 15.1× at the shipped default of 256 —
+  the longer the reply, the more the cache is worth.
 - **oneDNN / MKL-DNN**, denormal flushing, and a capped thread count from
   `be_polite` / `CheckpointGenerator` (this model is too small to feed eight
   threads — the cap is itself a speedup).
 - **tanh-approx GELU**, `Identity` instead of `Dropout(0)`, tied embeddings,
-  bias-free projections — fewer ops for the same 3.3M-param shape. GELU is
-  stateless, so checkpoints still load; the forward is not bit-identical to the
-  old erf form, but measured loss/reply drift on live weights is negligible.
+  bias-free projections — fewer ops for the same 3.3M-param shape. The GELU
+  form is a decode-shape win and a train-shape loss on this box: at `T=1` it
+  beats the erf form (847 ms vs 955 ms on `best_of=4`, 256 tokens), while on
+  a full training activation oneDNN's fused erf path wins (7.4 ms vs 11.8 ms
+  fwd+bwd). GELU is stateless, so checkpoints still load; the forward is not
+  bit-identical to the old erf form, but the drift on live weights is
+  negligible — mean per-token loss 13.692948 → 13.693907 on `base.pt`, with
+  the greedy reply byte-identical.
 - **AdamW `foreach`** on the CPU training path; optional `BABBLE_TORCH_COMPILE=1`
   for long base pretrains (off by default). Compiled modules are unwrapped
   before every checkpoint write so `state_dict` keys stay plain Babbler keys —
