@@ -11,6 +11,10 @@ Two layouts live here, sharing one decoder and one scorer:
   longer the training objective, but still the honest way to ask "how likely
   does the model think this answer is, given this prompt", which is what
   comparing correction pairs needs.
+
+Decode uses a preallocated KV cache so each new byte is a single-token forward
+on CPU rather than a full-prefix attention redo — that is the difference
+between a multi-second `best_of` reply and a snappy one on this 3.3M model.
 """
 
 from __future__ import annotations
@@ -22,8 +26,9 @@ import torch.nn.functional as F
 
 from .config import Settings
 from .core import Generation
+from .cpu_runtime import configure_cpu, force_cpu_device
 from .logs import EventLog, NullLog
-from .model import Babbler, ModelConfig, config_from_settings, per_token_loss
+from .model import Babbler, KVCache, ModelConfig, config_from_settings, per_token_loss
 from .tokenizer import (
     BOS_ID,
     EOS_ID,
@@ -52,6 +57,9 @@ def _next_token(
 
     Shared by the single and batched samplers so there is exactly one place
     where temperature, top_k and the banned structural tokens are applied.
+    Vocab is only 260, so a full-softmax over the top-k-masked row stays cheap;
+    keeping the classic mask-then-softmax path preserves the RNG behaviour the
+    tests (and the live bot) already depend on.
     """
     logits = logits.clone()
     logits[:, _BANNED] = float("-inf")
@@ -65,10 +73,15 @@ def _next_token(
     return torch.multinomial(probs, num_samples=1, generator=generator).squeeze(-1)
 
 
+def _can_cache(model: Babbler, context_len: int, max_new_tokens: int) -> bool:
+    """KV cache fits when the whole reply stays inside `block_size`."""
+    return context_len + max_new_tokens <= model.config.block_size
+
+
 # --- the decoder ---------------------------------------------------------
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def _decode_from(
     model: Babbler,
     context: list[int],
@@ -82,17 +95,38 @@ def _decode_from(
 
     An untrained model almost never emits <eos>, so `max_new_tokens` is what
     actually ends most early generations. That is expected.
+
+    Prefills the prompt once into a KV cache, then feeds a single token per
+    step. Falls back to the old windowed full-forward path only when the reply
+    would overflow `block_size` (rare for Discord prompts).
     """
     was_training = model.training
     model.eval()
     try:
         context = list(context)
         produced: list[int] = []
+        use_cache = _can_cache(model, len(context), max_new_tokens) and hasattr(
+            model, "new_cache"
+        )
+        if use_cache:
+            cache: KVCache | None = model.new_cache(1)
+            prompt = torch.tensor([context], dtype=torch.long)
+            logits = model(prompt, cache=cache)[:, -1]
+            for _ in range(max_new_tokens):
+                nxt = int(_next_token(logits, temperature, top_k, generator)[0])
+                if nxt == EOS_ID:
+                    break
+                produced.append(nxt)
+                context.append(nxt)
+                logits = model(
+                    torch.tensor([[nxt]], dtype=torch.long), cache=cache
+                )[:, -1]
+            return decode(produced)
+
         for _ in range(max_new_tokens):
             window = context[-model.config.block_size :]
             logits = model(torch.tensor([window], dtype=torch.long))[:, -1]
             nxt = int(_next_token(logits, temperature, top_k, generator)[0])
-
             if nxt == EOS_ID:
                 break
             produced.append(nxt)
@@ -102,7 +136,7 @@ def _decode_from(
         model.train(was_training)
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def _decode_many_from(
     model: Babbler,
     context: list[int],
@@ -117,21 +151,39 @@ def _decode_many_from(
 
     Drawing candidates one at a time is wasteful: they share a context and are
     the same length at every step, so they can go through the model together.
-    On the shipped 3.3M model at two threads, four 96-byte candidates cost about
-    1.5s batched against 2.1s drawn in sequence -- sub-linear in `n`, but not
-    free, because a wider batch is still more work for the same two threads.
+    With a shared-shape KV cache the per-step cost stays near one-token-forward
+    rather than growing with the prefix — that is what keeps `best_of` under a
+    couple of seconds on two CPU threads.
 
-    That 1.5s is the *worst* case: it is measured on a randomly initialised
-    model, which almost never emits <eos> and so always runs the full
-    `max_new_tokens`. A trained model stops early and is considerably faster.
+    That worst case is measured on a randomly initialised model, which almost
+    never emits <eos> and so always runs the full `max_new_tokens`. A trained
+    model stops early and is considerably faster.
     """
     was_training = model.training
     model.eval()
     try:
-        tokens = torch.tensor([list(context)], dtype=torch.long).repeat(n, 1)
         produced: list[list[int]] = [[] for _ in range(n)]
         finished = torch.zeros(n, dtype=torch.bool)
+        use_cache = _can_cache(model, len(context), max_new_tokens) and hasattr(
+            model, "new_cache"
+        )
 
+        if use_cache:
+            cache: KVCache | None = model.new_cache(n)
+            prompt = torch.tensor([list(context)], dtype=torch.long).repeat(n, 1)
+            logits = model(prompt, cache=cache)[:, -1]
+            for _ in range(max_new_tokens):
+                nxt = _next_token(logits, temperature, top_k, generator)
+                for i in range(n):
+                    if not finished[i] and int(nxt[i]) != EOS_ID:
+                        produced[i].append(int(nxt[i]))
+                finished |= nxt == EOS_ID
+                if bool(finished.all()):
+                    break
+                logits = model(nxt[:, None], cache=cache)[:, -1]
+            return [decode(row) for row in produced]
+
+        tokens = torch.tensor([list(context)], dtype=torch.long).repeat(n, 1)
         for _ in range(max_new_tokens):
             window = tokens[:, -model.config.block_size :]
             nxt = _next_token(model(window)[:, -1], temperature, top_k, generator)
@@ -150,7 +202,7 @@ def _decode_many_from(
         model.train(was_training)
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def _score_examples(model: Babbler, examples: list[Example]) -> list[float]:
     """Mean per-byte loss over each example's masked tokens. Lower is better.
 
@@ -167,8 +219,8 @@ def _score_examples(model: Babbler, examples: list[Example]) -> list[float]:
         tokens = torch.full((len(examples), width), PAD_ID, dtype=torch.long)
         mask = torch.zeros((len(examples), width), dtype=torch.float32)
         for i, example in enumerate(examples):
-            tokens[i, : len(example)] = torch.tensor(example.tokens, dtype=torch.long)
-            mask[i, : len(example)] = torch.tensor(example.mask, dtype=torch.float32)
+            tokens[i, : len(example)] = torch.as_tensor(example.tokens, dtype=torch.long)
+            mask[i, : len(example)] = torch.as_tensor(example.mask, dtype=torch.float32)
         per_token = per_token_loss(model, tokens)
         scale = mask[:, 1:]
         totals = (per_token * scale).sum(dim=1) / scale.sum(dim=1).clamp(min=1e-8)
@@ -384,13 +436,19 @@ def load_model(settings: Settings) -> tuple[Babbler, int]:
 
     The fallback is a feature: with no checkpoint on disk the bot answers with
     pure noise, which is the honest state of a model that has learned nothing.
+    Always lands on CPU — babble never offloads inference to a GPU.
     """
+    configure_cpu(getattr(settings, "train_threads", None))
+    device = force_cpu_device()
     path = settings.latest_checkpoint
     if not path.exists():
-        return Babbler(config_from_settings(settings)), 0
-    payload = torch.load(path, map_location="cpu", weights_only=True)
+        model = Babbler(config_from_settings(settings)).to(device)
+        model.eval()
+        return model, 0
+    payload = torch.load(path, map_location=device, weights_only=True)
     model = Babbler(ModelConfig.from_dict(payload["config"]))
     model.load_state_dict(payload["model"])
+    model.to(device)
     model.eval()
     return model, int(payload.get("step", 0))
 
@@ -414,6 +472,9 @@ class CheckpointGenerator:
         self._model: Babbler | None = None
         self._step = 0
         self._mtime: float | None = None
+        # Bot replies share the machine with everything else; keep inference on
+        # the same capped thread count the trainer uses so we never stampede.
+        configure_cpu(settings.train_threads)
 
     @property
     def step(self) -> int:
@@ -435,6 +496,7 @@ class CheckpointGenerator:
             step=self._step,
             previous_step=previous if previous != self._step else None,
             params=self._model.num_params(),
+            device="cpu",
         )
 
     def __call__(self, prompt: str) -> Generation:
