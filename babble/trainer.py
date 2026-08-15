@@ -39,6 +39,13 @@ from .blocklist import Blocklist
 from .config import Settings
 from .consent import ConsentStore, CorpusConsent
 from .corpus import CorpusRow, CorpusStore
+from .cpu_runtime import (
+    configure_cpu,
+    force_cpu_device,
+    maybe_compile,
+    model_state_dict,
+    uncompiled,
+)
 from .discord_feed import TrainingFeed
 from .export_hf import (
     CORPUS_FILE,
@@ -77,7 +84,11 @@ WITHHELD = "*(withheld — matched the content filter)*"
 
 
 def be_polite(settings: Settings, log: EventLog) -> None:
-    """Give up priority and threads before touching a single tensor."""
+    """Give up priority and threads before touching a single tensor.
+
+    Also locks torch onto the CPU / oneDNN path so training never quietly
+    offloads to a GPU even if one is visible on the box.
+    """
     applied_nice = None
     try:
         os.nice(settings.train_nice)
@@ -85,12 +96,15 @@ def be_polite(settings: Settings, log: EventLog) -> None:
     except (OSError, AttributeError, PermissionError):
         pass
     threads = max(1, settings.train_threads)
-    torch.set_num_threads(threads)
-    try:
-        torch.set_num_interop_threads(1)
-    except RuntimeError:
-        pass  # already initialised; harmless
-    log.event("train.polite", nice=applied_nice, threads=threads, cpus=os.cpu_count())
+    cpu = configure_cpu(threads)
+    log.event(
+        "train.polite",
+        nice=applied_nice,
+        threads=threads,
+        cpus=os.cpu_count(),
+        device=cpu.get("device", "cpu"),
+        mkldnn=cpu.get("mkldnn"),
+    )
 
 
 def corpus_rows(
@@ -224,9 +238,10 @@ def _stack_examples(examples: list[Example]) -> tuple[torch.Tensor, torch.Tensor
     tokens = torch.full((len(examples), width), PAD_ID, dtype=torch.long)
     mask = torch.zeros((len(examples), width), dtype=torch.long)
     for i, example in enumerate(examples):
-        tokens[i, : len(example)] = torch.tensor(example.tokens, dtype=torch.long)
-        mask[i, : len(example)] = torch.tensor(example.mask, dtype=torch.long)
-    weights = torch.tensor([e.weight for e in examples], dtype=torch.float32)
+        length = len(example)
+        tokens[i, :length] = torch.as_tensor(example.tokens, dtype=torch.long)
+        mask[i, :length] = torch.as_tensor(example.mask, dtype=torch.long)
+    weights = torch.as_tensor([e.weight for e in examples], dtype=torch.float32)
     return tokens, mask, weights
 
 
@@ -250,7 +265,7 @@ class LossReport:
     worst_text: str | None = None
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def measure(
     model: Babbler, examples: list[Example], rows: list[CorpusRow] | None = None
 ) -> LossReport:
@@ -295,7 +310,7 @@ def _example_owner(rows: list[CorpusRow], index: int, block_size: int) -> str | 
     return None
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def eval_loss(model: Babbler, examples: list[Example]) -> float | None:
     """Mean loss over held-out examples, or None if there are none to score.
 
@@ -451,10 +466,20 @@ def make_batch(
     tokens = torch.full((len(chosen), width), PAD_ID, dtype=torch.long)
     mask = torch.zeros((len(chosen), width), dtype=torch.long)
     for i, example in enumerate(chosen):
-        tokens[i, : len(example)] = torch.tensor(example.tokens, dtype=torch.long)
-        mask[i, : len(example)] = torch.tensor(example.mask, dtype=torch.long)
-    weights = torch.tensor([e.weight for e in chosen], dtype=torch.float32)
+        length = len(example)
+        tokens[i, :length] = torch.as_tensor(example.tokens, dtype=torch.long)
+        mask[i, :length] = torch.as_tensor(example.mask, dtype=torch.long)
+    weights = torch.as_tensor([e.weight for e in chosen], dtype=torch.float32)
     return tokens, mask, weights
+
+
+def _build_optimizer(model: Babbler, settings: Settings) -> torch.optim.Optimizer:
+    """AdamW tuned for CPU: `foreach` batches the small-param updates."""
+    kwargs = dict(lr=settings.learning_rate, weight_decay=settings.weight_decay)
+    try:
+        return torch.optim.AdamW(model.parameters(), foreach=True, **kwargs)
+    except (TypeError, ValueError, RuntimeError):
+        return torch.optim.AdamW(model.parameters(), **kwargs)
 
 
 # --- checkpoints ---------------------------------------------------------
@@ -480,8 +505,8 @@ def save_checkpoint(settings: Settings, model: Babbler, optimizer, step: int, lo
     payload = {
         "step": step,
         "loss": loss,
-        "config": model.config.to_dict(),
-        "model": model.state_dict(),
+        "config": uncompiled(model).config.to_dict(),
+        "model": model_state_dict(model),
         "optim": optimizer.state_dict(),
         "torch_rng": torch.get_rng_state(),
         "saved_at": utcnow_iso(),
@@ -852,22 +877,21 @@ def train(
 
 def _resume_or_init(settings: Settings, log: EventLog) -> tuple[Babbler, torch.optim.Optimizer, int, bool]:
     path = settings.latest_checkpoint
-    model = Babbler(config_from_settings(settings))
-    optimizer = torch.optim.AdamW(
-        model.parameters(), lr=settings.learning_rate, weight_decay=settings.weight_decay
-    )
+    device = force_cpu_device()
+    model = Babbler(config_from_settings(settings)).to(device)
+    model = maybe_compile(model)
+    optimizer = _build_optimizer(model, settings)
 
     if not path.exists():
-        log.event("train.init", source="random", params=model.num_params())
+        log.event("train.init", source="random", params=model.num_params(), device="cpu")
         return model, optimizer, 0, False
 
     try:
-        payload = torch.load(path, map_location="cpu", weights_only=True)
-        model = Babbler(ModelConfig.from_dict(payload["config"]))
+        payload = torch.load(path, map_location=device, weights_only=True)
+        model = Babbler(ModelConfig.from_dict(payload["config"])).to(device)
         model.load_state_dict(payload["model"])
-        optimizer = torch.optim.AdamW(
-            model.parameters(), lr=settings.learning_rate, weight_decay=settings.weight_decay
-        )
+        model = maybe_compile(model)
+        optimizer = _build_optimizer(model, settings)
         optimizer.load_state_dict(payload["optim"])
         if "torch_rng" in payload:
             torch.set_rng_state(payload["torch_rng"].to(torch.uint8))
@@ -878,14 +902,14 @@ def _resume_or_init(settings: Settings, log: EventLog) -> tuple[Babbler, torch.o
             loss=payload.get("loss"),
             saved_at=payload.get("saved_at"),
             params=model.num_params(),
+            device="cpu",
         )
         return model, optimizer, step, True
     except Exception as exc:  # a truncated or foreign checkpoint must not be fatal
         log.event("train.resume_failed", error=f"{type(exc).__name__}: {exc}", path=str(path))
-        model = Babbler(config_from_settings(settings))
-        optimizer = torch.optim.AdamW(
-            model.parameters(), lr=settings.learning_rate, weight_decay=settings.weight_decay
-        )
+        model = Babbler(config_from_settings(settings)).to(device)
+        model = maybe_compile(model)
+        optimizer = _build_optimizer(model, settings)
         return model, optimizer, 0, False
 
 

@@ -545,11 +545,36 @@ draws that came out right. It needs no reward model, no second network and no
 preference head; at this scale the model is the only scorer that exists.
 
 The candidates are drawn as one batch and scored in one forward pass, so the
-cost is sub-linear in `n`. Measured on the shipped 3.3M model at two threads,
-four 96-byte candidates take about **1.5s** against 0.6s for one — and that is
-the worst case, measured on a *randomly initialised* model, which almost never
-emits `<eos>` and so always runs the full `max_new_tokens`. A trained model
-stops early and is faster. `BABBLE_BEST_OF=1` turns it off.
+cost is sub-linear in `n`. Decode uses a **preallocated KV cache** on CPU: the
+prompt is prefilled once, then each new byte is a single-token forward instead
+of redoing attention over the whole prefix. That is what keeps a `best_of=4`
+reply snappy on two threads at `max_new_tokens=256`. `BABBLE_BEST_OF=1` turns
+best-of off.
+
+## CPU-first decode
+
+babble is built for a couple of CPU threads, not a GPU. The user-visible win is
+**decode**, not train (~4% on the training step, within noise):
+
+- **CPU-only torch** via uv's pytorch-cpu index — no CUDA wheel, no device
+  offload in train or inference (`babble/cpu_runtime.py`).
+- **KV-cached decode** in `model.py` / `generate.py` so Discord replies do not
+  recompute the growing prefix every byte (about 7–14× on `best_of=4` at two
+  threads, depending on `max_new_tokens`).
+- **oneDNN / MKL-DNN**, denormal flushing, and a capped thread count from
+  `be_polite` / `CheckpointGenerator` (this model is too small to feed eight
+  threads — the cap is itself a speedup).
+- **tanh-approx GELU**, `Identity` instead of `Dropout(0)`, tied embeddings,
+  bias-free projections — fewer ops for the same 3.3M-param shape. GELU is
+  stateless, so checkpoints still load; the forward is not bit-identical to the
+  old erf form, but measured loss/reply drift on live weights is negligible.
+- **AdamW `foreach`** on the CPU training path; optional `BABBLE_TORCH_COMPILE=1`
+  for long base pretrains (off by default). Compiled modules are unwrapped
+  before every checkpoint write so `state_dict` keys stay plain Babbler keys —
+  never `_orig_mod.*`.
+
+Checkpoint weights stay loadable across this change: the KV cache is
+runtime-only, and saved key names match `main`.
 
 ## What "RL harder" actually means here
 
@@ -859,6 +884,8 @@ The knobs that decide what the bot sounds like:
 | `BABBLE_BLOCK_SIZE` | `512` | context window in bytes; changing it [invalidates checkpoints](#two-stage-pretraining) |
 | `BABBLE_VOICE_TRIGGER_ROWS` | `100` | new corpus rows that [re-fire the voice pass](#two-stage-pretraining); `0` = manual only |
 | `BABBLE_BEST_OF` | `4` | [candidates drawn per reply](#best-of-n); `1` turns it off |
+| `BABBLE_TRAIN_THREADS` | `2` | CPU threads for train + inference; stays polite on a shared box |
+| `BABBLE_TORCH_COMPILE` | off | set `1` to `torch.compile` the model for long base pretrains |
 | `BABBLE_VAL_FRACTION` | `0.2` | [share of corpus rows held out](#validation) |
 | `BABBLE_VAL_MIN_ROWS` | `20` | corpus size below which validation is skipped |
 
@@ -931,7 +958,8 @@ WantedBy=default.target
 ```
 babble/
   tokenizer.py   byte-level vocab: 256 bytes + <pad> <bos> <sep> <eos>
-  model.py       the transformer — random init, no pretrained anything
+  model.py       the transformer — random init, KV cache, CPU-friendly ops
+  cpu_runtime.py force CPU / oneDNN / thread caps; optional torch.compile
   generate.py    sampling (continuations and pairs), hot-reloading checkpoints
   external.py    the external base-stage corpus: dictionary words + stories
   pretrain.py    two-stage pretraining: frozen base, then the human voice pass

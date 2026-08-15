@@ -47,6 +47,7 @@ from .model import Babbler, ModelConfig, config_from_settings, sequence_loss
 from .tokenizer import Example, text_examples
 from .trainer import (
     SCRATCH_DIR,
+    _build_optimizer,
     append_curve,
     be_polite,
     corpus_rows,
@@ -55,6 +56,7 @@ from .trainer import (
     save_checkpoint,
     sweep_scratch,
 )
+from .cpu_runtime import force_cpu_device, maybe_compile, model_state_dict, uncompiled
 from .util import atomic_write_text, utcnow_iso
 
 # How much of the base corpus to hold out for a validation read, and a ceiling so
@@ -118,8 +120,8 @@ def _save_to(settings: Settings, path: Path, model: Babbler, optimizer, step: in
     payload = {
         "step": step,
         "loss": loss,
-        "config": model.config.to_dict(),
-        "model": model.state_dict(),
+        "config": uncompiled(model).config.to_dict(),
+        "model": model_state_dict(model),
         "optim": optimizer.state_dict(),
         "torch_rng": torch.get_rng_state(),
         "saved_at": utcnow_iso(),
@@ -267,10 +269,9 @@ def pretrain_base(
     archived = archive_existing_checkpoints(settings)
     sweep_scratch(settings)
 
-    model = Babbler(config_from_settings(settings))  # random init, new geometry
-    optimizer = torch.optim.AdamW(
-        model.parameters(), lr=settings.learning_rate, weight_decay=settings.weight_decay
-    )
+    model = Babbler(config_from_settings(settings)).to(force_cpu_device())
+    model = maybe_compile(model)
+    optimizer = _build_optimizer(model, settings)
     examples = _text_examples(rows, model.config.block_size)
     train_examples, val_examples = _split_val(examples)
     budget = steps if steps is not None else settings.base_steps
@@ -342,10 +343,11 @@ def voice_trigger(settings: Settings) -> TriggerStatus:
 def _load_base(settings: Settings) -> Babbler:
     """The frozen base weights, as a fresh model. Read-only: the voice pass never
     writes back to `base.pt`."""
-    payload = torch.load(settings.base_checkpoint, map_location="cpu", weights_only=True)
-    model = Babbler(ModelConfig.from_dict(payload["config"]))
+    device = force_cpu_device()
+    payload = torch.load(settings.base_checkpoint, map_location=device, weights_only=True)
+    model = Babbler(ModelConfig.from_dict(payload["config"])).to(device)
     model.load_state_dict(payload["model"])
-    return model
+    return maybe_compile(model)
 
 
 def voice_pass(
@@ -388,9 +390,7 @@ def voice_pass(
     be_polite(settings, log)
     sweep_scratch(settings)
     model = _load_base(settings)  # every run restarts from the clean base
-    optimizer = torch.optim.AdamW(
-        model.parameters(), lr=settings.learning_rate, weight_decay=settings.weight_decay
-    )
+    optimizer = _build_optimizer(model, settings)
     examples = [ex for row in rows for ex in text_examples(row.text, model.config.block_size)]
     train_examples, val_examples = _split_val(examples)
     budget = steps if steps is not None else settings.voice_steps
