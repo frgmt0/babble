@@ -53,14 +53,20 @@ uv venv && uv pip install -e ".[dev]"      # or: python -m venv .venv && pip ins
 source .venv/bin/activate
 
 babble fake-data                # made-up rows in both stores, to chew on
-babble train --steps 200        # watch the loss drop and the samples change
+babble prepare-base             # cache the external corpus (words + stories)
+babble base-pretrain            # STAGE 1: random init -> a frozen base.pt
+babble voice-pass --force       # STAGE 2: base.pt + human rows -> latest.pt
 babble sample --prompt hello    # continue a prefix from the newest checkpoint
 babble curve                    # the loss curve, as a picture
 babble summary                  # step, loss, checkpoints, consent, row counts
 babble backfill-corpus          # flatten old pairs into the corpus (runs itself too)
 babble export                   # build the HuggingFace dataset directory
-pytest                          # 100+ tests, none of which need a token
+pytest                          # 400+ tests, none of which need a token
 ```
+
+The two-stage flow — base pretrain, then the human voice pass, and the trigger
+that reruns it — is described under [Two-stage pretraining](#two-stage-pretraining).
+`babble train` still exists but is no longer how babble pretrains.
 
 `uv` pulls the CPU-only build of torch automatically (see `[tool.uv.sources]` in
 `pyproject.toml`) — no multi-gigabyte CUDA wheels. With plain pip, use
@@ -314,7 +320,78 @@ babble rescan-blocklist   # purge stored rows that now match the current list
 
 Run this after extending the list, so history gets cleaned up along with it.
 
+## Two-stage pretraining
+
+The model is ~3.3M parameters and the human corpus is a couple of thousand
+characters. Trained on the human rows alone it just *memorises* them and composes
+nothing new. So pretraining is split in two, and the old continuous
+`babble train --loop` is retired for this purpose — it burned CPU for nothing,
+running to step 3,200 with the loss flat since step 2,000.
+
+**Stage 1 — BASE.** Train from *random init* on a large **external** corpus, and
+freeze the result as `checkpoints/base.pt`. The external corpus is nobody's
+Discord message, so it never goes through the consent path (that gate is for the
+human corpus). Two sources, in `babble/external.py`:
+
+- **A real English word list** — for word *shape* and spelling.
+  `/usr/share/dict/cracklib-small` ships on this box (~54k usable words after the
+  junk is filtered); point `BABBLE_WORDLIST_PATH` at a larger list for more.
+- **Simple short stories** — [TinyStories](https://huggingface.co/datasets/roneneldan/TinyStories),
+  downloaded once and cached under `external/`. This is the part that actually
+  teaches *grammar*; a word list has no sentences in it. The default is the
+  ~22M-character `valid` split, which is plenty for a model this size (the rough
+  rule is ~20 tokens per parameter); point `BABBLE_STORIES_FILE` at a `train`
+  split and raise `BABBLE_BASE_STORY_CHARS` for more.
+
+```bash
+babble prepare-base       # download + cache words and stories -> external/base_corpus.jsonl
+babble base-pretrain      # STAGE 1: random init -> checkpoints/base.pt  (rare, minutes+)
+```
+
+`base.pt` is a **frozen artifact**: the voice pass reads it and never writes to
+it. `prepare-base` **fails loudly** rather than let a base run train on nothing
+if a download is unavailable — pass `--words`/`--stories` to use local files
+offline.
+
+**Stage 2 — VOICE.** Continue-train *from the frozen base* on the consented human
+corpus only, and write `latest.pt` (what the bot serves). Cheap — seconds — and
+it **always restarts from the clean base**, never from the previous voice
+checkpoint, so nothing compounds across reruns and the human voice is always the
+last thing the model learned:
+
+```bash
+babble voice-pass --force   # STAGE 2: base.pt + human corpus -> latest.pt
+babble voice-status         # rows since the last pass, whether the trigger is due
+```
+
+**A trigger, not a loop.** The voice pass re-fires every
+`BABBLE_VOICE_TRIGGER_ROWS` (default 100) *new* corpus rows since the last pass,
+or on demand with `voice-pass`. The last-trained row count is persisted in
+`checkpoints/voice_state.json`, so a restart never re-fires; the running bot
+watches for the crossing and launches `babble voice-pass` as a detached,
+low-priority subprocess, then [hot-reloads](#the-trainer) the new `latest.pt` on
+its own. Set the threshold to 0 to run stage 2 by hand only.
+
+**Rerunning.** Stage 2 is safe to rerun any time — it is idempotent from the
+base. Stage 1 is rerun only when you want a fresh base (e.g. after changing the
+geometry): it **archives, never deletes**, the existing checkpoints into
+`checkpoints/archive/<timestamp>/` first, because a new `block_size` changes the
+positional-embedding shape and invalidates them. After a base retrain, run
+`babble voice-pass --force` once to seed `latest.pt`.
+
+> **Geometry.** `block_size` is **512** and `max_new_tokens` is **256**
+> (`BABBLE_BLOCK_SIZE` / `BABBLE_MAX_NEW_TOKENS`), up from 256/96 — ro asked for a
+> considerably wider context and longer replies. `block_size` is the byte context
+> window; raising it grows the learned positional-embedding table, so it
+> invalidates every checkpoint trained at the old size, which is why it lands
+> together with the base retrain and not before.
+
 ## The trainer
+
+> The continuous trainer below still exists and still works, but it is **not** how
+> babble pretrains any more — see [Two-stage pretraining](#two-stage-pretraining).
+> It resumes from `latest.pt`, which the voice pass writes, so pointing
+> `babble train` at it continues from the current voice checkpoint.
 
 **Training is opt-in and never ambient.** Nothing starts a training loop on its
 own — not the bot on boot, not any implicit scheduler. `babble train` is a
@@ -778,7 +855,9 @@ The knobs that decide what the bot sounds like:
 | --- | --- | --- |
 | `BABBLE_TEMPERATURE` | `0.5` | sampling temperature — [`1.0` was the babble](#why-it-babbled-at-loss-002) |
 | `BABBLE_TOP_K` | `40` | truncate sampling to the top k bytes |
-| `BABBLE_MAX_NEW_TOKENS` | `96` | longest reply, in bytes |
+| `BABBLE_MAX_NEW_TOKENS` | `256` | longest reply, in bytes |
+| `BABBLE_BLOCK_SIZE` | `512` | context window in bytes; changing it [invalidates checkpoints](#two-stage-pretraining) |
+| `BABBLE_VOICE_TRIGGER_ROWS` | `100` | new corpus rows that [re-fire the voice pass](#two-stage-pretraining); `0` = manual only |
 | `BABBLE_BEST_OF` | `4` | [candidates drawn per reply](#best-of-n); `1` turns it off |
 | `BABBLE_VAL_FRACTION` | `0.2` | [share of corpus rows held out](#validation) |
 | `BABBLE_VAL_MIN_ROWS` | `20` | corpus size below which validation is skipped |
@@ -854,6 +933,8 @@ babble/
   tokenizer.py   byte-level vocab: 256 bytes + <pad> <bos> <sep> <eos>
   model.py       the transformer — random init, no pretrained anything
   generate.py    sampling (continuations and pairs), hot-reloading checkpoints
+  external.py    the external base-stage corpus: dictionary words + stories
+  pretrain.py    two-stage pretraining: frozen base, then the human voice pass
   trainer.py     the polite, resumable, duty-cycled training loop
   core.py        ALL bot behaviour, with zero Discord imports
   bot.py         thin discord.py adapter — the only file that imports discord

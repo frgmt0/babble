@@ -5,6 +5,7 @@ data/
 checkpoints/
 export/
 logs/
+external/
 .scratch/
 
 .env

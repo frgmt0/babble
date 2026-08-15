@@ -56,6 +56,9 @@ class Settings:
     checkpoint_dir: Path
     export_dir: Path
     log_dir: Path
+    # Where the external base-stage corpus (dictionary words + simple stories) is
+    # cached. This is NOT user data and never touches the consent path.
+    external_dir: Path
 
     # Trainer politeness. These exist so the box stays usable while it learns.
     train_threads: int = 2
@@ -69,7 +72,11 @@ class Settings:
     n_layer: int = 4
     n_head: int = 4
     n_embd: int = 256
-    block_size: int = 256
+    # 512, not the old 256: ro asked for a considerably wider context window. A
+    # bigger `block_size` grows the learned positional-embedding table, so it
+    # invalidates every checkpoint trained at the old size -- which is why it
+    # lands together with the base retrain, never on its own.
+    block_size: int = 512
 
     # Optimisation.
     batch_size: int = 8
@@ -84,7 +91,9 @@ class Settings:
     # way back. See "Why it babbled at loss 0.02" in the README.
     temperature: float = 0.5
     top_k: int = 40
-    max_new_tokens: int = 96
+    # 256, not the old 96: ro asked for a considerably longer reply. The model
+    # still stops early on <eos>; this only raises the ceiling.
+    max_new_tokens: int = 256
 
     # Best-of-n: draw this many candidates and keep whichever one the model
     # itself scores best. 1 turns it off. Kept small so a Discord reply stays
@@ -131,6 +140,27 @@ class Settings:
     hf_publish_every_rows: int = 10
     hf_publish_every_chars: int = 2_000
 
+    # --- two-stage pretraining -------------------------------------------
+    # Stage 1 (BASE) trains from random init on an external corpus: a real
+    # English word list for word shape, and simple short stories for grammar.
+    # Neither is anybody's message, so neither goes through consent.
+    wordlist_path: Path = Path("/usr/share/dict/cracklib-small")
+    stories_repo: str = "roneneldan/TinyStories"
+    stories_file: str = "TinyStoriesV2-GPT4-valid.txt"
+    # How many characters of stories to keep. The valid split is ~22M chars; the
+    # rough ~20-tokens-per-parameter rule wants tens of millions for a 3.3M model,
+    # so the whole valid split is a sane default. Point `stories_file` at a train
+    # split and raise this for more. 0 means "keep all of it".
+    base_story_chars: int = 20_000_000
+    base_word_limit: int = 0  # 0 = every usable word in the list
+    base_steps: int = 3_000  # stage-1 step budget
+    voice_steps: int = 400  # stage-2 step budget; cheap, seconds not minutes
+
+    # Stage 2 (VOICE) re-fires every this-many new corpus rows since the last
+    # voice pass -- a trigger, not a loop. The count is persisted so a restart
+    # does not re-fire. 0 turns the automatic trigger off (on-demand only).
+    voice_trigger_rows: int = 100
+
     @classmethod
     def from_env(cls, root: Path | None = None) -> "Settings":
         root = root or REPO_ROOT
@@ -139,6 +169,7 @@ class Settings:
             checkpoint_dir=_env_path("BABBLE_CHECKPOINT_DIR", root / "checkpoints"),
             export_dir=_env_path("BABBLE_EXPORT_DIR", root / "export"),
             log_dir=_env_path("BABBLE_LOG_DIR", root / "logs"),
+            external_dir=_env_path("BABBLE_EXTERNAL_DIR", root / "external"),
             train_threads=_env_int("BABBLE_TRAIN_THREADS", 2),
             train_nice=_env_int("BABBLE_TRAIN_NICE", 19),
             steps_per_cycle=_env_int("BABBLE_STEPS_PER_CYCLE", 200),
@@ -148,12 +179,12 @@ class Settings:
             n_layer=_env_int("BABBLE_N_LAYER", 4),
             n_head=_env_int("BABBLE_N_HEAD", 4),
             n_embd=_env_int("BABBLE_N_EMBD", 256),
-            block_size=_env_int("BABBLE_BLOCK_SIZE", 256),
+            block_size=_env_int("BABBLE_BLOCK_SIZE", 512),
             batch_size=_env_int("BABBLE_BATCH_SIZE", 8),
             learning_rate=_env_float("BABBLE_LEARNING_RATE", 1e-3),
             temperature=_env_float("BABBLE_TEMPERATURE", 0.5),
             top_k=_env_int("BABBLE_TOP_K", 40),
-            max_new_tokens=_env_int("BABBLE_MAX_NEW_TOKENS", 96),
+            max_new_tokens=_env_int("BABBLE_MAX_NEW_TOKENS", 256),
             best_of=_env_int("BABBLE_BEST_OF", 4),
             correction_boost=_env_float("BABBLE_CORRECTION_BOOST", 3.0),
             val_fraction=_env_float("BABBLE_VAL_FRACTION", 0.2),
@@ -163,6 +194,14 @@ class Settings:
             hf_publish_every=_env_int("BABBLE_HF_PUBLISH_EVERY", 20),
             hf_publish_every_rows=_env_int("BABBLE_HF_PUBLISH_EVERY_ROWS", 10),
             hf_publish_every_chars=_env_int("BABBLE_HF_PUBLISH_EVERY_CHARS", 2_000),
+            wordlist_path=_env_path("BABBLE_WORDLIST_PATH", Path("/usr/share/dict/cracklib-small")),
+            stories_repo=os.environ.get("BABBLE_STORIES_REPO", "roneneldan/TinyStories"),
+            stories_file=os.environ.get("BABBLE_STORIES_FILE", "TinyStoriesV2-GPT4-valid.txt"),
+            base_story_chars=_env_int("BABBLE_BASE_STORY_CHARS", 20_000_000),
+            base_word_limit=_env_int("BABBLE_BASE_WORD_LIMIT", 0),
+            base_steps=_env_int("BABBLE_BASE_STEPS", 3_000),
+            voice_steps=_env_int("BABBLE_VOICE_STEPS", 400),
+            voice_trigger_rows=_env_int("BABBLE_VOICE_TRIGGER_ROWS", 100),
         )
 
     @classmethod
@@ -173,6 +212,7 @@ class Settings:
             checkpoint_dir=root / "checkpoints",
             export_dir=root / "export",
             log_dir=root / "logs",
+            external_dir=root / "external",
         )
 
     # --- derived paths -------------------------------------------------
@@ -204,6 +244,28 @@ class Settings:
     @property
     def loss_curve_path(self) -> Path:
         return self.checkpoint_dir / "loss.jsonl"
+
+    @property
+    def base_checkpoint(self) -> Path:
+        """The frozen stage-1 base weights. Written by `base-pretrain`, read by
+        `voice-pass`, and never overwritten by a voice pass."""
+        return self.checkpoint_dir / "base.pt"
+
+    @property
+    def base_corpus_path(self) -> Path:
+        """The prepared external base corpus (JSONL of `{"text": ...}` rows)."""
+        return self.external_dir / "base_corpus.jsonl"
+
+    @property
+    def voice_state_path(self) -> Path:
+        """Persisted last-trained corpus row count, so the +N-row voice trigger
+        does not re-fire on a restart."""
+        return self.checkpoint_dir / "voice_state.json"
+
+    @property
+    def checkpoint_archive_dir(self) -> Path:
+        """Where a base retrain moves the now-incompatible old checkpoints."""
+        return self.checkpoint_dir / "archive"
 
     def ensure_dirs(self) -> None:
         for d in (self.data_dir, self.checkpoint_dir, self.log_dir):

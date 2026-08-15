@@ -22,6 +22,7 @@ from .discord_feed import CollectionFeed
 from .generate import CheckpointGenerator
 from .identity import Pseudonymiser
 from .logs import EventLog
+from .pretrain import VoiceAutoTrigger
 from .publish import GrowthPublisher
 
 #: How often the background task drains the collection feed's coalescing buffer.
@@ -55,12 +56,17 @@ class BabbleClient(discord.Client):
                 every_rows=settings.hf_publish_every_rows,
                 every_chars=settings.hf_publish_every_chars,
             )
+            # The voice-pass trigger: after every N new corpus rows, stage 2
+            # re-runs from the frozen base and writes a new latest.pt, which the
+            # CheckpointGenerator hot-reloads. Inert until a base.pt exists.
+            voice_trigger = VoiceAutoTrigger(settings, log)
             brain = Babble(
                 settings,
                 generator=CheckpointGenerator(settings, log),
                 log=log,
                 feed=self.feed,
                 publisher=publisher,
+                voice_trigger=voice_trigger,
             )
             # Seed milestone markers from the corpus already on disk, so a
             # restart does not re-announce the last milestone on the next row.

@@ -1,109 +1,141 @@
-# Collection feed: show data coming in, not training
-> run: run-20260814-collection-feed-show-data-coming-in-not · branch: beckett/run-collection-feed-show-data-coming-in-not · created: 2026-08-14T22:11:41.238Z
+# Two-stage pretrain: base corpus + voice pass
+> run: run-20260815-two-stage-pretrain-base-corpus-voice-pas · branch: beckett/run-two-stage-pretrain-base-corpus-voice-pas · created: 2026-08-15T06:40:22.039Z
 
 ## Goal
-ro (user 1151230208783945818, the owner) asked:
+ro (user 1151230208783945818) asked for the two-stage pretraining pipeline for babble, and said "okay run it".
 
-"Right so the training loop needs to stop because we are just in pretraining not post training RL
-yet. #1537688090217418773 should now become the channel that shows when data is added not being
-trained"
+## Background, in ro's words
 
-Channel 1537688090217418773 is the Discord channel the training feed currently posts to. Babble
-just pivoted from correction pairs to collecting an unlabelled pretraining corpus; the corpus is
-tiny (54 rows, ~1k characters) and training it continuously is pointless until there is real data.
+The bot collects an unlabelled pretraining corpus from Discord (consented rows only). It currently
+has ~77 rows / ~2,000 characters against a 3.28M-param char model, so it memorizes the corpus and
+composes nothing new. ro: "we are trying to make a fun model people talk to get wacky sentences
+that are reflected in themselves" — so the human rows must stay, and must be the LAST thing the
+model trains on so the voice sticks.
 
-I have ALREADY stopped the live trainer and restarted the live bot on current main. Do not try to
-start, stop or touch anything running — the live deployment is `~/babble-live` and is not yours.
-Your job is the code in this repo (`kowo-co/babble`, main at `a088bc1`).
+Earlier in the conversation ro also said: "id prefer to keep the human data", "maybe we should
+re-pretrain every 100 contributions maybe?", "just make sure the new checkpoint is loaded into the
+new bot instance", "increase the outpout length/context window concsiderably", "id say like 512 for
+blocksize and like 256 output?", and "yeah if we need to run another pretrain thats fine".
+
+The agreed design (already discussed and accepted on channel):
+
+- Stage 1 — BASE. Pretrain from random init on a large external text corpus. Two sources:
+  (a) an English word list, for word shape/spelling; (b) TinyStories-style simple short stories,
+  for sentence structure. Stories are the part that actually teaches grammar; the word list alone
+  cannot, because a word list has no sentences in it.
+- Freeze the resulting base checkpoint as a distinct, reusable artifact on disk. It never gets
+  overwritten by the human pass.
+- Stage 2 — VOICE. Continue-training FROM the frozen base checkpoint on the consented human corpus
+  rows only. This is cheap (seconds) and reruns from the clean base every time, so nothing
+  compounds across reruns.
+- No continuous training loop. The old `babble train --loop` burned CPU for nothing — it ran to
+  step 3,200 with loss flat at ~0.238 since step 2,000. I already stopped it. Stage 2 fires on a
+  trigger instead: every 100 new corpus rows, or on demand from the CLI.
+
+## Repo
+
+`kowo-co/babble`. The live install is a separate checkout at `~/babble-live` (systemd user units
+`babble-bot` and `babble-train`) — do NOT edit or deploy to `~/babble-live`, just build and land
+the change in the repo. Relevant existing files: `babble/config.py` (has `block_size: int = 256`
+and `max_new_tokens: int = 96`, both env-overridable via `BABBLE_BLOCK_SIZE` /
+`BABBLE_MAX_NEW_TOKENS`), `babble/cli.py`, `babble/core.py`, `babble/tokenizer.py`
+(`block_size`-derived budgets), `babble/train*`, `checkpoints/` (`latest.pt`, `ckpt-*.pt`,
+`loss.jsonl`).
 
 ## What to build
 
-### 1. The channel becomes a collection feed
+1. **External corpus loaders.** A way to load base-stage text that is NOT user data and therefore
+   does NOT go through the consent path at all — dictionary words and stories are nobody's
+   messages. Keep it a clearly separate corpus source from the consented human rows. The human
+   rows must stay individually deletable exactly as they are today; do not fold them into the
+   external source, do not change the consent model, and do not change what the bot collects.
+   - Word list: prefer a real English word list. `/usr/share/dict/cracklib-small` exists on this
+     box; a larger list fetched at prepare-time is better if you can get one reliably. Cache it to
+     disk so the download happens once.
+   - Stories: TinyStories (roneneldan/TinyStories on Hugging Face) or an equivalent simple-English
+     story corpus. Cache to disk. Make the target size configurable and pick a sane default —
+     the rough rule is ~20 tokens per parameter, so 3.28M params wants on the order of tens of
+     millions of characters; if that is impractical to download or train on this box, take as much
+     as is practical, say so in the README, and make the amount a flag rather than silently
+     truncating.
+   - If a download is unavailable in the run environment, the code must still be correct and
+     testable with a small fixture, and the prepare step must fail loudly rather than silently
+     training on nothing.
 
-`babble/discord_feed.py` currently has a `TrainingFeed` that posts cycle-start and checkpoint
-messages. Training is not running, so that channel is now silent. It needs to report **collection**
-instead — the moments when the corpus changes:
+2. **Stage 1 CLI: base pretrain.** A command that wipes/ignores existing weights, trains from
+   random init on the external corpus at the new geometry, and writes the result as a frozen base
+   checkpoint under a stable path (e.g. `checkpoints/base.pt`) that stage 2 reads and never
+   overwrites. Report loss/val as the existing trainer does.
 
-- **A corpus row was added.** Show the text that was collected (blocklist-filtered and neutered
-  exactly as sample text already is), which surface it came from (a ping at booper, a DM, or a
-  widened `!babble all` channel grant), the contributor's PSEUDONYM only, and the running totals:
-  corpus rows, characters, distinct contributors.
-- **Consent changed**, because that is what changes what may be collected at all: someone granted
-  the default consent, someone opted a channel in with the widened grant, someone revoked it,
-  someone withdrew entirely (and how many rows that purge removed).
-- **Milestones**, so growth is legible without reading every line: a short message every N rows and
-  every N characters. Pick sensible N for a corpus that is currently 54 rows — something that fires
-  meaningfully now and does not become spam at 10,000 rows. Scale the interval with size rather
-  than using one fixed number.
+3. **Stage 2 CLI: voice pass.** A command that loads the frozen base checkpoint and continues
+   training on the consented human corpus rows only, then writes `latest.pt` (what the bot serves).
+   Must be safe to rerun repeatedly — always from base, never from the previous voice checkpoint.
 
-**Do not spam the channel.** One message per row is acceptable at the current trickle, but someone
-who has opted a channel in with `!babble all` can produce a burst. Coalesce rows arriving inside a
-short window (a few seconds) into one message that lists them, rather than posting each separately.
+4. **Trigger, not a loop.** Stage 2 fires when the corpus has grown by 100 rows since the last
+   voice pass, or on demand. Persist the last-trained row count so a restart doesn't re-fire.
+   Make the threshold configurable. Do not reintroduce a continuous cycling loop.
 
-Keep the existing `TrainingFeed` code working and intact — it is correct, it just has nothing to
-report while no trainer is running. When a trainer IS run manually, its messages should still post.
-This is an ADDITION, not a replacement.
+5. **Geometry change.** `block_size` 256 → 512 and `max_new_tokens` 96 → 256, per ro. Note that
+   changing `block_size` invalidates every existing checkpoint (positional embeddings), which is
+   why it lands with the base retrain and not before. Check `babble/tokenizer.py` budget helpers
+   and anything else derived from `block_size` still behaves at 512. Archive, don't delete, the
+   existing checkpoints.
 
-### 2. Training is opt-in, never ambient
+6. **Bot picks up new checkpoints.** Today the bot reads `latest.pt` at boot and needs a bounce to
+   see a new one. Make it pick up a newly written checkpoint without a manual restart (watch mtime
+   / reload on change), and make sure a half-written checkpoint can never be loaded — the existing
+   `.partial` staging directory suggests the write path already stages; use or extend that.
 
-Make sure nothing starts a training loop on its own: no autostart on bot boot, no implicit loop.
-`babble train` stays a deliberate command someone runs. If anything in the repo currently implies
-or documents continuous training as the default mode, fix it — including README and spec.
-
-### 3. The HF publish cadence — this breaks silently otherwise
-
-The auto-publish to HuggingFace currently fires every 20 CHECKPOINTS. With no trainer running there
-are no checkpoints, so the public dataset would quietly never update again — which is the opposite
-of what a collection phase wants.
-
-Re-key the publish cadence to DATA rather than to training: publish when the corpus has grown by a
-meaningful amount since the last publish (rows or characters, your call, state it in the code), with
-the same consent and blocklist re-checks at export that already exist. It must still be impossible
-to publish a row whose author has not consented or whose text matches the blocklist. Announce the
-publish in the collection feed too.
+7. **Collection feed unaffected.** The Discord channel currently reports corpus rows as they land.
+   Don't break it. If a training stage produces something worth posting, keep it consistent with
+   what's there.
 
 ## Constraints
 
-- Python, existing repo style, no new dependencies.
-- Do NOT touch `~/babble-live`, do not start or stop any process, do not push.
-- Do NOT change the model, tokenizer, checkpoint format, or the training math.
-- Pseudonymisation is absolute: no Discord ids, usernames, or raw author identifiers in any feed
-  message, stored row, or exported row. Channel ids in consent grant records are fine (they are
-  needed to enforce scope and are not personal data), but do not print a person's identity.
-- Every piece of collected text that reaches Discord goes through the blocklist withholding and
-  `neuter_sample` first. Do not weaken any filtering.
-- The feed posts via webhook and must fail soft: a Discord outage or a 4xx must never break
-  collection or crash the bot. Log it and move on, exactly as the existing feed does.
+- Consent model is untouched and stays failing-closed. External corpus never enters the consented
+  human corpus, and human rows never get merged into the external source.
+- Don't touch `~/babble-live` or the running bot. Land the change in the repo.
+- Keep it in the existing style (Python, uv, the existing config/env-override pattern).
+- Update the README/spec so the two-stage flow and the new commands are documented.
 
 ## Done means
 
-- Someone pings booper, and a message appears in the collection channel showing the text collected,
-  the surface it came from, and the new corpus totals.
-- Someone runs the widened opt-in in a channel, and the channel says so; their subsequent messages
-  in that channel show up as collected rows.
-- Someone withdraws, and the channel reports the withdrawal and how many rows were purged.
-- A burst of messages produces one coalesced message, not one per row.
-- No training loop starts by itself anywhere.
-- The dataset publishes on corpus growth rather than on checkpoints, and the feed says when it did.
-- Full test suite passes, with new tests covering: the collection feed events, the coalescing
-  window, milestone thresholds at small and large corpus sizes, blocklist/neuter enforcement on
-  feed text, and the growth-based publish trigger.
+- `bun`-equivalent: the project's own test suite passes (`uv run pytest` or whatever the repo
+  uses), including new tests for the external loaders, the two-stage checkpoint handling (base is
+  never overwritten by the voice pass), the 100-row trigger, and the 512 geometry.
+- A base pretrain command exists and runs end to end on a small fixture corpus in tests.
+- A voice pass command exists that starts from the frozen base every time and writes `latest.pt`.
+- `block_size` is 512 and `max_new_tokens` is 256 by default, with old checkpoints archived.
+- The bot loads a newly written `latest.pt` without a manual restart.
+- README documents: stage 1, stage 2, the trigger, and how to rerun.
+
+## Ceiling
+
+Build the pipeline and land it. Don't redesign the model architecture beyond the block_size/output
+changes, don't touch the consent or collection code paths beyond what's needed, and don't run a
+multi-hour real pretrain as part of this run — the actual base training run is a separate step
+once the pipeline exists.
 
 ## Checklist
-- [x] `CollectionFeed` in `discord_feed.py`: row-added, consent-changed, milestone, publish events; webhook, silent-unconfigured, fail-soft (same infra as `TrainingFeed`, which stays intact).
-- [x] Row event shows neutered+blocklist-withheld text, surface label, contributor pseudonym only, running totals (rows / chars / contributors).
-- [x] Coalesce rows arriving inside a short window into one message; huge bursts capped (`max_coalesce`), post length capped under Discord's 2000.
-- [x] Milestones every N rows and N chars, interval scaling with corpus size (fires now at 54 rows, not spam at 10k); `prime()` stops a restart re-announcing.
-- [x] Consent events: default grant, `!babble all` widen, narrow, decline, withdraw with purge counts.
-- [x] `CorpusStore.totals()` (rows, chars, contributors) in one scan.
-- [x] Wire feed into `core.py` capture + consent paths (pseudonyms only, never raw ids — audited).
-- [x] Growth-based HF publisher (`publish.py`): publishes when corpus grows by N rows/chars since last publish, same consent+blocklist gate, persisted baseline (`data/publish_state.json`), announced in feed, fail-soft.
-- [x] Wire feed + publisher into `bot.py`; background flush task for the coalescing tail.
-- [x] No training loop autostarts anywhere (bot boot only backfills + runs gateway); README/spec/.env wording fixed to make training explicitly opt-in.
-- [x] New tests: feed events, coalescing window, milestone thresholds (small + large), blocklist/neuter enforcement on feed text, growth-based publish trigger.
-- [x] Full `pytest` suite passes (415 passed); self-reviewed against every "Done means" item.
+- [x] External corpus loaders module (word list + stories), cached to disk, fixture-testable, fails loudly on empty — `babble/external.py`
+- [x] `babble prepare-base` fetches/caches external corpus, configurable size (`--story-chars`/`--word-limit`), no consent path
+- [x] Stage 1 CLI `babble base-pretrain`: random init on external corpus at 512 geometry -> `checkpoints/base.pt` (frozen, never overwritten)
+- [x] Stage 2 CLI `babble voice-pass`: continues from `base.pt` on consented human corpus only -> `latest.pt`; safe to rerun (always from base)
+- [x] Trigger: voice pass fires at +N rows (default 100) or `--force`; last-trained count persisted in `voice_state.json`; no loop
+- [x] Geometry: block_size 256->512, max_new_tokens 96->256 defaults; tokenizer budgets verified at 512
+- [x] Archive (not delete) existing checkpoints on base retrain — `checkpoints/archive/<ts>/`
+- [x] Bot hot-reloads new latest.pt without restart (existing CheckpointGenerator mtime watch); half-written never loadable (.partial staging)
+- [x] Collection feed untouched (no edits to discord_feed collection path); trigger wired via injected `_VoiceTrigger`, mirrors publisher
+- [x] Consent model untouched, fails closed; external corpus never enters human corpus and vice versa (separate paths, tested)
+- [x] Tests: loaders, base-never-overwritten, 100-row trigger, 512 geometry — `uv run --extra dev pytest` = 442 passed
+- [x] README documents stage 1, stage 2, trigger, rerun (new "Two-stage pretraining" section)
 
 ## Notes
-- Collection feed reuses the SAME webhook/channel as the training feed (`BABBLE_LOG_WEBHOOK_URL`) — the ticket wants that channel repurposed, not a second one.
-- Trainer's checkpoint-based auto-publish is left intact (manual training still publishes + its tests pass); the NEW growth-based publisher is what keeps the public dataset live during the collection phase, when no trainer runs. This is the additive reading of "re-key to data".
-- Row/char milestone intervals scale by magnitude: rows 25→100→500→2500; chars 2k→20k→100k.
+(worker scratch: decisions, blockers, handoff notes)
+- torch 2.13.0+cpu present; deps: torch, discord.py, huggingface_hub (NO datasets/numpy).
+- /usr/share/dict/cracklib-small: after junk filter -> ~54,403 usable words. TinyStories real download verified (V2 valid split, ~22M chars).
+- Bot already hot-reloads latest.pt via CheckpointGenerator._ensure_current (mtime) — spec's "needs a bounce" was already solved; verified and left as-is.
+- Test runner: `uv run --extra dev python -m pytest` (bare `pytest` isn't on PATH).
+- New modules: babble/external.py (loaders), babble/pretrain.py (stages + trigger + VoiceAutoTrigger). CLI: prepare-base, base-pretrain, voice-pass, voice-status.
+- Design: kept stage functions OUT of trainer.py's complex loop; reused its low-level helpers (make_batch/save_checkpoint/eval_loss/append_curve/be_polite). Voice uses fresh AdamW + save_checkpoint (writes latest.pt + ckpt-*.pt); base uses _save_to base.pt only. prune globs ckpt-*.pt so base.pt is safe.
+- Did NOT run a real multi-hour base pretrain (ceiling). Pipeline verified on fixtures + tiny 512-geometry model. Real base run is a separate step.

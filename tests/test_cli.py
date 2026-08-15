@@ -42,6 +42,43 @@ def test_no_arguments_prints_help(cli, capsys):
     assert "babble" in capsys.readouterr().out
 
 
+def test_two_stage_pipeline_runs_end_to_end_through_the_cli(cli, capsys, monkeypatch):
+    monkeypatch.setenv("BABBLE_EXTERNAL_DIR", str(cli / "external"))
+    monkeypatch.setenv("BABBLE_VOICE_TRIGGER_ROWS", "100")  # so nothing auto-fires
+    words = cli / "words.txt"
+    words.write_text("apple\nbanana\ncherry\ndog\ncat\n", encoding="utf-8")
+    stories = cli / "stories.txt"
+    stories.write_text("A cat sat on a mat.<|endoftext|>A dog ran home.", encoding="utf-8")
+
+    # Stage 0: prepare the external corpus from local files (no network).
+    assert main(["prepare-base", "--words", str(words), "--stories", str(stories)]) == 0
+    # Stage 1: base pretrain from scratch -> base.pt.
+    assert main(["base-pretrain", "--steps", "4", "--quiet"]) == 0
+
+    settings = Settings.from_env()
+    assert settings.base_checkpoint.exists()
+
+    # A voice pass with no consented rows yet is a clean no-op.
+    assert main(["voice-pass", "--force"]) == 0
+    assert "Nothing to train on" in capsys.readouterr().out
+
+    # Seed some consented human rows, then run stage 2 -> latest.pt.
+    ids = Pseudonymiser.load(settings)
+    ConsentStore(settings.consent_path).grant("human-1", "corpus")
+    store = CorpusStore(settings.corpus_path)
+    author = ids.user("human-1")
+    for text in ("hey there", "wacky wacky", "babble on"):
+        store.append(CorpusRow(id=make_corpus_id(text, author), text=text, author=author, source=SOURCE_MENTION))
+
+    assert main(["voice-pass", "--force", "--steps", "4"]) == 0
+    assert settings.latest_checkpoint.exists()
+    # base.pt is not latest.pt: the voice pass never overwrote the frozen base.
+    assert settings.base_checkpoint.exists()
+
+    assert main(["voice-status"]) == 0
+    assert "base.pt: present" in capsys.readouterr().out
+
+
 def test_summary_works_on_a_fresh_install(cli, capsys):
     assert main(["summary"]) == 0
 
