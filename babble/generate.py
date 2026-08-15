@@ -109,7 +109,9 @@ def _decode_from(
             model, "new_cache"
         )
         if use_cache:
-            cache: KVCache | None = model.new_cache(1)
+            cache: KVCache | None = model.new_cache(
+                1, max_len=len(context) + max_new_tokens
+            )
             prompt = torch.tensor([context], dtype=torch.long)
             logits = model(prompt, cache=cache)[:, -1]
             for _ in range(max_new_tokens):
@@ -169,7 +171,9 @@ def _decode_many_from(
         )
 
         if use_cache:
-            cache: KVCache | None = model.new_cache(n)
+            cache: KVCache | None = model.new_cache(
+                n, max_len=len(context) + max_new_tokens
+            )
             prompt = torch.tensor([list(context)], dtype=torch.long).repeat(n, 1)
             logits = model(prompt, cache=cache)[:, -1]
             for _ in range(max_new_tokens):

@@ -39,7 +39,13 @@ from .blocklist import Blocklist
 from .config import Settings
 from .consent import ConsentStore, CorpusConsent
 from .corpus import CorpusRow, CorpusStore
-from .cpu_runtime import configure_cpu, force_cpu_device, maybe_compile
+from .cpu_runtime import (
+    configure_cpu,
+    force_cpu_device,
+    maybe_compile,
+    model_state_dict,
+    uncompiled,
+)
 from .discord_feed import TrainingFeed
 from .export_hf import (
     CORPUS_FILE,
@@ -499,8 +505,8 @@ def save_checkpoint(settings: Settings, model: Babbler, optimizer, step: int, lo
     payload = {
         "step": step,
         "loss": loss,
-        "config": model.config.to_dict(),
-        "model": model.state_dict(),
+        "config": uncompiled(model).config.to_dict(),
+        "model": model_state_dict(model),
         "optim": optimizer.state_dict(),
         "torch_rng": torch.get_rng_state(),
         "saved_at": utcnow_iso(),

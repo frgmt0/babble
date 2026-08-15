@@ -67,7 +67,9 @@ class KVCache:
     Recomputing full-sequence attention for every new byte is the dominant cost
     of Discord replies (`best_of` × `max_new_tokens`). Writing each new key/value
     into a fixed buffer and attending only up to `length` turns that into a
-    cheap single-token forward.
+    cheap single-token forward. Callers should size `max_len` to
+    `len(context) + max_new_tokens` (capped at `block_size`) rather than always
+    allocating the full context window.
     """
 
     __slots__ = ("k", "v", "length", "max_len")
@@ -93,9 +95,6 @@ class KVCache:
             torch.zeros(batch, n_head, max_len, head_dim, device=device, dtype=dtype)
             for _ in range(n_layer)
         ]
-
-    def reset(self) -> None:
-        self.length = 0
 
 
 class CausalSelfAttention(nn.Module):
@@ -148,9 +147,9 @@ class CausalSelfAttention(nn.Module):
                 # Rare multi-token append with a warm cache: build an absolute
                 # causal mask. SDPA's is_causal bottom-right alignment is not
                 # reliable enough here across torch builds.
-                allow = torch.ones(T, end, dtype=torch.bool, device=q.device)
-                for i in range(T):
-                    allow[i, start + i + 1 :] = False
+                rows = torch.arange(start, end, device=q.device)[:, None]
+                cols = torch.arange(end, device=q.device)[None, :]
+                allow = cols <= rows
                 out = F.scaled_dot_product_attention(
                     q, k_full, v_full, attn_mask=allow, dropout_p=drop
                 )
@@ -165,8 +164,8 @@ class Block(nn.Module):
         self.ln1 = nn.LayerNorm(config.n_embd)
         self.attn = CausalSelfAttention(config, layer_idx=layer_idx)
         self.ln2 = nn.LayerNorm(config.n_embd)
-        # tanh-approx GELU matches the CUDA/oneDNN fused path more often than
-        # the erf form, and is a clear win on CPU for this MLP width.
+        # tanh-approx GELU: faster on CPU than erf. Stateless, so checkpoints
+        # still load — but the forward is not bit-identical to erf-GELU weights.
         self.mlp = nn.Sequential(
             nn.Linear(config.n_embd, 4 * config.n_embd, bias=False),
             nn.GELU(approximate="tanh"),
@@ -212,17 +211,25 @@ class Babbler(nn.Module):
         elif isinstance(module, nn.Embedding):
             nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def new_cache(self, batch_size: int = 1) -> KVCache:
-        """Fresh preallocated KV cache on CPU, sized to `block_size`."""
+    def new_cache(self, batch_size: int = 1, max_len: int | None = None) -> KVCache:
+        """Fresh preallocated KV cache on CPU.
+
+        `max_len` defaults to `block_size`. Prefer passing the tight bound
+        `len(context) + max_new_tokens` so Discord replies do not zero a full
+        512-step buffer when they only need a fraction of it.
+        """
         c = self.config
         head_dim = c.n_embd // c.n_head
         weight = self.tok_emb.weight
+        slots = c.block_size if max_len is None else min(int(max_len), c.block_size)
+        if slots < 1:
+            raise ValueError("max_len must be at least 1")
         return KVCache(
             c.n_layer,
             batch_size,
             c.n_head,
             head_dim,
-            c.block_size,
+            slots,
             device=weight.device,
             dtype=weight.dtype,
         )

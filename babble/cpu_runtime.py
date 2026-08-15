@@ -15,6 +15,9 @@ import torch
 
 
 _CONFIGURED = False
+# Last oneDNN / denormal choices, so later configure_cpu calls can still report
+# them in logs even though the heavyweight switches only run once.
+_CPU_FLAGS: dict[str, Any] = {}
 
 
 def force_cpu_device() -> torch.device:
@@ -28,10 +31,14 @@ def configure_cpu(threads: int | None = None) -> dict[str, Any]:
     Safe to call more than once; the heavyweight switches run only on the first
     call so a bot and a trainer in the same interpreter do not fight. Returns
     the settings that actually stuck, for logs.
+
+    Thread count is controlled only via `torch.set_num_threads` — OpenMP/MKL
+    env vars are read at runtime init (already past by the time torch is
+    imported), so setting them here would be a no-op.
     """
     global _CONFIGURED
 
-    report: dict[str, Any] = {"device": "cpu"}
+    report: dict[str, Any] = {"device": "cpu", **_CPU_FLAGS}
 
     # Never let an accidental CUDA build steal work — this project's uv source
     # pins the CPU wheel, but a system torch can still report cuda.is_available.
@@ -58,25 +65,34 @@ def configure_cpu(threads: int | None = None) -> dict[str, Any]:
     # oneDNN / MKL-DNN: the win for our Linear + LayerNorm + SDPA stack on CPU.
     if hasattr(torch.backends, "mkldnn"):
         torch.backends.mkldnn.enabled = True
-        report["mkldnn"] = bool(torch.backends.mkldnn.enabled)
+        _CPU_FLAGS["mkldnn"] = bool(torch.backends.mkldnn.enabled)
 
     # Flushing denormals avoids the classic CPU slow-path on near-zero grads.
     try:
         torch.set_flush_denormal(True)
-        report["flush_denormal"] = True
+        _CPU_FLAGS["flush_denormal"] = True
     except Exception:
-        report["flush_denormal"] = False
+        _CPU_FLAGS["flush_denormal"] = False
 
-    # Keep matmul in float32; half/bfloat on CPU is usually slower for a model
-    # this small, and we want stable loss curves more than a risky cast.
-    if "OMP_NUM_THREADS" not in os.environ and threads is not None:
-        os.environ["OMP_NUM_THREADS"] = str(threads)
-    if "MKL_NUM_THREADS" not in os.environ and threads is not None:
-        os.environ["MKL_NUM_THREADS"] = str(threads)
-
+    report.update(_CPU_FLAGS)
     _CONFIGURED = True
     report["configured"] = True
     return report
+
+
+def uncompiled(model: torch.nn.Module) -> torch.nn.Module:
+    """The underlying `nn.Module` behind a `torch.compile` wrapper, if any.
+
+    `OptimizedModule.state_dict()` prefixes every key with `_orig_mod.`, which
+    would make every checkpoint unloadable by a plain `Babbler`. Always save
+    (and load into) the unwrapped module.
+    """
+    return getattr(model, "_orig_mod", model)
+
+
+def model_state_dict(model: torch.nn.Module) -> dict[str, Any]:
+    """Checkpoint-safe weights: never the compiled wrapper's prefixed keys."""
+    return uncompiled(model).state_dict()
 
 
 def maybe_compile(model: torch.nn.Module, *, enabled: bool | None = None) -> torch.nn.Module:
@@ -85,6 +101,10 @@ def maybe_compile(model: torch.nn.Module, *, enabled: bool | None = None) -> tor
     Off by default: compile time dominates short voice-pass runs, and the
     Discord bot wants the first reply fast. Set `BABBLE_TORCH_COMPILE=1` (or
     pass `enabled=True`) when doing a long base pretrain.
+
+    Compile is lazy: this returns an `OptimizedModule` immediately and any
+    inductor failure surfaces on the first forward, not here. Pair every save
+    with `model_state_dict` / `uncompiled` so checkpoints stay plain-Babbler.
     """
     if enabled is None:
         enabled = os.environ.get("BABBLE_TORCH_COMPILE", "").strip().lower() in {
@@ -95,7 +115,4 @@ def maybe_compile(model: torch.nn.Module, *, enabled: bool | None = None) -> tor
         }
     if not enabled:
         return model
-    try:
-        return torch.compile(model, backend="inductor", mode="reduce-overhead")  # type: ignore[return-value]
-    except Exception:
-        return model
+    return torch.compile(model, backend="inductor", mode="reduce-overhead")  # type: ignore[return-value]

@@ -551,24 +551,30 @@ of redoing attention over the whole prefix. That is what keeps a `best_of=4`
 reply snappy on two threads at `max_new_tokens=256`. `BABBLE_BEST_OF=1` turns
 best-of off.
 
-## CPU-first model
+## CPU-first decode
 
-babble is built for a couple of CPU threads, not a GPU:
+babble is built for a couple of CPU threads, not a GPU. The user-visible win is
+**decode**, not train (~4% on the training step, within noise):
 
 - **CPU-only torch** via uv's pytorch-cpu index — no CUDA wheel, no device
   offload in train or inference (`babble/cpu_runtime.py`).
 - **KV-cached decode** in `model.py` / `generate.py` so Discord replies do not
-  recompute the growing prefix every byte.
+  recompute the growing prefix every byte (about 7–14× on `best_of=4` at two
+  threads, depending on `max_new_tokens`).
 - **oneDNN / MKL-DNN**, denormal flushing, and a capped thread count from
-  `be_polite` / `CheckpointGenerator`.
+  `be_polite` / `CheckpointGenerator` (this model is too small to feed eight
+  threads — the cap is itself a speedup).
 - **tanh-approx GELU**, `Identity` instead of `Dropout(0)`, tied embeddings,
-  bias-free projections — fewer ops for the same 3.3M-param shape.
+  bias-free projections — fewer ops for the same 3.3M-param shape. GELU is
+  stateless, so checkpoints still load; the forward is not bit-identical to the
+  old erf form, but measured loss/reply drift on live weights is negligible.
 - **AdamW `foreach`** on the CPU training path; optional `BABBLE_TORCH_COMPILE=1`
-  for long base pretrains (off by default so the first bot reply stays cold-start
-  fast).
+  for long base pretrains (off by default). Compiled modules are unwrapped
+  before every checkpoint write so `state_dict` keys stay plain Babbler keys —
+  never `_orig_mod.*`.
 
-Checkpoint weights stay compatible: the KV cache is runtime-only, and the
-state_dict keys are unchanged.
+Checkpoint weights stay loadable across this change: the KV cache is
+runtime-only, and saved key names match `main`.
 
 ## What "RL harder" actually means here
 

@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import torch
 
-from babble.cpu_runtime import configure_cpu, force_cpu_device, maybe_compile
+import babble.generate as generate
+from babble.cpu_runtime import (
+    configure_cpu,
+    force_cpu_device,
+    maybe_compile,
+    model_state_dict,
+    uncompiled,
+)
 from babble.generate import continue_many, continue_text, sample
 from babble.model import Babbler, ModelConfig
 
@@ -20,6 +27,9 @@ def test_configure_cpu_forces_cpu_and_is_idempotent():
     assert first["device"] == "cpu"
     assert second["device"] == "cpu"
     assert torch.get_num_threads() == 2
+    # Second call must still report the oneDNN / denormal flags, not None.
+    assert "mkldnn" in second
+    assert second.get("flush_denormal") is not None
 
 
 def test_kv_cache_prefill_plus_decode_matches_full_forward():
@@ -32,9 +42,10 @@ def test_kv_cache_prefill_plus_decode_matches_full_forward():
     with torch.inference_mode():
         full = model(tokens)
 
-        cache = model.new_cache(batch_size=2)
+        cache = model.new_cache(batch_size=2, max_len=8)
         pref = model(tokens[:, :5], cache=cache)
         assert cache.length == 5
+        assert cache.max_len == 8
         rest = model(tokens[:, 5:], cache=cache)
         cached = torch.cat([pref, rest], dim=1)
 
@@ -42,19 +53,47 @@ def test_kv_cache_prefill_plus_decode_matches_full_forward():
     assert torch.allclose(cached, full, atol=1e-5, rtol=1e-5)
 
 
-def test_cached_greedy_decode_matches_uncached_path():
-    """Temperature 0 must be identical with or without the cache fast path."""
+def test_cached_matches_uncached_continue_text(monkeypatch):
+    """Same seed + same prompt must yield identical text with or without KV cache."""
+    model = Babbler(TINY)
+    model.eval()
+    for seed in range(8):
+        g = torch.Generator().manual_seed(seed)
+        cached = continue_text(
+            model, "hi", max_new_tokens=24, temperature=0.9, top_k=40, generator=g
+        )
+        monkeypatch.setattr(generate, "_can_cache", lambda *a, **k: False)
+        g = torch.Generator().manual_seed(seed)
+        uncached = continue_text(
+            model, "hi", max_new_tokens=24, temperature=0.9, top_k=40, generator=g
+        )
+        monkeypatch.undo()
+        assert cached == uncached
+
+
+def test_cached_matches_uncached_continue_many(monkeypatch):
+    """Batched decode has its own finished-mask bookkeeping — pin parity too."""
+    model = Babbler(TINY)
+    model.eval()
+    for seed in range(4):
+        g = torch.Generator().manual_seed(seed)
+        cached = continue_many(
+            model, "ab", 3, max_new_tokens=16, temperature=0.9, top_k=40, generator=g
+        )
+        monkeypatch.setattr(generate, "_can_cache", lambda *a, **k: False)
+        g = torch.Generator().manual_seed(seed)
+        uncached = continue_many(
+            model, "ab", 3, max_new_tokens=16, temperature=0.9, top_k=40, generator=g
+        )
+        monkeypatch.undo()
+        assert cached == uncached
+
+
+def test_overflow_path_is_deterministic():
+    """When context + max_new exceeds block_size, the uncached fallback stays greedy-stable."""
     torch.manual_seed(3)
     model = Babbler(TINY)
     model.eval()
-
-    # Force the overflow fallback by asking for more tokens than fit, then a
-    # short reply that fits — both must be deterministic under temperature 0.
-    short = continue_text(model, "hi", max_new_tokens=8, temperature=0.0, top_k=40)
-    again = continue_text(model, "hi", max_new_tokens=8, temperature=0.0, top_k=40)
-    assert short == again
-
-    # Overflow path: context + max_new > block_size disables the cache.
     long_prefix = "x" * 50
     overflow = continue_text(
         model, long_prefix, max_new_tokens=32, temperature=0.0, top_k=40
@@ -81,17 +120,31 @@ def test_dropout_zero_uses_identity():
 
 
 def test_gelu_is_tanh_approximate_for_cpu():
-    gelu = model_mlp_gelu(Babbler(TINY))
+    gelu = Babbler(TINY).blocks[0].mlp[1]
     assert gelu.approximate == "tanh"
-
-
-def model_mlp_gelu(model: Babbler):
-    return model.blocks[0].mlp[1]
 
 
 def test_maybe_compile_off_by_default_returns_same_module():
     model = Babbler(TINY)
     assert maybe_compile(model, enabled=False) is model
+
+
+def test_model_state_dict_unwraps_compiled_prefix():
+    """Compiled checkpoints must save plain Babbler keys, never `_orig_mod.*`."""
+    plain = Babbler(TINY)
+    plain_keys = set(plain.state_dict())
+    compiled = maybe_compile(plain, enabled=True)
+    if compiled is plain:
+        # Inductor unavailable in this environment — still assert the helper.
+        assert set(model_state_dict(plain)) == plain_keys
+        return
+    wrapped_keys = set(compiled.state_dict())
+    assert all(k.startswith("_orig_mod.") for k in wrapped_keys)
+    assert set(model_state_dict(compiled)) == plain_keys
+    # Round-trip into a fresh Babbler the way resume does.
+    fresh = Babbler(TINY)
+    fresh.load_state_dict(model_state_dict(compiled))
+    assert uncompiled(compiled) is not compiled
 
 
 def test_pair_sample_still_works_on_cpu_path():

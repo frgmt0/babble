@@ -56,7 +56,7 @@ from .trainer import (
     save_checkpoint,
     sweep_scratch,
 )
-from .cpu_runtime import force_cpu_device, maybe_compile
+from .cpu_runtime import force_cpu_device, maybe_compile, model_state_dict, uncompiled
 from .util import atomic_write_text, utcnow_iso
 
 # How much of the base corpus to hold out for a validation read, and a ceiling so
@@ -120,8 +120,8 @@ def _save_to(settings: Settings, path: Path, model: Babbler, optimizer, step: in
     payload = {
         "step": step,
         "loss": loss,
-        "config": model.config.to_dict(),
-        "model": model.state_dict(),
+        "config": uncompiled(model).config.to_dict(),
+        "model": model_state_dict(model),
         "optim": optimizer.state_dict(),
         "torch_rng": torch.get_rng_state(),
         "saved_at": utcnow_iso(),
