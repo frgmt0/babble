@@ -1,0 +1,16 @@
+# Runs deploy/update-live.sh once. Triggered on a schedule by
+# babble-update.timer, not enabled or started directly. See the README's
+# "Keeping the live install current" section for install instructions.
+#
+# Paths here assume the live checkout at %h/babble-live -- override by
+# dropping a unit file with different Environment= lines (systemctl --user
+# edit babble-update) rather than editing the checked-out copy of this file,
+# so `babble-update.sh` itself stays a plain `git pull` away from upstream.
+[Unit]
+Description=babble live-install self-update (check origin/main, fast-forward, restart if behind)
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/babble-live
+Environment=BABBLE_LIVE_DIR=%h/babble-live
+ExecStart=%h/babble-live/deploy/update-live.sh
