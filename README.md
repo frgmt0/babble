@@ -364,6 +364,19 @@ babble voice-pass --force   # STAGE 2: base.pt + human corpus -> latest.pt
 babble voice-status         # rows since the last pass, whether the trigger is due
 ```
 
+**`--steps` is a ceiling, not a target.** On a small corpus the model overfits
+long before the step budget is spent -- val loss bottoms out, then climbs. So
+the voice pass tracks val loss at every checkpoint interval and, **at the end of
+the run**, writes whichever step had the *lowest* val loss to `latest.pt` --
+never just whatever the last step happened to produce. It also stops early once
+`BABBLE_VOICE_PATIENCE` (default 3) checkpoint intervals in a row fail to beat
+that best, so a run that has already found its minimum does not keep burning
+CPU past it -- the same waste that got the old continuous `train --loop`
+retired. `voice.done` in `logs/babble.log` names the winning step, its val
+loss, and how many steps ran versus the ceiling. Both the best-checkpoint
+selection and the early stop are no-ops without a held-out validation set (too
+little data to spare any) -- see `BABBLE_VAL_MIN_ROWS` below.
+
 **A trigger, not a loop.** The voice pass re-fires every
 `BABBLE_VOICE_TRIGGER_ROWS` (default 100) *new* corpus rows since the last pass,
 or on demand with `voice-pass`. The last-trained row count is persisted in
@@ -893,6 +906,8 @@ The knobs that decide what the bot sounds like:
 | `BABBLE_MAX_NEW_TOKENS` | `256` | longest reply, in bytes |
 | `BABBLE_BLOCK_SIZE` | `512` | context window in bytes; changing it [invalidates checkpoints](#two-stage-pretraining) |
 | `BABBLE_VOICE_TRIGGER_ROWS` | `100` | new corpus rows that [re-fire the voice pass](#two-stage-pretraining); `0` = manual only |
+| `BABBLE_VOICE_STEPS` | `400` | voice-pass step [ceiling](#two-stage-pretraining), not a target -- the best-val checkpoint may win earlier |
+| `BABBLE_VOICE_PATIENCE` | `3` | stop the voice pass after this many non-improving [checkpoint intervals](#two-stage-pretraining); `0` = never |
 | `BABBLE_BEST_OF` | `4` | [candidates drawn per reply](#best-of-n); `1` turns it off |
 | `BABBLE_TRAIN_THREADS` | `2` | CPU threads for train + inference; stays polite on a shared box |
 | `BABBLE_TORCH_COMPILE` | off | set `1` to `torch.compile` the model for long base pretrains |

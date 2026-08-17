@@ -60,7 +60,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="STAGE 2: continue from base.pt on the human corpus -> latest.pt",
     )
     voice.add_argument("--force", action="store_true", help="run even if the +N-row trigger is not due")
-    voice.add_argument("--steps", type=int, default=None, help="step budget (default: BABBLE_VOICE_STEPS)")
+    voice.add_argument(
+        "--steps", type=int, default=None,
+        help="step CEILING, not a target -- the best-val checkpoint may win earlier (default: BABBLE_VOICE_STEPS)",
+    )
+    voice.add_argument(
+        "--patience", type=int, default=None,
+        help="stop after N non-improving checkpoint intervals, 0 = never (default: BABBLE_VOICE_PATIENCE)",
+    )
     voice.add_argument("--seed", type=int, default=1, help="deterministic run")
     voice.add_argument("--quiet", action="store_true", help="no per-checkpoint printing")
 
@@ -188,15 +195,19 @@ def main(argv: list[str] | None = None) -> int:
         log = EventLog(settings, Pseudonymiser.load(settings), component="voice", echo=not args.quiet)
         try:
             result = voice_pass(
-                settings, force=args.force, steps=args.steps, seed=args.seed, echo=not args.quiet, log=log
+                settings, force=args.force, steps=args.steps, patience=args.patience,
+                seed=args.seed, echo=not args.quiet, log=log,
             )
         finally:
             log.close()
         if result.ran:
             stage = result.stage
+            val_s = f"{stage.val_loss:.4f}" if stage.val_loss is not None else "n/a"
+            early = " (stopped early)" if stage.stopped_early else ""
             print(
-                f"stage 2 (voice): trained {result.rows_trained} human row(s) from base "
-                f"to step {stage.final_step}, loss {stage.last_loss:.4f} -> {stage.path}",
+                f"stage 2 (voice): trained {result.rows_trained} human row(s) from base, "
+                f"best checkpoint at step {stage.final_step} (loss {stage.last_loss:.4f}, val {val_s}) "
+                f"after {stage.steps_run}/{stage.budget} steps{early} -> {stage.path}",
                 flush=True,
             )
         elif result.reason == "no_base":
