@@ -269,6 +269,13 @@ class Settings:
         return self.checkpoint_dir / "voice_state.json"
 
     @property
+    def update_state_path(self) -> Path:
+        """Result of the last drift check by `deploy/update-live.sh` -- whether
+        the running commit matched `origin/main` as of that check. Read-only
+        from here; only the update script writes it."""
+        return self.data_dir / "update_state.json"
+
+    @property
     def checkpoint_archive_dir(self) -> Path:
         """Where a base retrain moves the now-incompatible old checkpoints."""
         return self.checkpoint_dir / "archive"

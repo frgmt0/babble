@@ -978,6 +978,96 @@ RestartSec=30
 WantedBy=default.target
 ```
 
+## Keeping the live install current
+
+The bot runs from a **plain clone**, and drift is invisible if nothing checks
+for it: a checkout can sit behind `main` — or worse, have its `origin` pointed
+somewhere that will never pull anything real again — while everything still
+*looks* healthy. `deploy/update-live.sh` is a small, idempotent script built to
+run on a timer and catch exactly that:
+
+- **Fails loudly**, never silently "fixes" anything, if `origin` isn't actually
+  `kowo-co/babble` — a wrong remote is the kind of bug that hides for weeks, so
+  it gets a non-zero exit and a log line, not an auto-repoint.
+- Fetches `origin/main`; if the checkout is already current it exits `0` and
+  touches nothing — no restart, one log line.
+- If behind, refuses to merge over uncommitted tracked changes, then
+  `git merge --ff-only` only — never a real merge, never a rebase, never
+  force.
+- Syncs dependencies (`uv sync`) only when `uv.lock` actually changed.
+- **Skips the restart** (exit `0`, try again next tick) if a voice pass or
+  base pretrain is currently running, so an update can never kill a training
+  run mid-write.
+- Restarts `babble-bot` and then *proves* it came back — polls the log for a
+  fresh `bot.ready` within a timeout — rather than trusting that
+  `systemctl restart` returning success means the bot is actually serving.
+- Logs every action, and every no-op decision, to the same `logs/babble.log` /
+  `logs/babble.jsonl` the bot writes, and records the outcome of the last
+  check in `data/update_state.json`.
+
+### Installing the timer
+
+The service and timer units, and the script they run, live in `deploy/` and
+ship with the repo — installing them is symlinking or copying two unit files
+and enabling one:
+
+```bash
+mkdir -p ~/.config/systemd/user
+ln -sf ~/babble-live/deploy/babble-update.service ~/.config/systemd/user/
+ln -sf ~/babble-live/deploy/babble-update.timer   ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now babble-update.timer
+```
+
+That's it — no separate install step for the script itself. It lives inside
+the live checkout, so it updates *itself* the same way it updates everything
+else, and the next scheduled run always uses whatever version of the script
+just landed on `main`.
+
+The units assume the live checkout is `~/babble-live` and the bot's unit is
+named `babble-bot`, matching [the bot service above](#running-it-for-real).
+Both — and every other path the script touches — are overridable by
+environment variable rather than hardcoded, so the same script runs anywhere:
+
+| variable | default | |
+| --- | --- | --- |
+| `BABBLE_LIVE_DIR` | `~/babble-live` | the checkout to keep current |
+| `BABBLE_UPDATE_REMOTE` | `https://github.com/kowo-co/babble.git` | the `origin` that must be configured |
+| `BABBLE_UPDATE_BRANCH` | `main` | branch to track |
+| `BABBLE_BOT_UNIT` | `babble-bot` | the systemd `--user` unit to restart |
+| `BABBLE_UPDATE_RESTART_TIMEOUT` | `90` | seconds to wait for `bot.ready` after a restart |
+| `BABBLE_TRAIN_SUBCOMMANDS` | `voice-pass base-pretrain train` | space-separated `babble` subcommands that count as "training in flight" |
+
+To change the check interval, edit `OnUnitActiveSec=` in
+`deploy/babble-update.timer` (a few minutes is a sane default — the service
+is a fast no-op whenever `main` hasn't moved) and `systemctl --user
+daemon-reload && systemctl --user restart babble-update.timer`.
+
+### Checking whether it's actually current
+
+Three ways to answer "is booper running the latest code?" without shelling
+into the box:
+
+```bash
+babble summary                              # last line: running commit vs origin/main
+babble logs -n 20                           # recent update.* events, interleaved with everything else
+cat ~/babble-live/data/update_state.json    # exactly what the last check decided, and when
+```
+
+`babble summary`'s `code` line reports the commit actually running (read
+fresh, locally) against `origin/main` **as of the last scheduled check** — it
+never fetches over the network itself, so asking is always instant:
+
+```
+code 6af568a · current with origin/main (checked 2026-08-17T07:15:23+00:00)
+code 6af568a · BEHIND origin/main (a2250af...) as of 2026-08-17T07:20:00+00:00
+code 6af568a · origin/main: unknown (self-update timer has never checked)
+```
+
+`systemctl --user status babble-update.timer` shows when it last fired and
+next will; `systemctl --user start babble-update.service` runs one check
+immediately instead of waiting for the timer.
+
 ## Layout
 
 ```

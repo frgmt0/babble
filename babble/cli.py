@@ -262,7 +262,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "summary":
-        from .stats import loss_history, render_snapshot, snapshot
+        from .stats import loss_history, render_drift, render_snapshot, snapshot
 
         snap = snapshot(settings)
         print(render_snapshot(snap, markdown=False), flush=True)
@@ -272,6 +272,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"recent checkpoints  {recent}", flush=True)
             print(f"latest sample       {history[-1].get('sample', '')!r}", flush=True)
         print(f"logs                {snap.log_bytes:,} bytes in {settings.log_dir}", flush=True)
+        print(f"code                {render_drift(snap)}", flush=True)
         return 0
 
     if args.command == "logs":

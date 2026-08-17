@@ -7,10 +7,11 @@ importing a deep learning framework, and should work while the trainer is busy.
 from __future__ import annotations
 
 import json
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import Settings
+from .config import REPO_ROOT, Settings
 from .consent import SCOPE_CORPUS, SCOPE_CORRECTIONS, ConsentStore, CorpusConsent
 from .corpus import CorpusStore
 from .store import APPROVAL, CORRECTION, InteractionStore
@@ -33,6 +34,39 @@ class Snapshot:
     corpus_chars: int
     log_bytes: int
     last_checkpoint_at: str | None
+    running_commit: str | None
+    update_checked_at: str | None
+    update_remote_commit: str | None
+    update_current: bool | None
+
+
+def running_commit(root: Path = REPO_ROOT) -> str | None:
+    """Short git SHA of the code actually running, or None off a real checkout
+    (e.g. a tarball install, or the tmp dirs the tests build settings on)."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def update_status(settings: Settings) -> dict:
+    """The last drift check `deploy/update-live.sh` recorded, or an empty dict
+    if the timer has never run here -- e.g. this checkout, or a box with the
+    self-update timer not yet installed."""
+    path = settings.update_state_path
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def loss_history(settings: Settings) -> list[dict]:
@@ -83,6 +117,17 @@ def snapshot(settings: Settings) -> Snapshot:
     if settings.log_dir.exists():
         log_bytes = sum(p.stat().st_size for p in settings.log_dir.glob("babble.*"))
 
+    # Drift: the running commit is read fresh (cheap, local `git`); whether it
+    # is current is judged against origin/main as of the last time
+    # `deploy/update-live.sh` actually fetched, not by fetching here -- a
+    # summary must never hit the network to answer "is booper current?".
+    update = update_status(settings)
+    local_commit = running_commit()
+    remote_commit = update.get("remote_commit")
+    update_current = None
+    if local_commit and remote_commit:
+        update_current = remote_commit.startswith(local_commit)
+
     return Snapshot(
         step=int(history[-1].get("step", 0)) if history else 0,
         last_loss=float(history[-1]["loss"]) if history and "loss" in history[-1] else None,
@@ -101,6 +146,10 @@ def snapshot(settings: Settings) -> Snapshot:
         corpus_chars=sum(len(r.text) for r in corpus),
         log_bytes=log_bytes,
         last_checkpoint_at=history[-1].get("at") if history else None,
+        running_commit=local_commit,
+        update_checked_at=update.get("checked_at"),
+        update_remote_commit=remote_commit,
+        update_current=update_current,
     )
 
 
@@ -118,6 +167,23 @@ def render_snapshot(snap: Snapshot, markdown: bool = True) -> str:
         f"{b}trainable pairs{b} {snap.trainable_rows}\n"
         f"{b}people opted in{b} {snap.consented_users} of {snap.known_users} asked"
     )
+
+
+def render_drift(snap: Snapshot) -> str:
+    """The `code` line `babble summary` appends: the commit actually running,
+    and whether it matched `origin/main` as of the last check by
+    `deploy/update-live.sh`. Deliberately separate from `render_snapshot` --
+    that one is also what `!babble status` sends to Discord, which this drift
+    detail is not part of."""
+    running = snap.running_commit or "unknown (not a git checkout)"
+    if snap.update_current is True:
+        return f"{running} · current with origin/main (checked {snap.update_checked_at})"
+    if snap.update_current is False:
+        remote = (snap.update_remote_commit or "?")[:12]
+        return f"{running} · BEHIND origin/main ({remote}) as of {snap.update_checked_at}"
+    if snap.update_checked_at is not None:
+        return f"{running} · origin/main: unknown (last check unreadable)"
+    return f"{running} · origin/main: unknown (self-update timer has never checked)"
 
 
 def render_curve(history: list[dict], width: int = 64, height: int = 14) -> str:

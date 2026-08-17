@@ -1,0 +1,14 @@
+# Fires babble-update.service on an interval. Change OnUnitActiveSec= (and
+# reload) to adjust the check frequency -- a few minutes is plenty, since the
+# service itself is a fast no-op whenever origin/main hasn't moved.
+[Unit]
+Description=Periodic check: is the babble live install current with origin/main?
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Unit=babble-update.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target
