@@ -160,6 +160,11 @@ class Settings:
     # voice pass -- a trigger, not a loop. The count is persisted so a restart
     # does not re-fire. 0 turns the automatic trigger off (on-demand only).
     voice_trigger_rows: int = 100
+    # `voice_steps` is a ceiling, not a target: the voice pass keeps whichever
+    # checkpoint had the lowest val loss, and stops early once this many
+    # checkpoint intervals in a row fail to improve on it. 0 turns early
+    # stopping off (always run the full step ceiling).
+    voice_patience: int = 3
 
     @classmethod
     def from_env(cls, root: Path | None = None) -> "Settings":
@@ -202,6 +207,7 @@ class Settings:
             base_steps=_env_int("BABBLE_BASE_STEPS", 3_000),
             voice_steps=_env_int("BABBLE_VOICE_STEPS", 400),
             voice_trigger_rows=_env_int("BABBLE_VOICE_TRIGGER_ROWS", 100),
+            voice_patience=_env_int("BABBLE_VOICE_PATIENCE", 3),
         )
 
     @classmethod

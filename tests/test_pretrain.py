@@ -14,6 +14,7 @@ from babble.cli import build_parser
 from babble.consent import SCOPE_CORPUS, ConsentStore
 from babble.corpus import SOURCE_MENTION, CorpusRow, CorpusStore, make_corpus_id
 from babble.external import prepare_base_corpus
+from babble.logs import EventLog
 from babble.pretrain import (
     VoiceAutoTrigger,
     archive_existing_checkpoints,
@@ -151,6 +152,80 @@ def test_voice_pass_with_no_consented_rows_reports_no_data(settings, tmp_path, i
     pretrain_base(settings, steps=2, seed=1, echo=False)
     result = voice_pass(settings, force=True, steps=2, echo=False, ids=ids)
     assert not result.ran and result.reason == "no_data"
+
+
+# --- best-val checkpoint selection + early stopping -----------------------
+
+
+def _seed_plenty_of_human_rows(settings, ids):
+    # Enough rows/text that _split_val holds out a non-empty val set, so
+    # eval_loss actually fires at every checkpoint interval.
+    _seed_human(settings, ids, [f"row number {i} with a bit more text to chew on" for i in range(20)])
+
+
+def test_voice_pass_writes_the_best_val_checkpoint_not_the_last(settings, tmp_path, ids, monkeypatch):
+    _prepare_base_corpus(settings, tmp_path)
+    pretrain_base(settings, steps=2, seed=1, echo=False)
+    _seed_plenty_of_human_rows(settings, ids)
+
+    # A synthetic val curve that bottoms out at the 2nd of 4 checkpoints
+    # (checkpoint_every=2, steps=8 -> checkpoints at steps 2, 4, 6, 8).
+    val_curve = iter([2.0, 1.0, 1.5, 1.8])
+    monkeypatch.setattr("babble.pretrain.eval_loss", lambda model, examples: next(val_curve))
+
+    result = voice_pass(settings, force=True, steps=8, patience=10, seed=1, echo=False, ids=ids)
+
+    assert result.ran
+    stage = result.stage
+    assert stage.val_loss == 1.0
+    assert stage.final_step == 4  # the step with the lowest val loss, not the last step (8)
+    assert stage.steps_run == 8  # the full budget ran; only the *write* picked the best
+    payload = torch.load(settings.latest_checkpoint, map_location="cpu", weights_only=True)
+    assert payload["step"] == 4
+
+
+def test_voice_pass_stops_early_after_patience_non_improving_checkpoints(settings, tmp_path, ids, monkeypatch):
+    _prepare_base_corpus(settings, tmp_path)
+    pretrain_base(settings, steps=2, seed=1, echo=False)
+    _seed_plenty_of_human_rows(settings, ids)
+
+    # Best is at the 2nd checkpoint (step 4); the run should stop 2 non-improving
+    # checkpoints later (step 8), long before the step-20 budget.
+    val_curve = iter([2.0, 1.0, 1.5, 1.8, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0])
+    monkeypatch.setattr("babble.pretrain.eval_loss", lambda model, examples: next(val_curve))
+
+    result = voice_pass(settings, force=True, steps=20, patience=2, seed=1, echo=False, ids=ids)
+
+    assert result.ran
+    stage = result.stage
+    assert stage.stopped_early is True
+    assert stage.budget == 20
+    assert stage.steps_run == 8  # did not run the full 20-step budget
+    assert stage.final_step == 4
+    assert stage.val_loss == 1.0
+
+
+def test_voice_done_log_names_the_winning_step_and_val_loss(settings, tmp_path, ids, monkeypatch):
+    _prepare_base_corpus(settings, tmp_path)
+    pretrain_base(settings, steps=2, seed=1, echo=False)
+    _seed_plenty_of_human_rows(settings, ids)
+
+    val_curve = iter([2.0, 1.0, 1.5, 1.8])
+    monkeypatch.setattr("babble.pretrain.eval_loss", lambda model, examples: next(val_curve))
+
+    log = EventLog(settings, ids, component="voice")
+    voice_pass(settings, force=True, steps=8, patience=10, seed=1, echo=False, ids=ids, log=log)
+    log.close()
+
+    events = [
+        json.loads(line)
+        for line in (settings.log_dir / "babble.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    (done,) = [e for e in events if e["event"] == "voice.done"]
+    assert done["step"] == 4
+    assert done["val_loss"] == 1.0
+    assert done["steps_run"] == 8
+    assert done["budget"] == 8
 
 
 # --- the +N-row trigger --------------------------------------------------

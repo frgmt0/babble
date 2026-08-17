@@ -20,6 +20,15 @@ Stage 2 fires on a **trigger, not a loop**: every `voice_trigger_rows` new corpu
 rows since the last pass, or on demand from the CLI. The last-trained row count
 is persisted (`voice_state.json`) so a restart never re-fires.
 
+`voice_steps` is a **ceiling**, not a fixed run length: on a tiny corpus the
+model overfits long before the budget is spent, so the voice pass tracks val
+loss at every checkpoint interval and writes whichever step had the *lowest*
+val loss to `latest.pt` -- never just the last one. It also stops early once
+`voice_patience` consecutive intervals fail to improve on that best, so a run
+that has already found its minimum does not keep burning CPU past it. Both are
+no-ops without a held-out validation set, so a stage without one (stage 1)
+behaves exactly as it always has.
+
 The consent model is untouched: stage 1 reads the external corpus, which never
 enters the consent path, and stage 2 reads the human rows through the exact same
 consent + blocklist gate the old trainer used (`trainer.corpus_rows`).
@@ -27,6 +36,7 @@ consent + blocklist gate the old trainer used (`trainer.corpus_rows`).
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import random
@@ -74,6 +84,8 @@ class StageResult:
     val_loss: float | None
     checkpoints_written: int
     path: Path
+    budget: int = 0
+    stopped_early: bool = False
 
 
 @dataclass
@@ -146,6 +158,8 @@ def _run_stage(
     log: EventLog,
     save,
     start_step: int = 0,
+    keep_best: bool = False,
+    patience: int | None = None,
 ) -> StageResult:
     """The inner training loop, shared by both stages.
 
@@ -153,6 +167,16 @@ def _run_stage(
     stage 1, to `latest.pt` (+ an archive) for stage 2. Loss and validation are
     reported to `loss.jsonl`, the event log and stdout exactly as the old trainer
     reported them.
+
+    `steps` is a ceiling. With `keep_best` off (stage 1), `save()` fires at every
+    checkpoint interval exactly as before -- whatever step is last when the loop
+    ends is what stays on disk. With `keep_best` on (stage 2), `save()` is instead
+    deferred: each interval's val loss is compared against the best seen so far,
+    and only the winning step's weights are written once, at the end of the run.
+    If `patience` consecutive intervals in a row fail to beat that best, the loop
+    stops short of `steps` -- there is nothing left to gain. Both are no-ops
+    without a held-out validation set (too little data to spare any), in which
+    case this behaves exactly as the `keep_best=False` path does.
     """
     rng = random.Random(seed)
     torch.manual_seed(seed)
@@ -162,17 +186,20 @@ def _run_stage(
     last_loss = float("nan")
     val = None
 
+    best: dict | None = None
+    stalls = 0
+    stop = False
+
     def checkpoint(at_step: int) -> None:
         # The headline loss is the mean over the steps since the last checkpoint.
         # A base corpus is millions of examples, so a full `measure` pass over all
         # of them per checkpoint would be prohibitive -- validation runs over the
         # small, capped held-out set instead, exactly the number that matters.
-        nonlocal checkpoints, val
+        nonlocal checkpoints, val, best, stalls, stop
         mean = sum(window) / len(window) if window else last_loss
         val = eval_loss(model, val_examples) if val_examples else None
-        save(at_step, mean)
-        append_curve(settings, at_step, mean, "", len(examples))
         checkpoints += 1
+        append_curve(settings, at_step, mean, "", len(examples))
         log.event(
             f"{stage}.checkpoint",
             step=at_step,
@@ -186,6 +213,22 @@ def _run_stage(
                 f"[{stage}] step {at_step:7d} | loss {mean:8.4f} | val {val_s}",
                 flush=True,
             )
+        if keep_best and val is not None:
+            if best is None or val < best["val"]:
+                best = {
+                    "step": at_step,
+                    "loss": mean,
+                    "val": val,
+                    "model": copy.deepcopy(model_state_dict(model)),
+                    "optim": copy.deepcopy(optimizer.state_dict()),
+                }
+                stalls = 0
+            else:
+                stalls += 1
+                if patience and stalls >= patience:
+                    stop = True
+        else:
+            save(at_step, mean)
 
     for _ in range(steps):
         tokens, mask, weights = make_batch(examples, settings.batch_size, rng)
@@ -200,18 +243,31 @@ def _run_stage(
         if step % settings.checkpoint_every == 0:
             checkpoint(step)
             window = []
+            if stop:
+                break
 
-    if window:  # flush a final checkpoint for the tail steps
+    if window and not stop:  # flush a final checkpoint for the tail steps
         checkpoint(step)
+
+    final_step, final_loss, final_val = step, last_loss, val
+    if keep_best and best is not None:
+        # Rewind the live model/optimizer to the winning step before the caller's
+        # `save()` -- which reads off the live model -- writes it to disk.
+        uncompiled(model).load_state_dict(best["model"])
+        optimizer.load_state_dict(best["optim"])
+        save(best["step"], best["loss"])
+        final_step, final_loss, final_val = best["step"], best["loss"], best["val"]
 
     return StageResult(
         stage=stage,
-        steps_run=steps,
-        final_step=step,
-        last_loss=last_loss,
-        val_loss=val,
+        steps_run=step - start_step,
+        final_step=final_step,
+        last_loss=final_loss,
+        val_loss=final_val,
         checkpoints_written=checkpoints,
         path=Path(),  # filled in by the caller, which knows its own output path
+        budget=steps,
+        stopped_early=stop,
     )
 
 
@@ -355,6 +411,7 @@ def voice_pass(
     *,
     force: bool = False,
     steps: int | None = None,
+    patience: int | None = None,
     seed: int = 1,
     echo: bool = True,
     log: EventLog | None = None,
@@ -364,6 +421,12 @@ def voice_pass(
     """Stage 2. Continue-train from the frozen base on the consented human corpus
     and write `latest.pt`. Safe to rerun: it always starts from `base.pt`, never
     from the previous voice checkpoint, so nothing compounds.
+
+    `steps` is a ceiling, not a target: the checkpoint with the lowest val loss
+    wins and is what gets written, and the run stops early once `patience`
+    checkpoint intervals in a row fail to beat it -- so overshooting a tiny
+    corpus into a worse-than-earlier checkpoint (or burning CPU after the model
+    has already found its minimum) can't happen.
 
     Fires only when `force` is set or the +N-row trigger is due; otherwise it is a
     no-op that reports why."""
@@ -394,9 +457,10 @@ def voice_pass(
     examples = [ex for row in rows for ex in text_examples(row.text, model.config.block_size)]
     train_examples, val_examples = _split_val(examples)
     budget = steps if steps is not None else settings.voice_steps
+    run_patience = patience if patience is not None else settings.voice_patience
 
     log.event("voice.start", rows=len(rows), examples=len(examples), steps=budget,
-              from_base=str(settings.base_checkpoint))
+              patience=run_patience, from_base=str(settings.base_checkpoint))
     result = _run_stage(
         settings,
         model,
@@ -410,13 +474,16 @@ def voice_pass(
         log=log,
         # save_checkpoint writes latest.pt (+ ckpt-*.pt); base.pt is never touched.
         save=lambda step, loss: save_checkpoint(settings, model, optimizer, step, loss),
+        keep_best=True,
+        patience=run_patience,
     )
     result.path = settings.latest_checkpoint
 
     current = corpus_row_count(settings)
     write_voice_state(settings, rows=current, step=result.final_step)
-    log.event("voice.done", step=result.final_step, loss=result.last_loss,
-              rows_trained=len(rows), last_trained_rows=current)
+    log.event("voice.done", step=result.final_step, loss=result.last_loss, val_loss=result.val_loss,
+              rows_trained=len(rows), last_trained_rows=current, steps_run=result.steps_run,
+              budget=result.budget, stopped_early=result.stopped_early)
     return VoiceResult(True, "trained", rows_trained=len(rows), current_rows=current,
                        last_trained_rows=current, stage=result)
 
