@@ -970,7 +970,14 @@ environment variable rather than hardcoded, so the same script runs anywhere:
 | `BABBLE_UPDATE_RESTART_TIMEOUT` | `90` | seconds to wait for `bot.ready` after a restart |
 | `BABBLE_TRAIN_SUBCOMMANDS` | `train` | space-separated `babble` subcommands that count as "training in flight" |
 
-To change the check interval, edit `OnUnitActiveSec=` in
+The timer runs on a wall-clock schedule (`OnCalendar=*:0/5`, every 5 minutes)
+with `Persistent=true`, so a tick missed while the box was off still fires on
+the next start, and a fresh boot gets an early check via `OnBootSec=2min`.
+A wall-clock schedule is what makes it keep firing forever regardless of when
+it was enabled — `OnUnitActiveSec=`, which the timer used to rely on alone,
+re-arms relative to the timer unit's own last activation, so without a
+recurring `OnCalendar=` it goes "elapsed" after the initial boot-relative shot
+and never fires again. To change the check interval, edit `OnCalendar=` in
 `deploy/babble-update.timer` (a few minutes is a sane default — the service
 is a fast no-op whenever `main` hasn't moved) and `systemctl --user
 daemon-reload && systemctl --user restart babble-update.timer`.
