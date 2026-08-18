@@ -190,6 +190,39 @@ def test_training_in_flight_skips_the_restart(tmp_path: Path) -> None:
     assert local_sha == state["local_commit"]
 
 
+def test_post_train_in_flight_skips_the_restart(tmp_path: Path) -> None:
+    """`post-train` must count as "training in flight" under the default
+    BABBLE_TRAIN_SUBCOMMANDS just like `train` does -- it's the stage-2 fine-tune
+    and a mid-write restart during it is exactly as destructive."""
+    origin, live = _init_origin_and_clone(tmp_path)
+    _advance_origin(tmp_path)
+
+    fake_bin = tmp_path / "fake-babble-bin"
+    fake_bin.mkdir()
+    fake_babble = fake_bin / "babble"
+    fake_babble.write_text("import time\ntime.sleep(20)\n")
+    marker = subprocess.Popen([sys.executable, str(fake_babble), "post-train"])
+    try:
+        time.sleep(0.3)
+        result = _run(tmp_path, live, origin)
+    finally:
+        marker.terminate()
+        marker.wait()
+
+    assert result.returncode == 0
+    state = _state(live)
+    assert state["last_action"] == "skipped_training"
+    assert state["up_to_date"] is False
+    log = _log_text(live)
+    assert "reason=training_in_flight" in log
+    assert "update.merged" not in log
+    assert "update.restarted" not in log
+    local_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=live, capture_output=True, text=True
+    ).stdout.strip()
+    assert local_sha == state["local_commit"]
+
+
 def _fake_systemctl(tmp_path: Path, *, ready: bool) -> Path:
     """A stand-in for `systemctl --user` that either logs a fresh `bot.ready`
     shortly after a restart, or never does -- so the verify step can be tested
