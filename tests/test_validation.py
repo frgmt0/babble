@@ -301,7 +301,7 @@ def test_checkpoint_log_reports_validation_disabled_for_a_small_corpus(seeded, r
     off, never a number."""
     seeded.val_min_rows = 30
 
-    train(seeded, steps=4, echo=False, seed=1)
+    train(seeded, force=True, steps=4, echo=False, seed=1)
 
     entries = read_log("train.checkpoint")
     assert entries
@@ -316,7 +316,7 @@ def test_checkpoint_log_carries_val_loss_when_the_corpus_is_big_enough(seeded, r
     seeded.val_fraction = 0.5
     seeded.checkpoint_every = 3
 
-    train(seeded, steps=6, echo=False, seed=1)
+    train(seeded, force=True, steps=6, echo=False, seed=1)
 
     entries = read_log("train.checkpoint")
     enabled = [e for e in entries if e["val_enabled"] is True]
@@ -326,20 +326,16 @@ def test_checkpoint_log_carries_val_loss_when_the_corpus_is_big_enough(seeded, r
         assert "val_rows" in entry
 
 
-def test_a_second_run_with_validation_enabled_still_resumes_cleanly(seeded):
-    """Validation must not perturb the checkpoint format or the training
-    trajectory in any way that would break resuming an existing checkpoint."""
+def test_validation_does_not_perturb_the_checkpoint_format(seeded):
+    """Best-val bookkeeping rolls the live model back to an earlier step before
+    the final save -- that must not corrupt what actually lands on disk."""
     seeded.val_min_rows = 4
     seeded.val_fraction = 0.5
 
-    first = train(seeded, steps=4, echo=False, seed=1)
-    second = train(seeded, steps=4, echo=False, seed=1)
+    result = train(seeded, force=True, steps=4, echo=False, seed=1)
 
-    assert first.final_step == 4
-    assert second.final_step == 8
-    assert second.steps_run == 4
     payload = torch.load(seeded.latest_checkpoint, map_location="cpu", weights_only=True)
-    assert payload["step"] == 8
+    assert payload["step"] == result.final_step
     assert payload["optim"]["state"]
 
 

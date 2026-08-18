@@ -32,6 +32,11 @@ FAKE_TOTAL_ROW_COUNT = FAKE_ROW_COUNT + FAKE_CORPUS_ROW_COUNT
 @pytest.fixture
 def seeded(settings):
     seed_fake_data(settings)
+    # These tests are about the publish cadence (checkpoint COUNT), not about
+    # which checkpoint wins on val loss -- disable validation so best-val
+    # early stopping never cuts a run short of the checkpoint count a test
+    # expects.
+    settings.val_min_rows = 1000
     return settings
 
 
@@ -104,7 +109,7 @@ def test_it_publishes_once_every_configured_number_of_checkpoints(seeded, monkey
     monkeypatch.setattr("babble.trainer.push_export", pusher)
     feed = TrainingFeed(webhook_url="https://discord.example/webhook", sender=FakeSender())
 
-    train(seeded, steps=4, echo=False, seed=1, feed=feed)  # 2 checkpoints -> one publish
+    train(seeded, force=True, steps=4, echo=False, seed=1, feed=feed)  # 2 checkpoints -> one publish
 
     assert len(pusher.calls) == 1
     repo_id, out_dir = pusher.calls[0]
@@ -118,7 +123,7 @@ def test_zero_disables_auto_publish(seeded, monkeypatch):
     pusher = FakePush()
     monkeypatch.setattr("babble.trainer.push_export", pusher)
 
-    train(seeded, steps=8, echo=False, seed=1)
+    train(seeded, force=True, steps=8, echo=False, seed=1)
 
     assert pusher.calls == []
 
@@ -128,7 +133,7 @@ def test_none_disables_auto_publish(seeded, monkeypatch):
     pusher = FakePush()
     monkeypatch.setattr("babble.trainer.push_export", pusher)
 
-    train(seeded, steps=8, echo=False, seed=1)
+    train(seeded, force=True, steps=8, echo=False, seed=1)
 
     assert pusher.calls == []
 
@@ -140,7 +145,7 @@ def test_default_cadence_publishes_after_20_checkpoints(seeded, monkeypatch):
     sender = FakeSender()
     feed = TrainingFeed(webhook_url="https://discord.example/webhook", sender=sender)
 
-    result = train(seeded, steps=20, echo=False, seed=1, feed=feed)
+    result = train(seeded, force=True, steps=20, echo=False, seed=1, feed=feed)
 
     assert result.checkpoints_written == 20
     assert len(pusher.calls) == 1
@@ -158,7 +163,7 @@ def test_nothing_changed_since_the_last_publish_is_not_repushed(seeded, monkeypa
     monkeypatch.setattr("babble.trainer.push_export", pusher)
 
     # 4 checkpoints -> two scheduled publishes, but the corpus never changes.
-    train(seeded, steps=8, echo=False, seed=1, log=log)
+    train(seeded, force=True, steps=8, echo=False, seed=1, log=log)
 
     assert len(pusher.calls) == 1
     assert len(read_log("publish.skipped")) == 1
@@ -205,7 +210,7 @@ def test_a_change_to_only_the_corpus_still_triggers_a_republish(seeded, monkeypa
     # 4 checkpoints -> two scheduled publishes. The corrections file never
     # changes between them, but the corpus gains a row right after the first
     # publish, so the second one must still go out rather than be skipped.
-    train(seeded, steps=8, echo=False, seed=1)
+    train(seeded, force=True, steps=8, echo=False, seed=1)
 
     assert len(pusher.calls) == 2
 
@@ -215,7 +220,7 @@ def test_reuses_the_existing_exporter_rather_than_a_second_one(seeded, monkeypat
     seeded.checkpoint_every = 2
     monkeypatch.setattr("babble.trainer.push_export", FakePush())
 
-    train(seeded, steps=4, echo=False, seed=1, log=log)
+    train(seeded, force=True, steps=4, echo=False, seed=1, log=log)
 
     # "export.run" is logged from inside build_export itself, so seeing it here
     # is proof the auto-publish path called into export_hf.py rather than
@@ -256,7 +261,7 @@ def test_consent_gated_and_blocklisted_rows_are_excluded_from_the_auto_publish(
     pusher = FakePush()
     monkeypatch.setattr("babble.trainer.push_export", pusher)
 
-    train(seeded, steps=4, echo=False, seed=1)
+    train(seeded, force=True, steps=4, echo=False, seed=1)
 
     assert len(pusher.calls) == 1
     _, out_dir = pusher.calls[0]
@@ -279,7 +284,7 @@ def test_a_failed_publish_never_stops_training_and_is_reported_in_the_feed(
     sender = FakeSender()
     feed = TrainingFeed(webhook_url="https://discord.example/webhook", sender=sender)
 
-    result = train(seeded, steps=4, echo=False, seed=1, feed=feed, log=log)
+    result = train(seeded, force=True, steps=4, echo=False, seed=1, feed=feed, log=log)
 
     assert result.steps_run == 4
     assert seeded.latest_checkpoint.exists()
@@ -300,7 +305,7 @@ def test_a_failed_publish_is_retried_at_the_next_scheduled_publish(seeded, monke
     monkeypatch.setattr("babble.trainer.push_export", pusher)
 
     # 4 checkpoints -> two scheduled publishes, both attempted despite failing.
-    train(seeded, steps=8, echo=False, seed=1)
+    train(seeded, force=True, steps=8, echo=False, seed=1)
 
     assert pusher.fail is True  # sanity: still configured to fail throughout
 
@@ -322,7 +327,7 @@ def test_a_failed_publish_makes_no_progress_but_a_later_success_still_works(seed
     # 4 checkpoints -> attempts at checkpoint 2 (fails) and checkpoint 4 (succeeds,
     # same unchanged content as the failed attempt -- a failure must not be
     # mistaken for "already published" and silently skipped).
-    train(seeded, steps=8, echo=False, seed=1)
+    train(seeded, force=True, steps=8, echo=False, seed=1)
 
     assert calls["n"] == 2
 
@@ -340,7 +345,7 @@ def test_an_export_blocked_by_the_pseudonym_guard_is_reported_not_raised(seeded,
     sender = FakeSender()
     feed = TrainingFeed(webhook_url="https://discord.example/webhook", sender=sender)
 
-    result = train(seeded, steps=4, echo=False, seed=1, feed=feed)
+    result = train(seeded, force=True, steps=4, echo=False, seed=1, feed=feed)
 
     assert result.steps_run == 4  # training was not interrupted
     blocked_posts = [c for c in sender.calls if "blocked" in c[1].lower()]

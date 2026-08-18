@@ -48,7 +48,7 @@ def test_ping_correct_train_reload_export(settings, log):
     assert brain.corpus.count() == 2
 
     # 3. The trainer learns from exactly that row.
-    result = train(settings, steps=4, echo=False, seed=1, log=log)
+    result = train(settings, force=True, steps=4, echo=False, seed=1, log=log)
     assert result.steps_run == 4
     assert settings.latest_checkpoint.exists()
 
@@ -100,7 +100,7 @@ def test_withdrawing_removes_the_row_from_training_and_publishing(settings, log)
     assert result.rows == 0
     assert result.correction_rows == 0
     assert result.corpus_rows == 0
-    assert train(settings, steps=2, echo=False, log=log).stopped_because == "no_data"
+    assert train(settings, force=True, steps=2, echo=False, log=log).stopped_because == "no_data"
 
 
 def test_the_log_tells_the_whole_story_of_a_conversation(settings, log, read_log):
@@ -112,7 +112,7 @@ def test_the_log_tells_the_whole_story_of_a_conversation(settings, log, read_log
     answer = gw.ping(ALICE, "hello")[0]
     gw.correct(ALICE, "hey!", reply_to=answer.id)
     gw.react(ALICE, answer.id)
-    train(settings, steps=2, echo=False, seed=1, log=log)
+    train(settings, force=True, steps=2, echo=False, seed=1, log=log)
 
     seen = [e["event"] for e in read_log()]
     for expected in (

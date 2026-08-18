@@ -167,7 +167,7 @@ def test_training_in_flight_skips_the_restart(tmp_path: Path) -> None:
     fake_bin.mkdir()
     fake_babble = fake_bin / "babble"
     fake_babble.write_text("import time\ntime.sleep(20)\n")
-    marker = subprocess.Popen([sys.executable, str(fake_babble), "voice-pass"])
+    marker = subprocess.Popen([sys.executable, str(fake_babble), "train"])
     try:
         time.sleep(0.3)
         result = _run(tmp_path, live, origin)

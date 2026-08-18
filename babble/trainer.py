@@ -1,4 +1,6 @@
-"""The background trainer.
+"""The trainer: pretrains the model from random init on the consented human
+corpus -- the only corpus there is. Nothing external, nothing frozen to
+continue from.
 
 The objective is plain next-token prediction over the unlabelled corpus: every
 token of every row is a target, every row counts the same, and nothing is paired
@@ -10,24 +12,36 @@ not what the loss is computed over any more.
 Three properties matter more than speed here:
 
 1. **It must not make the machine unusable.** It runs at nice 19 on a capped
-   number of threads, in cycles of a fixed step budget with a rest in between.
-   The default duty cycle is 200 steps then a 60 second nap.
+   number of threads.
 2. **It must be safe to kill at any moment.** Checkpoints are written to a temp
    file and renamed, so a `kill -9` mid-write leaves the previous checkpoint
    intact. SIGINT/SIGTERM finish the current step, checkpoint, and exit.
 3. **Progress must be watchable.** Every checkpoint appends a line to
    `checkpoints/loss.jsonl` with its step, loss and a sample generation, and
    prints the same thing. The babble is the show.
+
+Every run starts from random init and keeps the *best-validation* checkpoint,
+not the last one -- on a small corpus the model overfits long before the step
+budget is spent, so `train()` tracks val loss at every checkpoint interval and
+writes whichever step had the lowest val loss, and stops early once
+`train_patience` intervals in a row fail to improve on it. It fires on a
+**trigger, not a loop**: every `train_trigger_rows` new corpus rows since the
+last run, or on demand with `--force`. The last-trained row count is persisted
+(`checkpoints/train_state.json`) so a restart never re-fires, and training is
+never a continuous cycle -- each call runs once and returns.
 """
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
 import random
 import shutil
 import signal
+import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -56,16 +70,15 @@ from .export_hf import (
 )
 from .generate import continue_text
 from .identity import Pseudonymiser
-from .logs import EventLog
+from .logs import EventLog, NullLog
 from .model import (
     Babbler,
-    ModelConfig,
     config_from_settings,
     per_token_loss,
     sequence_loss,
 )
 from .tokenizer import PAD_ID, Example, text_examples
-from .util import truncate, utcnow_iso
+from .util import atomic_write_text, truncate, utcnow_iso
 
 #: Used only when the corpus is empty and there is nothing real to seed with.
 SAMPLE_PREFIXES = ("hello", "how are you")
@@ -651,266 +664,373 @@ class Interruption:
 
 
 @dataclass
-class RunResult:
-    steps_run: int
-    final_step: int
-    last_loss: float | None
-    checkpoints_written: int
-    cycles: int
+class TrainResult:
+    """What a `train()` call did, or why it didn't.
+
+    `ran` is False for the two no-op outcomes (`not_due`, `no_data`); every
+    other field is 0/None in those cases. `stopped_because` is `"trained"` for
+    a completed or early-stopped run, `"not_due"` / `"no_data"` for a skip, or
+    `"signal:SIGINT"` / `"signal:SIGTERM"` if it was interrupted mid-run.
+    """
+
+    ran: bool
     stopped_because: str
+    steps_run: int = 0
+    final_step: int = 0
+    last_loss: float | None = None
+    val_loss: float | None = None
+    checkpoints_written: int = 0
+    budget: int = 0
+    stopped_early: bool = False
+    rows_trained: int = 0
+    current_rows: int = 0
+    last_trained_rows: int = 0
+
+
+@dataclass
+class TrainTrigger:
+    current_rows: int
+    last_trained_rows: int
+    threshold: int
+
+    @property
+    def new_rows(self) -> int:
+        return self.current_rows - self.last_trained_rows
+
+    @property
+    def due(self) -> bool:
+        """Automatic firing: the threshold is on, and the corpus has grown by
+        at least that many rows since the last run."""
+        return self.threshold > 0 and self.new_rows >= self.threshold
+
+
+def corpus_row_count(settings: Settings) -> int:
+    """Total stored corpus rows -- the number the +N-row trigger measures growth
+    against. Uses the raw stored count, not the consent-filtered count, so a
+    revocation cannot make the corpus appear to shrink below the last trigger."""
+    return CorpusStore(settings.corpus_path).count()
+
+
+def read_train_state(settings: Settings) -> dict:
+    path = settings.train_state_path
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def write_train_state(settings: Settings, *, rows: int, step: int) -> None:
+    atomic_write_text(
+        settings.train_state_path,
+        json.dumps({"last_trained_rows": rows, "step": step, "at": utcnow_iso()}, indent=2),
+    )
+
+
+def train_trigger(settings: Settings) -> TrainTrigger:
+    state = read_train_state(settings)
+    return TrainTrigger(
+        current_rows=corpus_row_count(settings),
+        last_trained_rows=int(state.get("last_trained_rows", 0)),
+        threshold=settings.train_trigger_rows,
+    )
 
 
 def train(
     settings: Settings,
     *,
     steps: int | None = None,
-    loop: bool = False,
-    max_cycles: int | None = None,
+    force: bool = False,
+    patience: int | None = None,
+    seed: int | None = None,
     log: EventLog | None = None,
     feed: TrainingFeed | None = None,
     echo: bool = True,
-    seed: int | None = None,
-) -> RunResult:
+    ids: Pseudonymiser | None = None,
+    blocklist: Blocklist | None = None,
+) -> TrainResult:
+    """The only training path: random init, on the consented human corpus,
+    writes `checkpoints/latest.pt`. Every run starts fresh -- there is no base
+    to continue from and no previous run to resume, so nothing compounds
+    across reruns.
+
+    Fires only when `force` is set or the +N-row trigger is due; otherwise a
+    no-op that reports why. `steps` is a ceiling, not a target: the checkpoint
+    with the lowest val loss wins and is what gets written, and the run stops
+    early once `patience` checkpoint intervals in a row fail to beat it. Both
+    are no-ops without a held-out validation set (too little data to spare
+    any), in which case every checkpoint interval is simply written in turn.
+    """
     settings.ensure_dirs()
-    ids = Pseudonymiser.load(settings)
-    blocklist = Blocklist.load()
+    ids = ids or Pseudonymiser.load(settings)
+    blocklist = blocklist if blocklist is not None else Blocklist.load()
     owns_log = log is None  # if we opened it, we close it
     log = log or EventLog(settings, ids, component="trainer", echo=echo)
     feed = feed or TrainingFeed.from_env(log)
+
+    status = train_trigger(settings)
+    if not force and not status.due:
+        log.event("train.skipped", reason="not_due", new_rows=status.new_rows, threshold=status.threshold)
+        if owns_log:
+            log.close()
+        else:
+            log.flush()
+        return TrainResult(
+            False, "not_due", current_rows=status.current_rows, last_trained_rows=status.last_trained_rows
+        )
+
+    # Migrate before reading, so an install that predates the corpus starts
+    # training without anyone running a command by hand. Idempotent and quiet:
+    # it dedupes on the content-addressed row id and only logs when it
+    # actually added rows.
+    backfill_corpus(settings, log=log, ids=ids, blocklist=blocklist, log_noop=False)
+    rows = corpus_rows(settings, ids, blocklist)
+    if not rows:
+        log.event("train.idle", reason="no_consented_rows", rows=0)
+        feed.idle()
+        if owns_log:
+            log.close()
+        else:
+            log.flush()
+        return TrainResult(
+            False, "no_data", current_rows=status.current_rows, last_trained_rows=status.last_trained_rows
+        )
+
     be_polite(settings, log)
-
-    budget = steps if steps is not None else settings.steps_per_cycle
     interrupt = Interruption().install()
-
     swept = sweep_scratch(settings)
     if swept:
         log.event("train.scratch_swept", files=swept)
 
-    model, optimizer, step, resumed = _resume_or_init(settings, log)
+    device = force_cpu_device()
+    model = Babbler(config_from_settings(settings)).to(device)
+    model = maybe_compile(model)
+    optimizer = _build_optimizer(model, settings)
     if seed is not None:
         torch.manual_seed(seed)
-    rng = random.Random(seed if seed is not None else step or 0)
+    rng = random.Random(seed if seed is not None else 0)
+
+    split = split_rows(rows, settings)
+    # Same call on both sides of the split: with no weighting and no masking
+    # left, a held-out example is built exactly like a trained one, which is
+    # what makes val loss comparable to train loss at all.
+    examples = to_examples(split.train, model.config.block_size)
+    val_examples = to_examples(split.val, model.config.block_size)
+    budget = steps if steps is not None else settings.train_steps
+    run_patience = patience if patience is not None else settings.train_patience
+    train_tokens = count_tokens(examples)
+    stats = dataset_stats(settings, ids, blocklist)
 
     log.event(
         "train.start",
-        step=step,
-        resumed=resumed,
+        step=0,
+        resumed=False,
         params=model.num_params(),
         budget=budget,
-        loop=loop,
         batch_size=settings.batch_size,
         lr=settings.learning_rate,
     )
-    feed.start(resumed=resumed, step=step)
+    feed.start(resumed=False, step=0)
+    feed.active()
+    log.event(
+        "train.cycle.start",
+        cycle=1,
+        step=0,
+        rows=len(rows),
+        examples=len(examples),
+        tokens=train_tokens,
+        val_tokens=count_tokens(val_examples),
+        planned_steps=budget,
+        train_rows=len(split.train),
+        val_rows=len(split.val),
+        val_enabled=split.enabled,
+        val_disabled_reason=None if split.enabled else split.disabled_reason,
+        stored=stats.stored,
+        dropped_consent=stats.dropped_consent,
+        dropped_blocklist=stats.dropped_blocklist,
+    )
+    feed.cycle_start(
+        cycle=1,
+        stored=stats.stored,
+        trained=stats.trained,
+        dropped_consent=stats.dropped_consent,
+        dropped_blocklist=stats.dropped_blocklist,
+        examples=len(examples),
+        tokens=train_tokens,
+        train_rows=len(split.train),
+        val_rows=len(split.val),
+        batch_size=settings.batch_size,
+        lr=settings.learning_rate,
+    )
 
-    steps_run = 0
+    window: list[float] = []
     checkpoints = 0
-    cycles = 0
     probe_index = 0  # never reset: a checkpoint counter, not a dataset index
+    step = 0
     last_loss: float | None = None
     prev_checkpoint_loss: float | None = None
     prev_val_loss: float | None = None
     publish_state = PublishState()
-    reason = "budget_exhausted"
+    best: dict | None = None
+    stalls = 0
+    stopped_early = False
+    interrupted = False
+    cycle_started = time.perf_counter()
+    model.train()
 
-    while True:
-        if interrupt.requested:
-            reason = f"signal:{interrupt.signal_name}"
-            break
-        if max_cycles is not None and cycles >= max_cycles:
-            reason = "max_cycles"
-            break
-
-        # Migrate before reading, every cycle, so an install that predates the
-        # corpus starts training without anyone running a command -- and so
-        # corrections captured while this loop is running reach the corpus
-        # without waiting for a restart. Idempotent and quiet: it dedupes on the
-        # content-addressed row id and only logs when it actually added rows.
-        backfill_corpus(settings, log=log, ids=ids, blocklist=blocklist, log_noop=False)
-
-        rows = corpus_rows(settings, ids, blocklist)
-        split = split_rows(rows, settings)
-        # Same call on both sides of the split: with no weighting and no masking
-        # left, a held-out example is built exactly like a trained one, which is
-        # what makes val loss comparable to train loss at all.
-        examples = to_examples(split.train, model.config.block_size)
-        val_examples = to_examples(split.val, model.config.block_size)
-        if not examples:
-            log.event("train.idle", reason="no_consented_rows", rows=len(rows))
-            feed.idle()
-            if not loop:
-                reason = "no_data"
-                break
-            interrupt.sleep(settings.rest_seconds)
-            continue
-
-        feed.active()
-        cycles += 1
-        cycle_started = time.perf_counter()
-        stats = dataset_stats(settings, ids, blocklist)
-        # Train-split tokens only, because that is what sits next to the
-        # train-split example count everywhere it is reported. Adding the
-        # held-out tokens in would overstate what is actually being trained on
-        # by the size of the split -- about 25% at the default fraction.
-        train_tokens = count_tokens(examples)
-        log.event(
-            "train.cycle.start",
-            cycle=cycles,
-            step=step,
-            rows=len(rows),
-            examples=len(examples),
-            tokens=train_tokens,
-            val_tokens=count_tokens(val_examples),
-            planned_steps=budget,
-            train_rows=len(split.train),
-            val_rows=len(split.val),
+    def checkpoint() -> None:
+        nonlocal prev_checkpoint_loss, prev_val_loss, probe_index, checkpoints, window
+        nonlocal publish_state, best, stalls, stopped_early
+        prev_checkpoint_loss, val = _checkpoint(
+            settings, log, feed, blocklist, model, optimizer, step, window, split.train,
+            probe_index, 1, prev_checkpoint_loss, echo,
+            train_examples=examples,
+            val_examples=val_examples,
             val_enabled=split.enabled,
-            val_disabled_reason=None if split.enabled else split.disabled_reason,
-            stored=stats.stored,
-            dropped_consent=stats.dropped_consent,
-            dropped_blocklist=stats.dropped_blocklist,
-        )
-        feed.cycle_start(
-            cycle=cycles,
-            stored=stats.stored,
-            trained=stats.trained,
-            dropped_consent=stats.dropped_consent,
-            dropped_blocklist=stats.dropped_blocklist,
-            examples=len(examples),
-            tokens=train_tokens,
-            train_rows=len(split.train),
+            val_disabled_reason=split.disabled_reason,
             val_rows=len(split.val),
-            batch_size=settings.batch_size,
-            lr=settings.learning_rate,
+            prev_val_loss=prev_val_loss,
         )
+        prev_val_loss = val
+        probe_index += 1
+        checkpoints += 1
+        window = []
+        publish_state = _maybe_auto_publish(settings, log, feed, checkpoints, publish_state)
+        if val is None:
+            return  # nothing to compare -- every interval just gets written as it comes
+        if best is None or val < best["val"]:
+            best = {
+                "step": step,
+                "loss": prev_checkpoint_loss,
+                "val": val,
+                "model": copy.deepcopy(model_state_dict(model)),
+                "optim": copy.deepcopy(optimizer.state_dict()),
+            }
+            stalls = 0
+        else:
+            stalls += 1
+            if run_patience and stalls >= run_patience:
+                stopped_early = True
 
-        window: list[float] = []
-        cycle_steps = 0
-        model.train()
-        for _ in range(budget):
-            if interrupt.requested:
-                break
-            tokens, mask, weights = make_batch(examples, settings.batch_size, rng)
-            loss = sequence_loss(model, tokens, mask, weights)
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), settings.grad_clip)
-            optimizer.step()
-
-            step += 1
-            steps_run += 1
-            cycle_steps += 1
-            value = float(loss.detach())
-            window.append(value)
-            last_loss = value
-
-            if step % settings.checkpoint_every == 0:
-                prev_checkpoint_loss, prev_val_loss = _checkpoint(
-                    settings, log, feed, blocklist, model, optimizer, step, window, split.train,
-                    probe_index, cycles, prev_checkpoint_loss, echo,
-                    train_examples=examples,
-                    val_examples=val_examples,
-                    val_enabled=split.enabled,
-                    val_disabled_reason=split.disabled_reason,
-                    val_rows=len(split.val),
-                    prev_val_loss=prev_val_loss,
-                )
-                probe_index += 1
-                checkpoints += 1
-                window = []
-                publish_state = _maybe_auto_publish(settings, log, feed, checkpoints, publish_state)
-
-        # Never end a cycle with unsaved work: a kill during the rest period
-        # would otherwise throw away everything since the last checkpoint.
-        if window:
-            prev_checkpoint_loss, prev_val_loss = _checkpoint(
-                settings, log, feed, blocklist, model, optimizer, step, window, split.train,
-                probe_index, cycles, prev_checkpoint_loss, echo,
-                train_examples=examples,
-                val_examples=val_examples,
-                val_enabled=split.enabled,
-                val_disabled_reason=split.disabled_reason,
-                val_rows=len(split.val),
-                prev_val_loss=prev_val_loss,
-            )
-            probe_index += 1
-            checkpoints += 1
-            publish_state = _maybe_auto_publish(settings, log, feed, checkpoints, publish_state)
-
-        cycle_seconds = round(time.perf_counter() - cycle_started, 2)
-        log.event(
-            "train.cycle.end",
-            cycle=cycles,
-            step=step,
-            steps=cycle_steps,
-            seconds=cycle_seconds,
-            loss=round(last_loss, 6) if last_loss is not None else None,
-        )
-        feed.cycle_end(cycle=cycles, steps=cycle_steps, seconds=cycle_seconds)
-
+    for _ in range(budget):
         if interrupt.requested:
-            reason = f"signal:{interrupt.signal_name}"
+            interrupted = True
             break
-        if not loop:
-            break
-        log.event("train.rest", seconds=settings.rest_seconds, step=step)
-        interrupt.sleep(settings.rest_seconds)
+        tokens, mask, weights = make_batch(examples, settings.batch_size, rng)
+        loss = sequence_loss(model, tokens, mask, weights)
+        optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), settings.grad_clip)
+        optimizer.step()
 
-    if interrupt.requested:
+        step += 1
+        value = float(loss.detach())
+        window.append(value)
+        last_loss = value
+
+        if step % settings.checkpoint_every == 0:
+            checkpoint()
+            if stopped_early:
+                break
+
+    # Never leave unsaved work: a kill right after the loop would otherwise
+    # throw away everything since the last checkpoint interval.
+    if window and not stopped_early:
+        checkpoint()
+
+    final_step, final_loss, final_val = step, last_loss, prev_val_loss
+    if best is not None and best["step"] != step:
+        # Roll the live model/optimizer back to the winning step before the
+        # final save -- which reads off the live model -- writes it to disk.
+        uncompiled(model).load_state_dict(best["model"])
+        optimizer.load_state_dict(best["optim"])
+        save_checkpoint(settings, model, optimizer, best["step"], best["loss"])
+        final_step, final_loss, final_val = best["step"], best["loss"], best["val"]
+    elif best is not None:
+        final_val = best["val"]
+
+    if interrupted:
         log.event("train.interrupt", signal=interrupt.signal_name, step=step)
 
+    current = corpus_row_count(settings)
+    write_train_state(settings, rows=current, step=final_step)
+
+    cycle_seconds = round(time.perf_counter() - cycle_started, 2)
+    log.event(
+        "train.cycle.end", cycle=1, step=step, steps=step, seconds=cycle_seconds,
+        loss=round(last_loss, 6) if last_loss is not None else None,
+    )
+    feed.cycle_end(cycle=1, steps=step, seconds=cycle_seconds)
+
+    reason = f"signal:{interrupt.signal_name}" if interrupted else "trained"
     log.event(
         "train.stop",
-        step=step,
-        steps_run=steps_run,
+        step=final_step,
+        steps_run=step,
         checkpoints=checkpoints,
-        cycles=cycles,
         reason=reason,
-        last_loss=round(last_loss, 6) if last_loss is not None else None,
+        stopped_early=stopped_early,
+        last_loss=round(final_loss, 6) if final_loss is not None else None,
+        val_loss=round(final_val, 6) if final_val is not None else None,
+        rows_trained=len(rows),
+        last_trained_rows=current,
+        budget=budget,
     )
     if owns_log:
         log.close()
     else:
         log.flush()
-    return RunResult(steps_run, step, last_loss, checkpoints, cycles, reason)
+
+    return TrainResult(
+        True,
+        reason,
+        steps_run=step,
+        final_step=final_step,
+        last_loss=final_loss,
+        val_loss=final_val,
+        checkpoints_written=checkpoints,
+        budget=budget,
+        stopped_early=stopped_early,
+        rows_trained=len(rows),
+        current_rows=current,
+        last_trained_rows=current,
+    )
 
 
-def _resume_or_init(settings: Settings, log: EventLog) -> tuple[Babbler, torch.optim.Optimizer, int, bool]:
-    path = settings.latest_checkpoint
-    device = force_cpu_device()
-    model = Babbler(config_from_settings(settings)).to(device)
-    model = maybe_compile(model)
-    optimizer = _build_optimizer(model, settings)
+class AutoTrainTrigger:
+    """Fires a training run when the corpus has grown enough -- a trigger, not
+    a loop. The bot calls `maybe_run()` after each fresh corpus row (mirroring
+    the growth publisher); when the trigger is due it launches `babble train`
+    as a detached, low-priority subprocess so training never blocks the event
+    loop, and the bot hot-reloads the new `latest.pt` on its own.
+    """
 
-    if not path.exists():
-        log.event("train.init", source="random", params=model.num_params(), device="cpu")
-        return model, optimizer, 0, False
+    def __init__(self, settings: Settings, log: EventLog | None = None) -> None:
+        self.settings = settings
+        self.log = log or NullLog()
+        self._proc: subprocess.Popen | None = None
 
-    try:
-        payload = torch.load(path, map_location=device, weights_only=True)
-        model = Babbler(ModelConfig.from_dict(payload["config"])).to(device)
-        model.load_state_dict(payload["model"])
-        model = maybe_compile(model)
-        optimizer = _build_optimizer(model, settings)
-        optimizer.load_state_dict(payload["optim"])
-        if "torch_rng" in payload:
-            torch.set_rng_state(payload["torch_rng"].to(torch.uint8))
-        step = int(payload.get("step", 0))
-        log.event(
-            "train.resume",
-            step=step,
-            loss=payload.get("loss"),
-            saved_at=payload.get("saved_at"),
-            params=model.num_params(),
-            device="cpu",
-        )
-        return model, optimizer, step, True
-    except Exception as exc:  # a truncated or foreign checkpoint must not be fatal
-        log.event("train.resume_failed", error=f"{type(exc).__name__}: {exc}", path=str(path))
-        model = Babbler(config_from_settings(settings)).to(device)
-        model = maybe_compile(model)
-        optimizer = _build_optimizer(model, settings)
-        return model, optimizer, 0, False
+    def maybe_run(self) -> None:
+        if self.settings.train_trigger_rows <= 0:
+            return
+        if self._proc is not None and self._proc.poll() is None:
+            return  # a run is already in flight; do not stack them
+        if not train_trigger(self.settings).due:
+            return
+        self._launch()
+
+    def _launch(self) -> None:
+        try:
+            self._proc = subprocess.Popen(
+                [sys.executable, "-m", "babble", "train", "--quiet"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            self.log.event("train.triggered", pid=self._proc.pid)
+        except Exception as exc:  # a launch hiccup must never take the bot down
+            self.log.event("train.trigger_failed", error=f"{type(exc).__name__}: {exc}")
 
 
 def _checkpoint(

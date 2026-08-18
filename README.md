@@ -53,9 +53,7 @@ uv venv && uv pip install -e ".[dev]"      # or: python -m venv .venv && pip ins
 source .venv/bin/activate
 
 babble fake-data                # made-up rows in both stores, to chew on
-babble prepare-base             # cache the external corpus (words + stories)
-babble base-pretrain            # STAGE 1: random init -> a frozen base.pt
-babble voice-pass --force       # STAGE 2: base.pt + human rows -> latest.pt
+babble train --force            # random init -> the human corpus -> latest.pt
 babble sample --prompt hello    # continue a prefix from the newest checkpoint
 babble curve                    # the loss curve, as a picture
 babble summary                  # step, loss, checkpoints, consent, row counts
@@ -64,9 +62,9 @@ babble export                   # build the HuggingFace dataset directory
 pytest                          # 400+ tests, none of which need a token
 ```
 
-The two-stage flow — base pretrain, then the human voice pass, and the trigger
-that reruns it — is described under [Two-stage pretraining](#two-stage-pretraining).
-`babble train` still exists but is no longer how babble pretrains.
+`babble train` is the one command that trains the model — see
+[Pretraining](#pretraining) for what it trains on, when it fires on its own,
+and when you need `--force`.
 
 `uv` pulls the CPU-only build of torch automatically (see `[tool.uv.sources]` in
 `pyproject.toml`) — no multi-gigabyte CUDA wheels. With plain pip, use
@@ -320,120 +318,60 @@ babble rescan-blocklist   # purge stored rows that now match the current list
 
 Run this after extending the list, so history gets cleaned up along with it.
 
-## Two-stage pretraining
+## Pretraining
 
-The model is ~3.3M parameters and the human corpus is a couple of thousand
-characters. Trained on the human rows alone it just *memorises* them and composes
-nothing new. So pretraining is split in two, and the old continuous
-`babble train --loop` is retired for this purpose — it burned CPU for nothing,
-running to step 3,200 with the loss flat since step 2,000.
+**One corpus, one command.** babble trains on nothing but the corpus people
+actually gave it — no external text, no frozen base to continue from. Every
+run of `babble train` starts from *random init* and trains on the consented
+human rows only, and writes `checkpoints/latest.pt` (what the bot serves).
+There used to be a two-stage design here — a frozen base pretrained on an
+external word list and TinyStories, then a cheap "voice pass" from that base —
+and it is gone: it put text into the model that nobody in Discord ever wrote,
+which is not what this project is for.
 
-**Stage 1 — BASE.** Train from *random init* on a large **external** corpus, and
-freeze the result as `checkpoints/base.pt`. The external corpus is nobody's
-Discord message, so it never goes through the consent path (that gate is for the
-human corpus). Two sources, in `babble/external.py`:
-
-- **A real English word list** — for word *shape* and spelling.
-  `/usr/share/dict/cracklib-small` ships on this box (~54k usable words after the
-  junk is filtered); point `BABBLE_WORDLIST_PATH` at a larger list for more.
-- **Simple short stories** — [TinyStories](https://huggingface.co/datasets/roneneldan/TinyStories),
-  downloaded once and cached under `external/`. This is the part that actually
-  teaches *grammar*; a word list has no sentences in it. The default is the
-  ~22M-character `valid` split, which is plenty for a model this size (the rough
-  rule is ~20 tokens per parameter); point `BABBLE_STORIES_FILE` at a `train`
-  split and raise `BABBLE_BASE_STORY_CHARS` for more.
+**Training is opt-in and never ambient.** Nothing starts training on its own —
+not the bot on boot, not any implicit scheduler, and never a continuous loop
+(an earlier continuous `babble train --loop` was retired outright — it burned
+CPU for nothing, running to step 3,200 with the loss flat since step 2,000).
+`babble train` runs once and returns:
 
 ```bash
-babble prepare-base       # download + cache words and stories -> external/base_corpus.jsonl
-babble base-pretrain      # STAGE 1: random init -> checkpoints/base.pt  (rare, minutes+)
+babble train --force        # run right now, regardless of the trigger
+babble train --force --steps 200 --patience 5   # override the ceiling / patience
+babble train-status         # rows since the last run, whether the trigger is due
 ```
 
-`base.pt` is a **frozen artifact**: the voice pass reads it and never writes to
-it. `prepare-base` **fails loudly** rather than let a base run train on nothing
-if a download is unavailable — pass `--words`/`--stories` to use local files
-offline.
-
-**Stage 2 — VOICE.** Continue-train *from the frozen base* on the consented human
-corpus only, and write `latest.pt` (what the bot serves). Cheap — seconds — and
-it **always restarts from the clean base**, never from the previous voice
-checkpoint, so nothing compounds across reruns and the human voice is always the
-last thing the model learned:
-
-```bash
-babble voice-pass --force   # STAGE 2: base.pt + human corpus -> latest.pt
-babble voice-status         # rows since the last pass, whether the trigger is due
-```
+**A trigger, not a loop.** `babble train` (no `--force`) is a no-op unless the
+corpus has grown by `BABBLE_TRAIN_TRIGGER_ROWS` (default 100) new rows since
+the last run — it prints why and stops rather than silently retraining every
+time someone runs it. The running bot watches for that crossing itself and
+launches `babble train` as a detached, low-priority subprocess, then
+[hot-reloads](#watching-it) the new `latest.pt` on its own — this is the
+*only* automatic path, and it needs no `base.pt` and downloads nothing. The
+last-trained row count is persisted in `checkpoints/train_state.json`, so a
+restart never re-fires. Set the threshold to 0 to run by hand only.
 
 **`--steps` is a ceiling, not a target.** On a small corpus the model overfits
-long before the step budget is spent -- val loss bottoms out, then climbs. So
-the voice pass tracks val loss at every checkpoint interval and, **at the end of
-the run**, writes whichever step had the *lowest* val loss to `latest.pt` --
-never just whatever the last step happened to produce. It also stops early once
-`BABBLE_VOICE_PATIENCE` (default 3) checkpoint intervals in a row fail to beat
+long before the step budget is spent — val loss bottoms out, then climbs. So
+`train()` tracks val loss at every checkpoint interval and, **at the end of the
+run**, writes whichever step had the *lowest* val loss to `latest.pt` — never
+just whatever the last step happened to produce. It also stops early once
+`BABBLE_TRAIN_PATIENCE` (default 3) checkpoint intervals in a row fail to beat
 that best, so a run that has already found its minimum does not keep burning
-CPU past it -- the same waste that got the old continuous `train --loop`
-retired. `voice.done` in `logs/babble.log` names the winning step, its val
+CPU past it. `train.stop` in `logs/babble.log` names the winning step, its val
 loss, and how many steps ran versus the ceiling. Both the best-checkpoint
 selection and the early stop are no-ops without a held-out validation set (too
-little data to spare any) -- see `BABBLE_VAL_MIN_ROWS` below.
+little data to spare any) — see [Validation](#validation) below, in which case
+every checkpoint interval is simply written in turn, same as before.
 
-**A trigger, not a loop.** The voice pass re-fires every
-`BABBLE_VOICE_TRIGGER_ROWS` (default 100) *new* corpus rows since the last pass,
-or on demand with `voice-pass`. The last-trained row count is persisted in
-`checkpoints/voice_state.json`, so a restart never re-fires; the running bot
-watches for the crossing and launches `babble voice-pass` as a detached,
-low-priority subprocess, then [hot-reloads](#the-trainer) the new `latest.pt` on
-its own. Set the threshold to 0 to run stage 2 by hand only.
-
-**Rerunning.** Stage 2 is safe to rerun any time — it is idempotent from the
-base. Stage 1 is rerun only when you want a fresh base (e.g. after changing the
-geometry): it **archives, never deletes**, the existing checkpoints into
-`checkpoints/archive/<timestamp>/` first, because a new `block_size` changes the
-positional-embedding shape and invalidates them. After a base retrain, run
-`babble voice-pass --force` once to seed `latest.pt`.
-
-> **Geometry.** `block_size` is **512** and `max_new_tokens` is **256**
-> (`BABBLE_BLOCK_SIZE` / `BABBLE_MAX_NEW_TOKENS`), up from 256/96 — ro asked for a
-> considerably wider context and longer replies. `block_size` is the byte context
-> window; raising it grows the learned positional-embedding table, so it
-> invalidates every checkpoint trained at the old size, which is why it lands
-> together with the base retrain and not before.
-
-## The trainer
-
-> The continuous trainer below still exists and still works, but it is **not** how
-> babble pretrains any more — see [Two-stage pretraining](#two-stage-pretraining).
-> It resumes from `latest.pt`, which the voice pass writes, so pointing
-> `babble train` at it continues from the current voice checkpoint.
-
-**Training is opt-in and never ambient.** Nothing starts a training loop on its
-own — not the bot on boot, not any implicit scheduler. `babble train` is a
-command a human runs, and only while it is running does anything train. babble
-is in a **collection phase** right now: the corpus is tiny, so continuous
-training is pointless, and the deployment runs the bot alone with no trainer.
-While no trainer runs, the feed channel reports **collection**, not training
-(see [Collection feed](#collection-feed)).
-
-When you do want to train — off the request path, and built to leave the machine
-usable:
-
-```bash
-babble train --steps 200          # one cycle, then stop
-babble train --loop               # keep cycling until you stop it (Ctrl-C / SIGTERM)
-```
-
-Neither form is a default or a background service; both run only as long as you
-leave them running. It is built to leave the machine usable:
-
-- `nice 19` and a capped thread count (`BABBLE_TRAIN_THREADS`, default 2)
-- duty-cycled: `BABBLE_STEPS_PER_CYCLE` steps, then `BABBLE_REST_SECONDS` idle
-- new corpus rows are picked up at the start of each cycle
-- the bot hot-reloads `latest.pt` as it appears — no restart needed
+**Every run starts fresh.** There is no base and nothing to resume: each call
+to `babble train` builds a brand-new random-init model and trains it on
+whatever the corpus holds at that moment, so nothing compounds across reruns
+and the human corpus is always the only thing the weights reflect.
 
 **It is safe to kill at any moment.** Checkpoints are written to a temp file and
 renamed, so `kill -9` mid-write leaves the previous one intact. `SIGINT`/`SIGTERM`
-finish the current step, checkpoint, and exit cleanly. Restarting resumes the
-step count, the weights and the AdamW moments from `checkpoints/latest.pt`.
+finish the current step, checkpoint, and exit cleanly.
 
 Every checkpoint appends `{step, loss, sample}` to `checkpoints/loss.jsonl` and
 prints it, alongside the worst single row and the held-out validation loss:
@@ -455,6 +393,13 @@ did at the end.
 The correction pairs — `chosen`, `rejected` and the weights — are stored and
 published but nothing reads them at training time any more. See
 [what "RL harder" actually means here](#what-rl-harder-actually-means-here).
+
+> **Geometry.** `block_size` is **512** and `max_new_tokens` is **256**
+> (`BABBLE_BLOCK_SIZE` / `BABBLE_MAX_NEW_TOKENS`). `block_size` is the byte
+> context window; raising it grows the learned positional-embedding table, so
+> it invalidates every checkpoint trained at the old size — harmless here since
+> every run starts from random init anyway, so the next `babble train` just
+> produces a fresh checkpoint at the new size.
 
 ## Why it babbled at loss 0.02
 
@@ -592,7 +537,7 @@ cannot afford the decode cost.
   negligible — mean per-token loss 13.692948 → 13.693907 on `base.pt`, with
   the greedy reply byte-identical.
 - **AdamW `foreach`** on the CPU training path; optional `BABBLE_TORCH_COMPILE=1`
-  for long base pretrains (off by default). Compiled modules are unwrapped
+  for a long training run (off by default). Compiled modules are unwrapped
   before every checkpoint write so `state_dict` keys stay plain Babbler keys —
   never `_orig_mod.*`.
 
@@ -731,15 +676,15 @@ now 55 rows · 1,031 chars · 8 contributors
 
 ## Training feed
 
-When a trainer *is* running, `babble train --loop` posts a short message to the
-same channel on trainer start, resume-after-kill, going idle, and every checkpoint — cycle, step,
-current loss and its delta from the last checkpoint, how many corpus rows are
-being trained on, and the sample generation, which is the actual point:
+When `babble train` runs, it posts a short message to the same channel on
+start and every checkpoint — step, current loss and its delta from the last
+checkpoint, how many corpus rows are being trained on, and the sample
+generation, which is the actual point:
 
 ```
-🚀 cycle 3 starting · 154 stored → 154 training, 0 dropped · 124 train / 30 val rows
+🚀 cycle 1 starting · 154 stored → 154 training, 0 dropped · 124 train / 30 val rows
    · 131 examples ≈4,208 tokens · batch 8 @ lr 0.001
-🔁 cycle 3 · step 650 · loss 2.1840 (-0.312) · 124 rows
+🔁 cycle 1 · step 650 · loss 2.1840 (-0.312) · 124 rows
    val 2.4120 (+0.018) · 30 held out
 > continuation _(trained)_: `hey how` → ` are yout hi ther`
 ```
@@ -756,8 +701,8 @@ has never seen is Tuesday.
 If the corpus is too small to hold anything out yet, the val line reads `val:
 disabled — <reason>` instead of a number — see [Validation](#validation).
 
-**The trainer and the bot are separate processes** — `babble train --loop` has
-no Discord login and never will, that separation is deliberate. So this posts
+**The trainer and the bot are separate processes** — `babble train` has no
+Discord login and never will, that separation is deliberate. So this posts
 over a plain Discord **webhook** (one HTTPS POST, no login, no gateway, nothing
 to keep alive) rather than merging the two processes or building a file-tailing
 relay between them. Set `BABBLE_LOG_WEBHOOK_URL` and it turns on; leave it unset
@@ -904,13 +849,13 @@ The knobs that decide what the bot sounds like:
 | `BABBLE_TEMPERATURE` | `0.5` | sampling temperature — [`1.0` was the babble](#why-it-babbled-at-loss-002) |
 | `BABBLE_TOP_K` | `40` | truncate sampling to the top k bytes |
 | `BABBLE_MAX_NEW_TOKENS` | `256` | longest reply, in bytes |
-| `BABBLE_BLOCK_SIZE` | `512` | context window in bytes; changing it [invalidates checkpoints](#two-stage-pretraining) |
-| `BABBLE_VOICE_TRIGGER_ROWS` | `100` | new corpus rows that [re-fire the voice pass](#two-stage-pretraining); `0` = manual only |
-| `BABBLE_VOICE_STEPS` | `400` | voice-pass step [ceiling](#two-stage-pretraining), not a target -- the best-val checkpoint may win earlier |
-| `BABBLE_VOICE_PATIENCE` | `3` | stop the voice pass after this many non-improving [checkpoint intervals](#two-stage-pretraining); `0` = never |
+| `BABBLE_BLOCK_SIZE` | `512` | context window in bytes; changing it [invalidates checkpoints](#pretraining) (harmless -- every run starts from random init) |
+| `BABBLE_TRAIN_TRIGGER_ROWS` | `100` | new corpus rows that [re-fire training](#pretraining); `0` = manual only |
+| `BABBLE_TRAIN_STEPS` | `400` | training step [ceiling](#pretraining), not a target -- the best-val checkpoint may win earlier |
+| `BABBLE_TRAIN_PATIENCE` | `3` | stop training after this many non-improving [checkpoint intervals](#pretraining); `0` = never |
 | `BABBLE_BEST_OF` | `4` | [candidates drawn per reply](#best-of-n); `1` turns it off |
 | `BABBLE_TRAIN_THREADS` | `2` | CPU threads for train + inference; stays polite on a shared box |
-| `BABBLE_TORCH_COMPILE` | off | set `1` to `torch.compile` the model for long base pretrains |
+| `BABBLE_TORCH_COMPILE` | off | set `1` to `torch.compile` the model for a long training run |
 | `BABBLE_VAL_FRACTION` | `0.2` | [share of corpus rows held out](#validation) |
 | `BABBLE_VAL_MIN_ROWS` | `20` | corpus size below which validation is skipped |
 
@@ -955,27 +900,15 @@ systemctl --user enable --now babble-bot
 babble logs --follow
 ```
 
-**The trainer is not a standing service and is not enabled here.** Training is a
-deliberate thing a human starts — `babble train` or `babble train --loop` — and
-it runs only for as long as it is left running (see [The trainer](#the-trainer)).
-During the collection phase there is deliberately no trainer. If you ever do want
-to train continuously, you can add a unit for it and enable it yourself — but
-that is an explicit choice, never the default:
+**There is no separate trainer service.** The running bot itself is what fires
+training: after every fresh corpus row it checks the [+N-row
+trigger](#pretraining) and, when due, launches `babble train` as a detached,
+low-priority subprocess — no unit to install, nothing else to enable. Training
+is never a standing, continuously-cycling process (`babble train --loop` was
+retired for exactly that reason). To train on demand from a terminal:
 
-```ini
-# ~/.config/systemd/user/babble-trainer.service  (optional — enable by hand)
-[Unit]
-Description=babble trainer (manual; not enabled by default)
-[Service]
-WorkingDirectory=%h/babble
-EnvironmentFile=%h/babble/.env
-ExecStart=%h/babble/.venv/bin/babble train --loop
-Nice=19
-CPUWeight=20
-Restart=always
-RestartSec=30
-[Install]
-WantedBy=default.target
+```bash
+babble train --force
 ```
 
 ## Keeping the live install current
@@ -995,9 +928,8 @@ run on a timer and catch exactly that:
   `git merge --ff-only` only — never a real merge, never a rebase, never
   force.
 - Syncs dependencies (`uv sync`) only when `uv.lock` actually changed.
-- **Skips the restart** (exit `0`, try again next tick) if a voice pass or
-  base pretrain is currently running, so an update can never kill a training
-  run mid-write.
+- **Skips the restart** (exit `0`, try again next tick) if a training run is
+  currently in flight, so an update can never kill it mid-write.
 - Restarts `babble-bot` and then *proves* it came back — polls the log for a
   fresh `bot.ready` within a timeout — rather than trusting that
   `systemctl restart` returning success means the bot is actually serving.
@@ -1036,7 +968,7 @@ environment variable rather than hardcoded, so the same script runs anywhere:
 | `BABBLE_UPDATE_BRANCH` | `main` | branch to track |
 | `BABBLE_BOT_UNIT` | `babble-bot` | the systemd `--user` unit to restart |
 | `BABBLE_UPDATE_RESTART_TIMEOUT` | `90` | seconds to wait for `bot.ready` after a restart |
-| `BABBLE_TRAIN_SUBCOMMANDS` | `voice-pass base-pretrain train` | space-separated `babble` subcommands that count as "training in flight" |
+| `BABBLE_TRAIN_SUBCOMMANDS` | `train` | space-separated `babble` subcommands that count as "training in flight" |
 
 To change the check interval, edit `OnUnitActiveSec=` in
 `deploy/babble-update.timer` (a few minutes is a sane default — the service
@@ -1076,9 +1008,7 @@ babble/
   model.py       the transformer — random init, KV cache, CPU-friendly ops
   cpu_runtime.py force CPU / oneDNN / thread caps; optional torch.compile
   generate.py    sampling (continuations and pairs), hot-reloading checkpoints
-  external.py    the external base-stage corpus: dictionary words + stories
-  pretrain.py    two-stage pretraining: frozen base, then the human voice pass
-  trainer.py     the polite, resumable, duty-cycled training loop
+  trainer.py     the polite trainer: random init, human corpus, best-val + trigger
   core.py        ALL bot behaviour, with zero Discord imports
   bot.py         thin discord.py adapter — the only file that imports discord
   consent.py     who agreed and to what; two scopes; fails closed
