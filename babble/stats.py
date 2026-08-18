@@ -14,6 +14,7 @@ from pathlib import Path
 from .config import REPO_ROOT, Settings
 from .consent import SCOPE_CORPUS, SCOPE_CORRECTIONS, ConsentStore, CorpusConsent
 from .corpus import CorpusStore
+from .post_state import post_trigger
 from .store import APPROVAL, CORRECTION, InteractionStore
 
 
@@ -32,6 +33,11 @@ class Snapshot:
     corpus_rows: int
     corpus_trainable: int
     corpus_chars: int
+    post_current_pairs: int
+    post_last_trained_pairs: int
+    post_threshold: int
+    post_has_pretrained: bool
+    post_due: bool
     log_bytes: int
     last_checkpoint_at: str | None
     running_commit: str | None
@@ -128,6 +134,8 @@ def snapshot(settings: Settings) -> Snapshot:
     if local_commit and remote_commit:
         update_current = remote_commit.startswith(local_commit)
 
+    post = post_trigger(settings)
+
     return Snapshot(
         step=int(history[-1].get("step", 0)) if history else 0,
         last_loss=float(history[-1]["loss"]) if history and "loss" in history[-1] else None,
@@ -144,6 +152,11 @@ def snapshot(settings: Settings) -> Snapshot:
         corpus_rows=len(corpus),
         corpus_trainable=corpus_trainable,
         corpus_chars=sum(len(r.text) for r in corpus),
+        post_current_pairs=post.current_pairs,
+        post_last_trained_pairs=post.last_trained_pairs,
+        post_threshold=post.threshold,
+        post_has_pretrained=post.has_pretrained,
+        post_due=post.due,
         log_bytes=log_bytes,
         last_checkpoint_at=history[-1].get("at") if history else None,
         running_commit=local_commit,
@@ -159,12 +172,21 @@ def render_snapshot(snap: Snapshot, markdown: bool = True) -> str:
     drift = ""
     if snap.first_loss is not None and snap.last_loss is not None:
         drift = f" ({snap.last_loss - snap.first_loss:+.4f} since the first checkpoint)"
+    if not snap.post_has_pretrained:
+        post_line = "no pretrained checkpoint yet"
+    else:
+        post_line = (
+            f"{snap.post_last_trained_pairs} pairs as of the last post-train · "
+            f"{max(0, snap.post_current_pairs - snap.post_last_trained_pairs)} new · "
+            f"threshold {snap.post_threshold} · due {'yes' if snap.post_due else 'no'}"
+        )
     return (
         f"{b}step{b} {snap.step:,} · {b}loss{b} {loss}{drift}\n"
         f"{b}corpus{b} {snap.corpus_rows} rows ({snap.corpus_trainable} training, "
         f"{snap.corpus_chars:,} chars) · {b}checkpoints{b} {snap.checkpoints}\n"
         f"{b}corrections{b} {snap.corrections} · {b}👍{b} {snap.approvals} · "
         f"{b}trainable pairs{b} {snap.trainable_rows}\n"
+        f"{b}post-train{b} {post_line}\n"
         f"{b}people opted in{b} {snap.consented_users} of {snap.known_users} asked"
     )
 

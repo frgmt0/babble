@@ -53,7 +53,8 @@ uv venv && uv pip install -e ".[dev]"      # or: python -m venv .venv && pip ins
 source .venv/bin/activate
 
 babble fake-data                # made-up rows in both stores, to chew on
-babble train --force            # random init -> the human corpus -> latest.pt
+babble train --force            # STAGE 1: random init -> the human corpus -> latest.pt
+babble post-train --force       # STAGE 2: fine-tune latest.pt on the correction pairs
 babble sample --prompt hello    # continue a prefix from the newest checkpoint
 babble curve                    # the loss curve, as a picture
 babble summary                  # step, loss, checkpoints, consent, row counts
@@ -62,9 +63,11 @@ babble export                   # build the HuggingFace dataset directory
 pytest                          # 400+ tests, none of which need a token
 ```
 
-`babble train` is the one command that trains the model — see
+`babble train` is the one command that pretrains the model — see
 [Pretraining](#pretraining) for what it trains on, when it fires on its own,
-and when you need `--force`.
+and when you need `--force`. After that, a short supervised pass on the
+correction pairs is described under
+[Post-training on the correction pairs](#post-training-on-the-correction-pairs).
 
 `uv` pulls the CPU-only build of torch automatically (see `[tool.uv.sources]` in
 `pyproject.toml`) — no multi-gigabyte CUDA wheels. With plain pip, use
@@ -400,6 +403,80 @@ published but nothing reads them at training time any more. See
 > it invalidates every checkpoint trained at the old size — harmless here since
 > every run starts from random init anyway, so the next `babble train` just
 > produces a fresh checkpoint at the new size.
+
+## Post-training on the correction pairs
+
+Pretraining teaches the model to *continue* plain text — there is no
+prompt/response boundary in that objective, so nothing about it teaches the
+model to *answer* a question. This stage does: a short supervised pass, run
+**after** pretraining, that fine-tunes the pretrained checkpoint on the stored
+`(prompt, chosen)` correction pairs, laid out as `<bos> prompt <sep> response
+<eos>` (`tokenizer.build_example` — the same pair layout `generate.py` already
+uses to score a correction against its rejected answer, reused rather than
+inventing a second format).
+
+```bash
+babble post-train --force   # fine-tune the pretrained checkpoint on the pairs -> latest.pt
+babble post-status          # pairs since the last post-train, whether the trigger is due
+```
+
+**Set your expectations here too.** There are only a few dozen correction pairs
+against a ~3.3M-parameter model that just learned characters from a few
+thousand characters of corpus. It will *memorise* those pairs and generalise to
+approximately nothing. That is the expected result of this stage, not a bug —
+no data augmentation, synthetic pairs, or external data compensate for it here,
+on purpose. This proves the mechanism works; it does not, by itself, make
+babble good at answering.
+
+**The `rejected` side is captured, not trained on.** Every correction still
+stores what the bot got wrong alongside what it should have said, and both are
+still published. But the objective here is supervised fine-tuning on the
+chosen answer only — this is not preference optimisation, and there is no DPO
+or RL anywhere in this path.
+
+**The pretrained/post-trained split.** The same discipline the old base/voice
+split used: the first time a post-train ever runs, it snapshots whatever is
+currently in `checkpoints/latest.pt` (the pretrain output) as
+`checkpoints/pretrained.pt`. Every post-train — including every rerun — starts
+from that snapshot, never from a previous post-train's own weights, so nothing
+compounds and a post-train can always be redone from a clean pretrain. This
+matters more here than it did for the voice pass: the pair set is tiny, so a
+post-train that kept fine-tuning on top of its own previous output would drift
+fast. Unlike the old base/voice split, the snapshot is not frozen forever: each
+post-train checks whether `latest.pt` still holds exactly what the *last*
+post-train wrote there (a content hash recorded in `checkpoints/post_state.json`
+settles it), and retakes the snapshot when it does not — which is exactly what
+happens when a fresh `babble train` (by hand, or the bot's own +N-row trigger)
+has landed a new pretrain since. A post-train never silently fine-tunes a stale
+pretrain, and never silently throws away a newer one.
+
+**Best-val checkpoint and early stopping**, same as pretraining: `--steps` is a
+ceiling, not a target. The post-train tracks val loss at every checkpoint
+interval and writes whichever step had the lowest val loss to `latest.pt`, and
+stops early once `BABBLE_POST_PATIENCE` (default 3) checkpoint intervals in a
+row fail to beat that best. `post.done` in `logs/babble.log` names the winning
+step and its val loss. Both are no-ops without a held-out set (too few pairs to
+spare any), in which case every checkpoint interval is simply written in turn.
+A non-positive `--steps` trains nothing and is rejected as a no-op before it
+touches the pretrained snapshot or consumes the trigger.
+
+**A trigger, not a loop.** Post-train re-fires every `BABBLE_POST_TRIGGER_PAIRS`
+(default 10) *new* correction pairs since the last post-train, or on demand
+with `--force`. The last-trained pair count is persisted in
+`checkpoints/post_state.json`, so a restart never re-fires. Set the threshold
+to 0 to run it by hand only. The running bot watches corrections for that
+crossing itself and launches `babble post-train` as a detached, low-priority
+subprocess — deferring if a pretrain it launched is still in flight, so a
+post-train never starts against a pretrain that is about to be replaced. There
+is no continuous loop here either — the old `train --loop` is gone for a
+reason, and it does not come back for this stage.
+
+**Zero pairs.** With no consented correction pairs yet, `post-train` is a
+no-op that says so (`Nothing to post-train on: no consented correction
+pairs.`) rather than crashing or writing a degenerate checkpoint.
+
+`babble summary` reports the pair count and whether a post-train is due
+alongside everything else.
 
 ## Why it babbled at loss 0.02
 
@@ -853,6 +930,9 @@ The knobs that decide what the bot sounds like:
 | `BABBLE_TRAIN_TRIGGER_ROWS` | `100` | new corpus rows that [re-fire training](#pretraining); `0` = manual only |
 | `BABBLE_TRAIN_STEPS` | `400` | training step [ceiling](#pretraining), not a target -- the best-val checkpoint may win earlier |
 | `BABBLE_TRAIN_PATIENCE` | `3` | stop training after this many non-improving [checkpoint intervals](#pretraining); `0` = never |
+| `BABBLE_POST_TRIGGER_PAIRS` | `10` | new correction pairs that [re-fire post-train](#post-training-on-the-correction-pairs); `0` = manual only |
+| `BABBLE_POST_STEPS` | `200` | post-train step [ceiling](#post-training-on-the-correction-pairs), not a target -- the best-val checkpoint may win earlier |
+| `BABBLE_POST_PATIENCE` | `3` | stop post-train after this many non-improving [checkpoint intervals](#post-training-on-the-correction-pairs); `0` = never |
 | `BABBLE_BEST_OF` | `4` | [candidates drawn per reply](#best-of-n); `1` turns it off |
 | `BABBLE_TRAIN_THREADS` | `2` | CPU threads for train + inference; stays polite on a shared box |
 | `BABBLE_TORCH_COMPILE` | off | set `1` to `torch.compile` the model for a long training run |
@@ -1016,6 +1096,8 @@ babble/
   cpu_runtime.py force CPU / oneDNN / thread caps; optional torch.compile
   generate.py    sampling (continuations and pairs), hot-reloading checkpoints
   trainer.py     the polite trainer: random init, human corpus, best-val + trigger
+  post_state.py  the post-train +N-pair trigger and pair filtering (torch-free)
+  posttrain.py   post-train: fine-tune the pretrained checkpoint on the pairs
   core.py        ALL bot behaviour, with zero Discord imports
   bot.py         thin discord.py adapter — the only file that imports discord
   consent.py     who agreed and to what; two scopes; fails closed

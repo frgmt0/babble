@@ -2,8 +2,10 @@
 
     babble fake-data          write made-up rows into both stores to play with
     babble backfill-corpus    flatten the stored correction pairs into the corpus
-    babble train --force      pretrain from random init on the human corpus
+    babble train --force      STAGE 1: pretrain from random init on the human corpus
     babble train-status       rows since the last run, whether the trigger is due
+    babble post-train --force STAGE 2: fine-tune the pretrained checkpoint on correction pairs
+    babble post-status        pairs since the last post-train, whether the trigger is due
     babble sample -p hello    continue a prefix from the latest checkpoint
     babble curve              the loss curve, as a picture
     babble summary            one-shot state of the whole thing
@@ -49,6 +51,24 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--quiet", action="store_true", help="no per-checkpoint printing")
 
     sub.add_parser("train-status", help="show the training trigger state (rows since the last run)")
+
+    post = sub.add_parser(
+        "post-train",
+        help="STAGE 2: fine-tune the pretrained checkpoint on the correction pairs -> latest.pt",
+    )
+    post.add_argument("--force", action="store_true", help="run even if the +N-pair trigger is not due")
+    post.add_argument(
+        "--steps", type=int, default=None,
+        help="step CEILING, not a target -- the best-val checkpoint may win earlier (default: BABBLE_POST_STEPS)",
+    )
+    post.add_argument(
+        "--patience", type=int, default=None,
+        help="stop after N non-improving checkpoint intervals, 0 = never (default: BABBLE_POST_PATIENCE)",
+    )
+    post.add_argument("--seed", type=int, default=1, help="deterministic run")
+    post.add_argument("--quiet", action="store_true", help="no per-checkpoint printing")
+
+    sub.add_parser("post-status", help="show the post-train trigger state (pairs since last post-train)")
 
     gen = sub.add_parser("sample", help="continue a prefix using the latest checkpoint")
     gen.add_argument("-p", "--prompt", default="hello", help="the prefix to continue from")
@@ -145,6 +165,54 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"corpus rows: {status.current_rows} · last trained at: {status.last_trained_rows} rows · "
             f"new since: {status.new_rows} · threshold: {status.threshold} · "
+            f"due: {'yes' if status.due else 'no'}",
+            flush=True,
+        )
+        return 0
+
+    if args.command == "post-train":
+        from .identity import Pseudonymiser
+        from .logs import EventLog
+        from .posttrain import post_train
+
+        log = EventLog(settings, Pseudonymiser.load(settings), component="post", echo=not args.quiet)
+        try:
+            result = post_train(
+                settings, force=args.force, steps=args.steps, patience=args.patience,
+                seed=args.seed, echo=not args.quiet, log=log,
+            )
+        finally:
+            log.close()
+        if result.ran:
+            val_s = f"{result.val_loss:.4f}" if result.val_loss is not None else "n/a"
+            early = " (stopped early)" if result.stopped_early else ""
+            print(
+                f"stage 2 (post-train): fine-tuned {result.pairs_trained} correction pair(s), "
+                f"best checkpoint at step {result.final_step} (loss {result.last_loss:.4f}, val {val_s}) "
+                f"after {result.checkpoints_written} checkpoint(s){early} -> {result.path}",
+                flush=True,
+            )
+        elif result.reason == "no_pretrain":
+            print("No pretrained checkpoint yet. Run `babble train --force` first.", flush=True)
+        elif result.reason == "not_due":
+            new = result.current_pairs - result.last_trained_pairs
+            print(
+                f"Post-train not due: {new} new correction pair(s) since the last run "
+                f"(threshold {settings.post_trigger_pairs}). Use --force to run anyway.",
+                flush=True,
+            )
+        elif result.reason == "no_data":
+            print("Nothing to post-train on: no consented correction pairs.", flush=True)
+        return 0
+
+    if args.command == "post-status":
+        from .post_state import post_trigger
+
+        status = post_trigger(settings)
+        print(
+            f"correction pairs: {status.current_pairs} · last post-train at: {status.last_trained_pairs} pairs · "
+            f"new since: {status.new_pairs} · threshold: {status.threshold} · "
+            f"pretrained checkpoint: {'present' if settings.pretrained_checkpoint.exists() else 'not yet'} · "
             f"due: {'yes' if status.due else 'no'}",
             flush=True,
         )

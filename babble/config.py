@@ -149,6 +149,20 @@ class Settings:
     # the automatic trigger off (on-demand only, with `--force`).
     train_trigger_rows: int = 100
 
+    # --- post-training on the correction pairs ---------------------------
+    # A short supervised pass, run after pretraining, that fine-tunes the
+    # served checkpoint on the `(prompt, chosen)` correction pairs so the
+    # model learns to answer a prompt instead of merely continuing one. Small
+    # by design: there are only a few dozen pairs, and the point is to prove
+    # the mechanism, not to out-run the data.
+    post_steps: int = 200  # step ceiling; the best-val checkpoint may win earlier
+    post_patience: int = 3  # stop after this many non-improving checkpoints, 0 = never
+    # Re-fires every this-many new correction pairs since the last post-train
+    # -- a trigger, not a loop, same discipline as the voice pass. The count
+    # is persisted so a restart does not re-fire. 0 turns it off (on-demand
+    # only). Small by default: there are only ~36 pairs to begin with.
+    post_trigger_pairs: int = 10
+
     @classmethod
     def from_env(cls, root: Path | None = None) -> "Settings":
         root = root or REPO_ROOT
@@ -182,6 +196,9 @@ class Settings:
             train_steps=_env_int("BABBLE_TRAIN_STEPS", 400),
             train_patience=_env_int("BABBLE_TRAIN_PATIENCE", 3),
             train_trigger_rows=_env_int("BABBLE_TRAIN_TRIGGER_ROWS", 100),
+            post_steps=_env_int("BABBLE_POST_STEPS", 200),
+            post_patience=_env_int("BABBLE_POST_PATIENCE", 3),
+            post_trigger_pairs=_env_int("BABBLE_POST_TRIGGER_PAIRS", 10),
         )
 
     @classmethod
@@ -229,6 +246,22 @@ class Settings:
         """Persisted last-trained corpus row count, so the +N-row trigger does
         not re-fire on a restart."""
         return self.checkpoint_dir / "train_state.json"
+
+    @property
+    def pretrained_checkpoint(self) -> Path:
+        """The pretrained weights post-train fine-tunes from, snapshotted from
+        `latest.pt`. Post-train always restarts from here, never from a
+        previous post-train's own output, so reruns never compound. The
+        snapshot is retaken whenever `latest.pt` no longer matches what the
+        last post-train itself wrote there -- see `pretrained_snapshot_stale`
+        in `post_state.py`."""
+        return self.checkpoint_dir / "pretrained.pt"
+
+    @property
+    def post_state_path(self) -> Path:
+        """Persisted last-trained correction-pair count, so the +N-pair
+        post-train trigger does not re-fire on a restart."""
+        return self.checkpoint_dir / "post_state.json"
 
     @property
     def update_state_path(self) -> Path:

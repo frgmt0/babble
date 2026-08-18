@@ -1011,10 +1011,16 @@ class AutoTrainTrigger:
         self.log = log or NullLog()
         self._proc: subprocess.Popen | None = None
 
+    def is_running(self) -> bool:
+        """Is a pretrain launched by this trigger still in flight? Read by
+        `AutoPostTrigger` so a post-train never starts while a pretrain it
+        would otherwise race is still writing `latest.pt`."""
+        return self._proc is not None and self._proc.poll() is None
+
     def maybe_run(self) -> None:
         if self.settings.train_trigger_rows <= 0:
             return
-        if self._proc is not None and self._proc.poll() is None:
+        if self.is_running():
             return  # a run is already in flight; do not stack them
         if not train_trigger(self.settings).due:
             return
