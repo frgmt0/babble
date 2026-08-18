@@ -171,6 +171,15 @@ class _TrainTrigger(Protocol):
     def maybe_run(self) -> None: ...
 
 
+class _PostTrigger(Protocol):
+    """The one method `core` calls after a fresh correction pair: run a
+    post-train if the pairs have grown by enough since the last one. Same
+    shape as `_TrainTrigger`, kept separate because it fires off a different
+    count (pairs, not corpus rows)."""
+
+    def maybe_run(self) -> None: ...
+
+
 @dataclass(frozen=True)
 class IncomingMessage:
     """A Discord message, reduced to what the logic actually needs."""
@@ -314,6 +323,7 @@ class Babble:
         feed: _CollectionFeed | None = None,
         publisher: _Publisher | None = None,
         train_trigger: _TrainTrigger | None = None,
+        post_trigger: _PostTrigger | None = None,
     ) -> None:
         settings.ensure_dirs()
         self.settings = settings
@@ -332,6 +342,7 @@ class Babble:
         self.feed = feed
         self.publisher = publisher
         self.train_trigger = train_trigger
+        self.post_trigger = post_trigger
 
     # --- entry points ---------------------------------------------------
 
@@ -742,6 +753,12 @@ class Babble:
         self._capture_corpus(
             msg, exchange.prompt, SOURCE_PROMPT, author_id=exchange.prompt_author_id
         )
+        # ...and past the post-train trigger: every N new pairs, a fresh
+        # supervised pass fires so the served model picks up the newest
+        # correction. Only for a genuinely new pair -- a duplicate correction
+        # never grows `pair_count`, so it must never be allowed to fire this.
+        if fresh and self.post_trigger is not None:
+            self.post_trigger.maybe_run()
         return [
             Reply(
                 f"-# got it — correction #{total} filed. i'll pick it up on the next training cycle.",

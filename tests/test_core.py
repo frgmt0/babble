@@ -238,6 +238,42 @@ def test_the_same_correction_twice_is_one_row(fake, brain):
     assert brain.store.count() == 1
 
 
+class _FakePostTrigger:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def maybe_run(self) -> None:
+        self.calls += 1
+
+
+def test_a_fresh_correction_pokes_the_post_trigger(settings, generator, log):
+    """A correction landing is exactly what should offer the post-train
+    trigger a chance to fire -- mirrors how a fresh corpus row pokes
+    `train_trigger`."""
+    post_trigger = _FakePostTrigger()
+    brain = Babble(settings, generator=generator, log=log, post_trigger=post_trigger)
+    fake = FakeDiscord(brain)
+    fake.onboard(ALICE)
+    answer = fake.ping(ALICE, "hello")[0]
+
+    fake.correct(ALICE, "say hey", reply_to=answer.id)
+
+    assert post_trigger.calls == 1
+
+
+def test_a_duplicate_correction_does_not_poke_the_post_trigger(settings, generator, log):
+    post_trigger = _FakePostTrigger()
+    brain = Babble(settings, generator=generator, log=log, post_trigger=post_trigger)
+    fake = FakeDiscord(brain)
+    fake.onboard(ALICE)
+    answer = fake.ping(ALICE, "hello")[0]
+
+    fake.correct(ALICE, "say hey", reply_to=answer.id)
+    fake.correct(ALICE, "say hey", reply_to=answer.id)  # same pair -> not fresh
+
+    assert post_trigger.calls == 1
+
+
 # --- the correction marker -----------------------------------------------
 #
 # Before this, every reply to one of the bot's messages was stored as the answer

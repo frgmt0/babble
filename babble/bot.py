@@ -22,6 +22,7 @@ from .discord_feed import CollectionFeed
 from .generate import CheckpointGenerator
 from .identity import Pseudonymiser
 from .logs import EventLog
+from .posttrain import AutoPostTrigger
 from .publish import GrowthPublisher
 from .trainer import AutoTrainTrigger
 
@@ -60,6 +61,11 @@ class BabbleClient(discord.Client):
             # pretrain run fires and writes a new latest.pt, which the
             # CheckpointGenerator hot-reloads.
             train_trigger = AutoTrainTrigger(settings, log)
+            # The post-train trigger: after every N new correction pairs, a
+            # fresh supervised pass fires on top of the current pretrain. It
+            # defers to `train_trigger` -- see `AutoPostTrigger` -- so it never
+            # starts while a pretrain is still writing `latest.pt`.
+            post_trigger = AutoPostTrigger(settings, log, train_trigger=train_trigger)
             brain = Babble(
                 settings,
                 generator=CheckpointGenerator(settings, log),
@@ -67,6 +73,7 @@ class BabbleClient(discord.Client):
                 feed=self.feed,
                 publisher=publisher,
                 train_trigger=train_trigger,
+                post_trigger=post_trigger,
             )
             # Seed milestone markers from the corpus already on disk, so a
             # restart does not re-announce the last milestone on the next row.
