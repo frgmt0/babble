@@ -1048,7 +1048,7 @@ environment variable rather than hardcoded, so the same script runs anywhere:
 | `BABBLE_UPDATE_BRANCH` | `main` | branch to track |
 | `BABBLE_BOT_UNIT` | `babble-bot` | the systemd `--user` unit to restart |
 | `BABBLE_UPDATE_RESTART_TIMEOUT` | `90` | seconds to wait for `bot.ready` after a restart |
-| `BABBLE_TRAIN_SUBCOMMANDS` | `train` | space-separated `babble` subcommands that count as "training in flight" |
+| `BABBLE_TRAIN_SUBCOMMANDS` | `train post-train` | space-separated `babble` subcommands that count as "training in flight" |
 
 The timer runs on a wall-clock schedule (`OnCalendar=*:0/5`, every 5 minutes)
 with `Persistent=true`, so a tick missed while the box was off still fires on

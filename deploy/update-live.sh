@@ -33,7 +33,7 @@
 #   BABBLE_UPDATE_POLL_INTERVAL    seconds between readiness polls (default: 2)
 #   BABBLE_TRAIN_SUBCOMMANDS       space-separated `babble` subcommands that
 #                                count as "training in flight"
-#                                (default: "train")
+#                                (default: "train post-train")
 set -euo pipefail
 
 LIVE_DIR="${BABBLE_LIVE_DIR:-$HOME/babble-live}"
@@ -44,7 +44,7 @@ DATA_DIR="${BABBLE_DATA_DIR:-$LIVE_DIR/data}"
 LOG_DIR="${BABBLE_LOG_DIR:-$LIVE_DIR/logs}"
 RESTART_TIMEOUT="${BABBLE_UPDATE_RESTART_TIMEOUT:-90}"
 POLL_INTERVAL="${BABBLE_UPDATE_POLL_INTERVAL:-2}"
-TRAIN_SUBCOMMANDS="${BABBLE_TRAIN_SUBCOMMANDS:-train}"
+TRAIN_SUBCOMMANDS="${BABBLE_TRAIN_SUBCOMMANDS:-train post-train}"
 
 if [ -n "${BABBLE_UPDATE_VENV_BIN:-}" ]; then
   PATH="$BABBLE_UPDATE_VENV_BIN:$PATH"
