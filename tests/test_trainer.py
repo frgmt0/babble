@@ -1,4 +1,7 @@
-"""The trainer: learns from random init, checkpoints, and survives being killed."""
+"""The trainer: learns from random init on the human corpus, checkpoints, and
+survives being killed. `force=True` is threaded through most calls here
+because the +N-row trigger (tested in test_train_trigger.py) would otherwise
+make a tiny test corpus a no-op."""
 
 from __future__ import annotations
 
@@ -99,21 +102,20 @@ def test_a_batch_is_padded_to_its_longest_example():
         assert (row_mask[padding] == 0).all(), "padding must never be a target"
 
 
-# --- the loop -----------------------------------------------------------
+# --- the run --------------------------------------------------------------
 
 
 def test_it_trains_from_random_init_and_writes_checkpoints(seeded):
-    result = train(seeded, steps=6, echo=False, seed=1)
+    result = train(seeded, force=True, steps=6, echo=False, seed=1)
 
     assert result.steps_run == 6
-    assert result.final_step == 6
     assert result.checkpoints_written >= 1
     assert seeded.latest_checkpoint.exists()
     assert list(seeded.checkpoint_dir.glob("ckpt-*.pt"))
 
 
 def test_every_checkpoint_records_a_loss_and_a_sample(seeded):
-    train(seeded, steps=6, echo=False, seed=1)
+    train(seeded, force=True, steps=6, echo=False, seed=1)
 
     entries = [
         json.loads(line)
@@ -131,7 +133,7 @@ def test_every_checkpoint_records_a_loss_and_a_sample(seeded):
 
 def test_the_loss_goes_down(seeded):
     seeded.checkpoint_every = 40
-    train(seeded, steps=80, echo=False, seed=1)
+    train(seeded, force=True, steps=80, echo=False, seed=1)
 
     entries = [
         json.loads(line)
@@ -143,7 +145,7 @@ def test_the_loss_goes_down(seeded):
 
 
 def test_it_prints_the_sample_generation_per_checkpoint(seeded, capsys):
-    train(seeded, steps=4, echo=True, seed=1)
+    train(seeded, force=True, steps=4, echo=True, seed=1)
 
     printed = capsys.readouterr().out
     assert "loss" in printed and "step" in printed and "->" in printed
@@ -155,28 +157,28 @@ def test_half_written_checkpoints_are_staged_out_of_the_checkpoint_directory(see
     checkpoint directory containing only whole files, however long a write takes
     or whenever the process dies during one.
     """
-    train(seeded, steps=2, echo=False, seed=1)
+    train(seeded, force=True, steps=2, echo=False, seed=1)
 
     scratch = seeded.checkpoint_dir / SCRATCH_DIR
     assert scratch.is_dir(), "writes go through a scratch directory"
     assert list(scratch.iterdir()) == [], "and nothing is left in it afterwards"
     for entry in seeded.checkpoint_dir.iterdir():
-        assert entry.is_dir() or entry.suffix == ".pt" or entry.name == "loss.jsonl"
+        assert entry.is_dir() or entry.suffix == ".pt" or entry.name in ("loss.jsonl", "train_state.json")
 
 
 def test_a_leftover_partial_write_is_swept_on_the_next_start(seeded):
-    train(seeded, steps=2, echo=False, seed=1)
+    train(seeded, force=True, steps=2, echo=False, seed=1)
     scratch = seeded.checkpoint_dir / SCRATCH_DIR
     (scratch / "ckpt-0000099.pt.tmp").write_bytes(b"a write that was killed halfway")
 
-    train(seeded, steps=2, echo=False, seed=1)
+    train(seeded, force=True, steps=2, echo=False, seed=1)
 
     assert list(scratch.iterdir()) == []
     assert seeded.latest_checkpoint.exists()
 
 
 def test_sweeping_scratch_never_touches_a_real_checkpoint(seeded):
-    train(seeded, steps=2, echo=False, seed=1)
+    train(seeded, force=True, steps=2, echo=False, seed=1)
     before = sorted(p.name for p in seeded.checkpoint_dir.glob("*.pt"))
 
     sweep_scratch(seeded)
@@ -188,60 +190,23 @@ def test_old_checkpoints_are_pruned_but_latest_survives(seeded):
     seeded.keep_checkpoints = 2
     seeded.checkpoint_every = 2
 
-    train(seeded, steps=10, echo=False, seed=1)
+    train(seeded, force=True, steps=10, echo=False, seed=1)
 
     assert len(list(seeded.checkpoint_dir.glob("ckpt-*.pt"))) <= 2
     assert seeded.latest_checkpoint.exists()
 
 
 def test_with_no_data_it_stops_politely_instead_of_crashing(settings):
-    result = train(settings, steps=5, echo=False)
+    result = train(settings, force=True, steps=5, echo=False)
 
     assert result.stopped_because == "no_data"
     assert result.steps_run == 0
 
 
-def test_loop_mode_stops_after_the_cycle_budget(seeded):
-    result = train(seeded, steps=2, loop=True, max_cycles=3, echo=False, seed=1)
-
-    assert result.cycles == 3
-    assert result.steps_run == 6
-
-
-# --- resuming -----------------------------------------------------------
-
-
-def test_a_second_run_resumes_where_the_first_stopped(seeded):
-    first = train(seeded, steps=4, echo=False, seed=1)
-
-    second = train(seeded, steps=4, echo=False, seed=1)
-
-    assert first.final_step == 4
-    assert second.final_step == 8
-    assert second.steps_run == 4
-
-
-def test_resuming_restores_the_optimiser_not_just_the_weights(seeded):
-    train(seeded, steps=4, echo=False, seed=1)
-
-    payload = torch.load(seeded.latest_checkpoint, map_location="cpu", weights_only=True)
-
-    assert payload["step"] == 4
-    assert payload["optim"]["state"], "AdamW moments must survive a restart"
-    assert "torch_rng" in payload
-
-
-def test_a_corrupt_checkpoint_falls_back_to_random_init(seeded):
-    train(seeded, steps=2, echo=False, seed=1)
-    seeded.latest_checkpoint.write_bytes(b"not a checkpoint at all")
-
-    result = train(seeded, steps=2, echo=False, seed=1)
-
-    assert result.final_step == 2  # started over rather than dying
-
-
 def test_killing_the_trainer_mid_run_leaves_a_loadable_checkpoint(settings, tmp_path):
-    """The real thing: SIGKILL a separate process, then resume from disk."""
+    """The real thing: SIGKILL a separate process, then check the checkpoint on
+    disk is whole -- there is no resume to check any more, every run starts
+    from random init, so this is purely about atomic-write safety."""
     seed_fake_data(settings)
     env = {
         **os.environ,
@@ -255,10 +220,12 @@ def test_killing_the_trainer_mid_run_leaves_a_loadable_checkpoint(settings, tmp_
         "BABBLE_BLOCK_SIZE": "64",
         "BABBLE_BATCH_SIZE": "2",
         "BABBLE_CHECKPOINT_EVERY": "2",
-        "BABBLE_STEPS_PER_CYCLE": "100000",
+        # Validation off: a huge step budget is only a safe "stays alive until
+        # killed" guarantee if best-val early stopping can never cut it short.
+        "BABBLE_VAL_MIN_ROWS": "100000",
     }
     process = subprocess.Popen(
-        [sys.executable, "-m", "babble", "train", "--loop", "--quiet"],
+        [sys.executable, "-m", "babble", "train", "--force", "--quiet", "--steps", "100000"],
         env=env,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -279,13 +246,9 @@ def test_killing_the_trainer_mid_run_leaves_a_loadable_checkpoint(settings, tmp_
 
     # The file must be whole despite being killed without warning.
     payload = torch.load(settings.latest_checkpoint, map_location="cpu", weights_only=True)
-    killed_at = payload["step"]
-    assert killed_at > 0
+    assert payload["step"] > 0
     assert not list(settings.checkpoint_dir.glob("*.tmp")), "a torn temp file was left behind"
     assert not list(settings.checkpoint_dir.glob("ckpt-*.pt.tmp"))
-
-    resumed = train(settings, steps=2, echo=False)
-    assert resumed.final_step == killed_at + 2
 
 
 # --- the discord training feed -------------------------------------------
@@ -295,7 +258,7 @@ def test_a_configured_feed_gets_a_post_per_checkpoint(seeded):
     sender = FakeSender()
     feed = TrainingFeed(webhook_url="https://discord.example/webhook", sender=sender)
 
-    result = train(seeded, steps=6, echo=False, seed=1, feed=feed)
+    result = train(seeded, force=True, steps=6, echo=False, seed=1, feed=feed)
 
     assert result.checkpoints_written >= 1
     checkpoint_posts = [c for c in sender.calls if "🔁" in c[1]]
@@ -305,7 +268,7 @@ def test_a_configured_feed_gets_a_post_per_checkpoint(seeded):
 def test_a_failing_feed_post_never_breaks_training(seeded):
     feed = TrainingFeed(webhook_url="https://discord.example/webhook", sender=FakeSender(fail=True))
 
-    result = train(seeded, steps=6, echo=False, seed=1, feed=feed)
+    result = train(seeded, force=True, steps=6, echo=False, seed=1, feed=feed)
 
     assert result.steps_run == 6
     assert result.checkpoints_written >= 1
@@ -320,29 +283,30 @@ def test_an_unconfigured_feed_makes_no_network_calls(seeded, monkeypatch):
 
     monkeypatch.setattr("babble.discord_feed.post_webhook", explode)
 
-    result = train(seeded, steps=6, echo=False, seed=1)  # feed defaults from env: disabled
+    result = train(seeded, force=True, steps=6, echo=False, seed=1)  # feed defaults from env: disabled
 
     assert result.steps_run == 6
 
 
-def test_start_is_reported_fresh_then_resumed(seeded):
+def test_start_is_always_reported_as_started_never_resumed(seeded):
+    """Every run is a fresh random-init model -- there is nothing to resume,
+    so the start post must never claim otherwise."""
     sender = FakeSender()
-    first_feed = TrainingFeed(webhook_url="https://discord.example/webhook", sender=sender)
-    train(seeded, steps=2, echo=False, seed=1, feed=first_feed)
+    feed = TrainingFeed(webhook_url="https://discord.example/webhook", sender=sender)
 
-    second_feed = TrainingFeed(webhook_url="https://discord.example/webhook", sender=sender)
-    train(seeded, steps=2, echo=False, seed=1, feed=second_feed)
+    train(seeded, force=True, steps=2, echo=False, seed=1, feed=feed)
 
     starts = [c for c in sender.calls if "started" in c[1].lower() or "resum" in c[1].lower()]
+    assert len(starts) == 1
     assert "started" in starts[0][1].lower()
-    assert "resum" in starts[1][1].lower()
+    assert "resum" not in starts[0][1].lower()
 
 
 def test_going_idle_posts_once_not_every_check(settings):
     sender = FakeSender()
     feed = TrainingFeed(webhook_url="https://discord.example/webhook", sender=sender)
 
-    train(settings, steps=2, echo=False, feed=feed)  # no data at all -> idle immediately, loop=False
+    train(settings, force=True, steps=2, echo=False, feed=feed)  # no data at all -> idle immediately
 
     idle_posts = [c for c in sender.calls if "idle" in c[1].lower()]
     assert len(idle_posts) == 1
@@ -353,7 +317,7 @@ def test_the_feed_carries_cycle_step_loss_delta_rows_and_sample(seeded):
     sender = FakeSender()
     feed = TrainingFeed(webhook_url="https://discord.example/webhook", sender=sender)
 
-    train(seeded, steps=6, echo=False, seed=1, feed=feed)
+    train(seeded, force=True, steps=6, echo=False, seed=1, feed=feed)
 
     checkpoint_posts = [c for c in sender.calls if "loss" in c[1].lower()]
     assert len(checkpoint_posts) >= 2
@@ -367,7 +331,7 @@ def test_a_cycle_start_post_shows_the_dataset_shape_and_hyperparams(seeded):
     sender = FakeSender()
     feed = TrainingFeed(webhook_url="https://discord.example/webhook", sender=sender)
 
-    train(seeded, steps=2, echo=False, seed=1, feed=feed)
+    train(seeded, force=True, steps=2, echo=False, seed=1, feed=feed)
 
     starts = [c[1] for c in sender.calls if "starting" in c[1].lower()]
     assert len(starts) == 1
@@ -387,7 +351,7 @@ def test_a_cycle_end_post_shows_steps_and_duration(seeded):
     sender = FakeSender()
     feed = TrainingFeed(webhook_url="https://discord.example/webhook", sender=sender)
 
-    train(seeded, steps=3, echo=False, seed=1, feed=feed)
+    train(seeded, force=True, steps=3, echo=False, seed=1, feed=feed)
 
     ends = [c[1] for c in sender.calls if "done" in c[1].lower()]
     assert len(ends) == 1
@@ -399,7 +363,7 @@ def test_checkpoints_probe_different_real_prompts_across_a_cycle(seeded):
     sender = FakeSender()
     feed = TrainingFeed(webhook_url="https://discord.example/webhook", sender=sender)
 
-    train(seeded, steps=4, echo=False, seed=1, feed=feed)
+    train(seeded, force=True, steps=4, echo=False, seed=1, feed=feed)
 
     checkpoint_posts = [c[1] for c in sender.calls if "🔁" in c[1]]
     assert len(checkpoint_posts) == 4
@@ -422,7 +386,7 @@ def test_the_probe_says_which_side_of_the_split_the_row_came_from(seeded):
     sender = FakeSender()
     feed = TrainingFeed(webhook_url="https://discord.example/webhook", sender=sender)
 
-    train(seeded, steps=2, echo=False, seed=1, feed=feed)
+    train(seeded, force=True, steps=2, echo=False, seed=1, feed=feed)
 
     checkpoint_posts = [c[1] for c in sender.calls if "🔁" in c[1]]
     assert checkpoint_posts
@@ -436,7 +400,7 @@ def test_the_probe_only_ever_asks_about_rows_it_was_trained_on(seeded, read_log)
     seeded.checkpoint_every = 1
     seeded.val_min_rows = 5  # force a real held-out split on the fake corpus
 
-    train(seeded, steps=6, echo=False, seed=1)
+    train(seeded, force=True, steps=6, echo=False, seed=1)
 
     checkpoints = read_log("train.checkpoint")
     assert checkpoints
@@ -559,7 +523,7 @@ def test_rows_from_people_who_never_consented_are_not_trained_on(settings):
     _seed_corpus_row(settings, "hi", stranger)
 
     assert corpus_rows(settings) == []
-    assert train(settings, steps=2, echo=False).stopped_because == "no_data"
+    assert train(settings, force=True, steps=2, echo=False).stopped_because == "no_data"
 
 
 def test_withdrawing_consent_takes_rows_out_of_training(seeded):

@@ -15,8 +15,8 @@ Everything ro asked for, measured rather than estimated:
   the model's own parameter footprint (params x 4 bytes) so the gap between "the
   model" and "the python process" is visible.
 * **CPU** -- cores busy during decode, at each thread count.
-* **Training** -- a stage-2 `voice-pass` on the live corpus: steps/sec, wall
-  time, peak RSS, CPU.
+* **Training** -- one pretrain run (`babble train --force`) on the live corpus:
+  steps/sec, wall time, peak RSS, CPU.
 
 Timing harness choices, stated so the numbers are reproducible:
 
@@ -39,7 +39,7 @@ Sub-commands (`all` orchestrates the rest, spawning a fresh process per thread
 count so torch's thread pool is sized before it touches a tensor):
 
     infer    one thread count, prints a JSON blob (also the thread-sweep worker)
-    train    one voice-pass, measured
+    train    one pretrain run, measured
     all      the whole report + BENCHMARKS-shaped tables
 """
 
@@ -138,18 +138,15 @@ def _cpu_ticks(pid: int | None = None) -> int | None:
 def _resolve_checkpoint(settings: Settings, explicit: Path | None) -> tuple[Path | None, str]:
     """Which weights to benchmark, and a label for the report.
 
-    Preference: an explicit `--checkpoint`, then the served `latest.pt`, then the
-    frozen `base.pt` (the real trained checkpoint on this box while the corpus is
-    still below the voice-pass trigger), then random init. Timing is essentially
-    weight-independent -- what matters is the geometry -- but the label keeps the
-    report honest about which bytes were loaded.
+    Preference: an explicit `--checkpoint`, then the served `latest.pt`, then
+    random init. Timing is essentially weight-independent -- what matters is
+    the geometry -- but the label keeps the report honest about which bytes
+    were loaded.
     """
     if explicit is not None:
         return explicit, f"explicit:{explicit.name}"
     if settings.latest_checkpoint.exists():
         return settings.latest_checkpoint, "latest.pt"
-    if settings.base_checkpoint.exists():
-        return settings.base_checkpoint, "base.pt"
     return None, "random-init"
 
 
@@ -430,12 +427,12 @@ def run_bot_latency(settings: Settings, checkpoint: Path | None, threads: int, r
     }
 
 
-# --- training: a measured voice-pass --------------------------------------
+# --- training: a measured pretrain run -------------------------------------
 
 
 def run_train(settings: Settings, threads: int) -> dict:
-    """Run `babble voice-pass --force` as a low-priority child (exactly how the
-    bot fires it) and watch its RSS and CPU from /proc while it runs."""
+    """Run `babble train --force` as a low-priority child (exactly how the bot
+    fires it) and watch its RSS and CPU from /proc while it runs."""
     env = {
         **os.environ,
         "BABBLE_DATA_DIR": str(settings.data_dir),
@@ -446,7 +443,7 @@ def run_train(settings: Settings, threads: int) -> dict:
     stop = threading.Event()
 
     proc = subprocess.Popen(
-        [sys.executable, "-m", "babble", "voice-pass", "--force", "--seed", "1"],
+        [sys.executable, "-m", "babble", "train", "--force", "--seed", "1"],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env,
     )
 
@@ -472,12 +469,12 @@ def run_train(settings: Settings, threads: int) -> dict:
     mon.join(timeout=1)
 
     cpu_s = monitor.last_ticks / CLK_TCK  # type: ignore[attr-defined]
-    steps = settings.voice_steps
+    steps = settings.train_steps
     # Parse the reported final step out of the CLI line if present.
     reported = out.strip().splitlines()[-1] if out.strip() else ""
     return {
         "threads": threads,
-        "voice_steps": steps,
+        "train_steps": steps,
         "wall_s": wall,
         "steps_per_s": steps / wall if wall > 0 else None,
         "peak_rss_kb": peak_rss["kb"],
@@ -507,7 +504,6 @@ def _settings_env(settings: Settings) -> dict:
     return {
         "BABBLE_DATA_DIR": str(settings.data_dir),
         "BABBLE_CHECKPOINT_DIR": str(settings.checkpoint_dir),
-        "BABBLE_EXTERNAL_DIR": str(settings.external_dir),
     }
 
 
@@ -544,7 +540,7 @@ def run_all(settings: Settings, checkpoint_arg: str, threads_sweep: list[int],
     print(f"  realistic bot reply latency ({default_threads} threads)…", file=sys.stderr, flush=True)
     bot = run_bot_latency(settings, _ckpt_path(checkpoint_arg), default_threads, max(10, runs // 2))
 
-    print("  voice-pass training…", file=sys.stderr, flush=True)
+    print("  training…", file=sys.stderr, flush=True)
     train = run_train(settings, settings.train_threads)
 
     return {
@@ -625,7 +621,7 @@ def main(argv: list[str] | None = None) -> int:
 
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--checkpoint", default="auto",
-                        help="checkpoint to load (default: auto -> latest.pt, base.pt, or random)")
+                        help="checkpoint to load (default: auto -> latest.pt, or random)")
     common.add_argument("--threads", type=int, default=torch.get_num_threads())
     common.add_argument("--runs", type=int, default=40)
     common.add_argument("--warmup", type=int, default=3)
@@ -636,7 +632,7 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("_coldwarm", parents=[common], help="internal: cold-vs-warm child")
 
-    p_train = sub.add_parser("train", help="measure one voice-pass")
+    p_train = sub.add_parser("train", help="measure one pretrain run")
     p_train.add_argument("--threads", type=int, default=None)
 
     p_all = sub.add_parser("all", parents=[common], help="the whole report")
@@ -726,7 +722,7 @@ def _print_all(r: dict) -> None:
           f"median {_fmt(bot['reply_latency_ms'], nd=0)}ms "
           f"(p25 {_fmt(bot['reply_latency_ms'],'p25',0)}–p75 {_fmt(bot['reply_latency_ms'],'p75',0)})")
     tr = r["training"]
-    print(f"\nvoice-pass ({tr['threads']} threads, {tr['voice_steps']} steps): "
+    print(f"\ntraining ({tr['threads']} threads, {tr['train_steps']} steps): "
           f"{tr['wall_s']:.1f}s wall, {tr['steps_per_s']:.1f} steps/s, "
           f"peak {tr['peak_rss_kb']/1024:.0f}MB, {tr['cores_busy']:.2f} cores")
     lb = r.get("live_bot_rss")

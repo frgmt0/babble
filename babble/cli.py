@@ -2,7 +2,8 @@
 
     babble fake-data          write made-up rows into both stores to play with
     babble backfill-corpus    flatten the stored correction pairs into the corpus
-    babble train --loop       the polite background trainer
+    babble train --force      pretrain from random init on the human corpus
+    babble train-status       rows since the last run, whether the trigger is due
     babble sample -p hello    continue a prefix from the latest checkpoint
     babble curve              the loss curve, as a picture
     babble summary            one-shot state of the whole thing
@@ -31,47 +32,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("bot", help="run the Discord bot (needs BABBLE_DISCORD_TOKEN)")
 
-    train = sub.add_parser("train", help="train from the stored corpus")
-    train.add_argument("--steps", type=int, default=None, help="steps per cycle")
-    train.add_argument("--loop", action="store_true", help="keep cycling: work, rest, repeat")
-    train.add_argument("--cycles", type=int, default=None, help="stop after N cycles")
-    train.add_argument("--seed", type=int, default=None, help="deterministic run")
+    train = sub.add_parser(
+        "train",
+        help="pretrain from random init on the consented human corpus -> checkpoints/latest.pt",
+    )
+    train.add_argument("--force", action="store_true", help="run even if the +N-row trigger is not due")
+    train.add_argument(
+        "--steps", type=int, default=None,
+        help="step CEILING, not a target -- the best-val checkpoint may win earlier (default: BABBLE_TRAIN_STEPS)",
+    )
+    train.add_argument(
+        "--patience", type=int, default=None,
+        help="stop after N non-improving checkpoint intervals, 0 = never (default: BABBLE_TRAIN_PATIENCE)",
+    )
+    train.add_argument("--seed", type=int, default=1, help="deterministic run")
     train.add_argument("--quiet", action="store_true", help="no per-checkpoint printing")
 
-    prep = sub.add_parser(
-        "prepare-base",
-        help="download/cache the external base corpus (dictionary words + stories)",
-    )
-    prep.add_argument("--words", type=Path, default=None, help="local word-list file (default: BABBLE_WORDLIST_PATH)")
-    prep.add_argument("--stories", type=Path, default=None, help="local stories file (skips the HF download)")
-    prep.add_argument("--story-chars", type=int, default=None, help="max characters of stories to keep (0 = all)")
-    prep.add_argument("--word-limit", type=int, default=None, help="max words to keep (0 = all)")
-
-    base = sub.add_parser(
-        "base-pretrain",
-        help="STAGE 1: train from random init on the external corpus -> checkpoints/base.pt",
-    )
-    base.add_argument("--steps", type=int, default=None, help="step budget (default: BABBLE_BASE_STEPS)")
-    base.add_argument("--seed", type=int, default=1, help="deterministic run")
-    base.add_argument("--quiet", action="store_true", help="no per-checkpoint printing")
-
-    voice = sub.add_parser(
-        "voice-pass",
-        help="STAGE 2: continue from base.pt on the human corpus -> latest.pt",
-    )
-    voice.add_argument("--force", action="store_true", help="run even if the +N-row trigger is not due")
-    voice.add_argument(
-        "--steps", type=int, default=None,
-        help="step CEILING, not a target -- the best-val checkpoint may win earlier (default: BABBLE_VOICE_STEPS)",
-    )
-    voice.add_argument(
-        "--patience", type=int, default=None,
-        help="stop after N non-improving checkpoint intervals, 0 = never (default: BABBLE_VOICE_PATIENCE)",
-    )
-    voice.add_argument("--seed", type=int, default=1, help="deterministic run")
-    voice.add_argument("--quiet", action="store_true", help="no per-checkpoint printing")
-
-    sub.add_parser("voice-status", help="show the voice-pass trigger state (rows since last pass)")
+    sub.add_parser("train-status", help="show the training trigger state (rows since the last run)")
 
     gen = sub.add_parser("sample", help="continue a prefix using the latest checkpoint")
     gen.add_argument("-p", "--prompt", default="hello", help="the prefix to continue from")
@@ -124,113 +101,50 @@ def main(argv: list[str] | None = None) -> int:
         return run_bot(settings)
 
     if args.command == "train":
+        from .identity import Pseudonymiser
+        from .logs import EventLog
         from .trainer import train
 
-        result = train(
-            settings,
-            steps=args.steps,
-            loop=args.loop,
-            max_cycles=args.cycles,
-            echo=not args.quiet,
-            seed=args.seed,
-        )
-        if result.steps_run == 0 and result.stopped_because == "no_data":
+        log = EventLog(settings, Pseudonymiser.load(settings), component="trainer", echo=not args.quiet)
+        try:
+            result = train(
+                settings, force=args.force, steps=args.steps, patience=args.patience,
+                seed=args.seed, echo=not args.quiet, log=log,
+            )
+        finally:
+            log.close()
+        if result.stopped_because == "no_data":
             print(
                 "Nothing to train on yet — no consented corpus rows.\n"
                 "Try `babble fake-data` to make some up, `babble backfill-corpus` if you have\n"
                 "old correction pairs lying around, or run the bot and talk to it.",
                 flush=True,
             )
-        else:
-            print(
-                f"ran {result.steps_run} steps to step {result.final_step}, "
-                f"{result.checkpoints_written} checkpoint(s), stopped: {result.stopped_because}",
-                flush=True,
-            )
-        return 0
-
-    if args.command == "prepare-base":
-        from .external import EmptyCorpusError, prepare_base_corpus
-
-        try:
-            result = prepare_base_corpus(
-                settings,
-                wordlist_path=args.words,
-                stories_path=args.stories,
-                word_limit=args.word_limit,
-                story_chars=args.story_chars,
-            )
-        except EmptyCorpusError as exc:
-            print(f"prepare-base failed: {exc}", flush=True)
-            return 1
-        print(result.summary(), flush=True)
-        return 0
-
-    if args.command == "base-pretrain":
-        from .external import EmptyCorpusError
-        from .identity import Pseudonymiser
-        from .logs import EventLog
-        from .pretrain import pretrain_base
-
-        log = EventLog(settings, Pseudonymiser.load(settings), component="base", echo=not args.quiet)
-        try:
-            result = pretrain_base(settings, steps=args.steps, seed=args.seed, echo=not args.quiet, log=log)
-        except EmptyCorpusError as exc:
-            print(f"base-pretrain failed: {exc}\nRun `babble prepare-base` first.", flush=True)
-            return 1
-        finally:
-            log.close()
-        print(
-            f"stage 1 (base): ran {result.steps_run} steps to step {result.final_step}, "
-            f"{result.checkpoints_written} checkpoint(s), loss {result.last_loss:.4f} -> {result.path}",
-            flush=True,
-        )
-        return 0
-
-    if args.command == "voice-pass":
-        from .identity import Pseudonymiser
-        from .logs import EventLog
-        from .pretrain import voice_pass
-
-        log = EventLog(settings, Pseudonymiser.load(settings), component="voice", echo=not args.quiet)
-        try:
-            result = voice_pass(
-                settings, force=args.force, steps=args.steps, patience=args.patience,
-                seed=args.seed, echo=not args.quiet, log=log,
-            )
-        finally:
-            log.close()
-        if result.ran:
-            stage = result.stage
-            val_s = f"{stage.val_loss:.4f}" if stage.val_loss is not None else "n/a"
-            early = " (stopped early)" if stage.stopped_early else ""
-            print(
-                f"stage 2 (voice): trained {result.rows_trained} human row(s) from base, "
-                f"best checkpoint at step {stage.final_step} (loss {stage.last_loss:.4f}, val {val_s}) "
-                f"after {stage.steps_run}/{stage.budget} steps{early} -> {stage.path}",
-                flush=True,
-            )
-        elif result.reason == "no_base":
-            print("No base checkpoint yet. Run `babble prepare-base` then `babble base-pretrain` first.", flush=True)
-        elif result.reason == "not_due":
+        elif result.stopped_because == "not_due":
             new = result.current_rows - result.last_trained_rows
             print(
-                f"Voice pass not due: {new} new row(s) since the last pass "
-                f"(threshold {settings.voice_trigger_rows}). Use --force to run anyway.",
+                f"Not due: {new} new row(s) since the last run "
+                f"(threshold {settings.train_trigger_rows}). Use --force to run anyway.",
                 flush=True,
             )
-        elif result.reason == "no_data":
-            print("Nothing to train on: no consented corpus rows.", flush=True)
+        else:
+            val_s = f"{result.val_loss:.4f}" if result.val_loss is not None else "n/a"
+            early = " (stopped early)" if result.stopped_early else ""
+            print(
+                f"trained {result.rows_trained} human row(s) from random init, "
+                f"best checkpoint at step {result.final_step} (loss {result.last_loss:.4f}, val {val_s}) "
+                f"after {result.steps_run}/{result.budget} steps{early} -> {settings.latest_checkpoint}",
+                flush=True,
+            )
         return 0
 
-    if args.command == "voice-status":
-        from .pretrain import voice_trigger
+    if args.command == "train-status":
+        from .trainer import train_trigger
 
-        status = voice_trigger(settings)
+        status = train_trigger(settings)
         print(
-            f"corpus rows: {status.current_rows} · last voice pass at: {status.last_trained_rows} rows · "
+            f"corpus rows: {status.current_rows} · last trained at: {status.last_trained_rows} rows · "
             f"new since: {status.new_rows} · threshold: {status.threshold} · "
-            f"base.pt: {'present' if status.has_base else 'MISSING'} · "
             f"due: {'yes' if status.due else 'no'}",
             flush=True,
         )
@@ -350,7 +264,7 @@ def main(argv: list[str] | None = None) -> int:
         added = seed_fake_data(settings, log=log, user_id=args.user or FAKE_USER)
         print(f"added {added} fake row(s) to {settings.interactions_path}", flush=True)
         print(f"and flattened them into {settings.corpus_path}", flush=True)
-        print("now try: babble train --steps 100", flush=True)
+        print("now try: babble train --force --steps 100", flush=True)
         log.close()
         return 0
 

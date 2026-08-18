@@ -42,27 +42,17 @@ def test_no_arguments_prints_help(cli, capsys):
     assert "babble" in capsys.readouterr().out
 
 
-def test_two_stage_pipeline_runs_end_to_end_through_the_cli(cli, capsys, monkeypatch):
-    monkeypatch.setenv("BABBLE_EXTERNAL_DIR", str(cli / "external"))
-    monkeypatch.setenv("BABBLE_VOICE_TRIGGER_ROWS", "100")  # so nothing auto-fires
-    words = cli / "words.txt"
-    words.write_text("apple\nbanana\ncherry\ndog\ncat\n", encoding="utf-8")
-    stories = cli / "stories.txt"
-    stories.write_text("A cat sat on a mat.<|endoftext|>A dog ran home.", encoding="utf-8")
+def test_train_runs_end_to_end_through_the_cli_with_no_external_download(cli, capsys, monkeypatch):
+    monkeypatch.setenv("BABBLE_TRAIN_TRIGGER_ROWS", "100")  # so nothing auto-fires without --force
 
-    # Stage 0: prepare the external corpus from local files (no network).
-    assert main(["prepare-base", "--words", str(words), "--stories", str(stories)]) == 0
-    # Stage 1: base pretrain from scratch -> base.pt.
-    assert main(["base-pretrain", "--steps", "4", "--quiet"]) == 0
-
-    settings = Settings.from_env()
-    assert settings.base_checkpoint.exists()
-
-    # A voice pass with no consented rows yet is a clean no-op.
-    assert main(["voice-pass", "--force"]) == 0
+    # No consented rows yet: a clean no-op, no external download, no base.pt.
+    assert main(["train", "--force"]) == 0
     assert "Nothing to train on" in capsys.readouterr().out
 
-    # Seed some consented human rows, then run stage 2 -> latest.pt.
+    settings = Settings.from_env()
+    assert not (settings.checkpoint_dir / "base.pt").exists()
+
+    # Seed some consented human rows, then pretrain from random init -> latest.pt.
     ids = Pseudonymiser.load(settings)
     ConsentStore(settings.consent_path).grant("human-1", "corpus")
     store = CorpusStore(settings.corpus_path)
@@ -70,13 +60,13 @@ def test_two_stage_pipeline_runs_end_to_end_through_the_cli(cli, capsys, monkeyp
     for text in ("hey there", "wacky wacky", "babble on"):
         store.append(CorpusRow(id=make_corpus_id(text, author), text=text, author=author, source=SOURCE_MENTION))
 
-    assert main(["voice-pass", "--force", "--steps", "4"]) == 0
+    assert main(["train", "--force", "--steps", "4"]) == 0
     assert settings.latest_checkpoint.exists()
-    # base.pt is not latest.pt: the voice pass never overwrote the frozen base.
-    assert settings.base_checkpoint.exists()
+    assert not (settings.checkpoint_dir / "base.pt").exists()
 
-    assert main(["voice-status"]) == 0
-    assert "base.pt: present" in capsys.readouterr().out
+    assert main(["train-status"]) == 0
+    out = capsys.readouterr().out
+    assert "corpus rows" in out and "threshold" in out
 
 
 def test_summary_works_on_a_fresh_install(cli, capsys):
@@ -88,7 +78,7 @@ def test_summary_works_on_a_fresh_install(cli, capsys):
 
 def test_the_readme_quickstart_runs_end_to_end(cli, capsys):
     assert main(["fake-data"]) == 0
-    assert main(["train", "--steps", "4", "--seed", "1"]) == 0
+    assert main(["train", "--force", "--steps", "4", "--seed", "1"]) == 0
     assert main(["sample", "--prompt", "hello"]) == 0
     assert main(["curve"]) == 0
     assert main(["summary"]) == 0
@@ -122,14 +112,24 @@ def test_the_bot_refuses_to_start_without_a_token_and_says_so(cli, capsys):
 
 
 def test_training_with_nothing_to_learn_from_explains_itself(cli, capsys):
-    assert main(["train", "--steps", "2"]) == 0
+    assert main(["train", "--force", "--steps", "2"]) == 0
 
     assert "fake-data" in capsys.readouterr().out
 
 
+def test_train_without_force_is_a_no_op_below_the_trigger_threshold(cli, capsys):
+    main(["fake-data"])  # a handful of rows -- nowhere near the default threshold
+
+    assert main(["train", "--steps", "2"]) == 0
+
+    out = capsys.readouterr().out
+    assert "Not due" in out
+    assert "--force" in out
+
+
 def test_logs_are_written_and_readable_back(cli, capsys):
     main(["fake-data"])
-    main(["train", "--steps", "2", "--seed", "1", "--quiet"])
+    main(["train", "--force", "--steps", "2", "--seed", "1", "--quiet"])
     capsys.readouterr()
 
     assert main(["logs", "-n", "50", "--json"]) == 0

@@ -14,8 +14,8 @@
 #   - merge, rebase or force anything -- only `git merge --ff-only`
 #   - report success if the bot doesn't come back up after a restart
 #
-# Skips (exit 0, try again next tick) rather than fails when a voice pass or
-# base pretrain is currently running, so a restart never kills one mid-write.
+# Skips (exit 0, try again next tick) rather than fails when a training run
+# is currently in flight, so a restart never kills one mid-write.
 #
 # Every path below is overridable by env var so this runs from any checkout,
 # not just this box:
@@ -33,7 +33,7 @@
 #   BABBLE_UPDATE_POLL_INTERVAL    seconds between readiness polls (default: 2)
 #   BABBLE_TRAIN_SUBCOMMANDS       space-separated `babble` subcommands that
 #                                count as "training in flight"
-#                                (default: "voice-pass base-pretrain train")
+#                                (default: "train")
 set -euo pipefail
 
 LIVE_DIR="${BABBLE_LIVE_DIR:-$HOME/babble-live}"
@@ -44,7 +44,7 @@ DATA_DIR="${BABBLE_DATA_DIR:-$LIVE_DIR/data}"
 LOG_DIR="${BABBLE_LOG_DIR:-$LIVE_DIR/logs}"
 RESTART_TIMEOUT="${BABBLE_UPDATE_RESTART_TIMEOUT:-90}"
 POLL_INTERVAL="${BABBLE_UPDATE_POLL_INTERVAL:-2}"
-TRAIN_SUBCOMMANDS="${BABBLE_TRAIN_SUBCOMMANDS:-voice-pass base-pretrain train}"
+TRAIN_SUBCOMMANDS="${BABBLE_TRAIN_SUBCOMMANDS:-train}"
 
 if [ -n "${BABBLE_UPDATE_VENV_BIN:-}" ]; then
   PATH="$BABBLE_UPDATE_VENV_BIN:$PATH"
@@ -106,17 +106,17 @@ EOF
   mv "$tmp" "$STATE_FILE"
 }
 
-# True if a `babble voice-pass` / `base-pretrain` / `train` process is
-# currently running, from any user's cmdline on the box. Reads each process's
-# real argv out of /proc (NUL-separated, so a token is compared to
-# "voice-pass" etc. exactly) rather than grepping the flattened command line
-# with `pgrep -f` -- a substring match there is one long unrelated argument
-# containing the words "babble" and "train" away from a false positive (an
-# editor buffer, a log tail, another agent's prompt on a shared box).
+# True if a `babble train` process is currently running, from any user's
+# cmdline on the box. Reads each process's real argv out of /proc
+# (NUL-separated, so a token is compared to "train" exactly) rather than
+# grepping the flattened command line with `pgrep -f` -- a substring match
+# there is one long unrelated argument containing the words "babble" and
+# "train" away from a false positive (an editor buffer, a log tail, another
+# agent's prompt on a shared box).
 #
-# Two shapes both count: the auto-trigger's own `python -m babble voice-pass`
-# (pretrain.py's VoiceAutoTrigger), and the installed console script, whose
-# shebang the kernel resolves to `<venv>/python <venv>/bin/babble voice-pass`
+# Two shapes both count: the auto-trigger's own `python -m babble train`
+# (trainer.py's AutoTrainTrigger), and the installed console script, whose
+# shebang the kernel resolves to `<venv>/python <venv>/bin/babble train`
 # -- argv0 is the interpreter in both, so the second token is what tells them
 # apart from an unrelated python process.
 training_in_flight() {
@@ -197,9 +197,9 @@ if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
   fail "working tree in $LIVE_DIR has uncommitted tracked changes -- refusing to merge"
 fi
 
-# --- 4. never restart mid-write: a voice pass or base pretrain in flight
-# means skip this cycle, not fail it -- the next tick will pick it up once
-# the pass has finished and written its checkpoint.
+# --- 4. never restart mid-write: a training run in flight means skip this
+# cycle, not fail it -- the next tick will pick it up once the run has
+# finished and written its checkpoint.
 if training_in_flight; then
   write_state "$local_sha" "$remote_sha" false "skipped_training"
   log_event "skipped" "reason=training_in_flight" "commit=${local_sha:0:12}"

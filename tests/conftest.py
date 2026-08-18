@@ -31,7 +31,6 @@ def settings(tmp_path: Path) -> Settings:
     s.n_layer, s.n_head, s.n_embd, s.block_size = 2, 2, 32, 64
     s.batch_size = 2
     s.checkpoint_every = 2
-    s.rest_seconds = 0.01
     s.max_new_tokens = 16
     s.ensure_dirs()
     return s

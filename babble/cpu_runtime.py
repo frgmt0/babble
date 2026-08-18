@@ -98,9 +98,9 @@ def model_state_dict(model: torch.nn.Module) -> dict[str, Any]:
 def maybe_compile(model: torch.nn.Module, *, enabled: bool | None = None) -> torch.nn.Module:
     """Optionally `torch.compile` the module for CPU inductor speedups.
 
-    Off by default: compile time dominates short voice-pass runs, and the
+    Off by default: compile time dominates a short training run, and the
     Discord bot wants the first reply fast. Set `BABBLE_TORCH_COMPILE=1` (or
-    pass `enabled=True`) when doing a long base pretrain.
+    pass `enabled=True`) when doing a long one.
 
     Compile is lazy: this returns an `OptimizedModule` immediately and any
     inductor failure surfaces on the first forward, not here. Pair every save

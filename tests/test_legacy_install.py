@@ -201,7 +201,7 @@ def test_a_legacy_install_trains_instead_of_going_idle(legacy, ids, log, read_lo
     Nobody runs a migration command in this test, because nobody ran one on the
     live box either -- the trainer has to pick the data up by itself.
     """
-    result = train(legacy, steps=2, echo=False, seed=1, log=log)
+    result = train(legacy, force=True, steps=2, echo=False, seed=1, log=log)
 
     assert not read_log("train.idle"), "trainer went idle on an install that has data"
     cycles = read_log("train.cycle.start")

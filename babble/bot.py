@@ -22,8 +22,8 @@ from .discord_feed import CollectionFeed
 from .generate import CheckpointGenerator
 from .identity import Pseudonymiser
 from .logs import EventLog
-from .pretrain import VoiceAutoTrigger
 from .publish import GrowthPublisher
+from .trainer import AutoTrainTrigger
 
 #: How often the background task drains the collection feed's coalescing buffer.
 #: Shorter than the feed's window, so the last row of a trickle still posts a
@@ -56,17 +56,17 @@ class BabbleClient(discord.Client):
                 every_rows=settings.hf_publish_every_rows,
                 every_chars=settings.hf_publish_every_chars,
             )
-            # The voice-pass trigger: after every N new corpus rows, stage 2
-            # re-runs from the frozen base and writes a new latest.pt, which the
-            # CheckpointGenerator hot-reloads. Inert until a base.pt exists.
-            voice_trigger = VoiceAutoTrigger(settings, log)
+            # The training trigger: after every N new corpus rows, a fresh
+            # pretrain run fires and writes a new latest.pt, which the
+            # CheckpointGenerator hot-reloads.
+            train_trigger = AutoTrainTrigger(settings, log)
             brain = Babble(
                 settings,
                 generator=CheckpointGenerator(settings, log),
                 log=log,
                 feed=self.feed,
                 publisher=publisher,
-                voice_trigger=voice_trigger,
+                train_trigger=train_trigger,
             )
             # Seed milestone markers from the corpus already on disk, so a
             # restart does not re-announce the last milestone on the next row.
@@ -267,7 +267,7 @@ def run_bot(settings: Settings | None = None) -> int:
         print(
             f"No Discord token. Set {TOKEN_ENV} in your environment or .env file.\n"
             "Everything except the gateway works without it:\n"
-            "  babble fake-data && babble train --steps 50\n"
+            "  babble fake-data && babble train --force --steps 50\n"
             "  babble sample --prompt hello\n"
             "  babble export",
             flush=True,

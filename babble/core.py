@@ -162,10 +162,11 @@ class _Publisher(Protocol):
     def maybe_publish(self) -> None: ...
 
 
-class _VoiceTrigger(Protocol):
-    """The one method `core` calls after a fresh row: run a voice pass if the
-    corpus has grown by enough rows since the last one. A trigger, not a loop --
-    the trigger's own business, kept structural so the brain never imports torch."""
+class _TrainTrigger(Protocol):
+    """The one method `core` calls after a fresh row: run a training pass if
+    the corpus has grown by enough rows since the last one. A trigger, not a
+    loop -- the trigger's own business, kept structural so the brain never
+    imports torch."""
 
     def maybe_run(self) -> None: ...
 
@@ -312,7 +313,7 @@ class Babble:
         bot_user_id: str | None = None,
         feed: _CollectionFeed | None = None,
         publisher: _Publisher | None = None,
-        voice_trigger: _VoiceTrigger | None = None,
+        train_trigger: _TrainTrigger | None = None,
     ) -> None:
         settings.ensure_dirs()
         self.settings = settings
@@ -330,7 +331,7 @@ class Babble:
         # without them keeps working and stays token-free and network-free.
         self.feed = feed
         self.publisher = publisher
-        self.voice_trigger = voice_trigger
+        self.train_trigger = train_trigger
 
     # --- entry points ---------------------------------------------------
 
@@ -529,10 +530,10 @@ class Babble:
             # A new row may have pushed the corpus past the publish threshold.
             if self.publisher is not None:
                 self.publisher.maybe_publish()
-            # ...and past the voice-pass trigger: every N new rows, re-run stage 2
-            # from the frozen base so the model picks up the newest human writing.
-            if self.voice_trigger is not None:
-                self.voice_trigger.maybe_run()
+            # ...and past the training trigger: every N new rows, a fresh
+            # pretrain run fires so the model picks up the newest human writing.
+            if self.train_trigger is not None:
+                self.train_trigger.maybe_run()
         return fresh
 
     # --- behaviour ------------------------------------------------------
