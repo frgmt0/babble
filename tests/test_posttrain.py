@@ -313,6 +313,103 @@ def test_post_train_only_trains_on_consented_pairs(settings, ids):
     assert result.pairs_trained == len(PAIRS)
 
 
+# --- synthetic pairs (opt-in, separate from human corrections) -------------
+
+
+def _seed_synthetic(settings, ids, pairs, *, author="synth-author-raw"):
+    """A synthetic pair *and* the consented corpus row it claims to be built
+    from -- `trainable_synthetic_pairs` re-checks the source row's consent at
+    train time (see test_synthetic.py), so a pair with no matching consented
+    row is correctly untrainable and would make this helper misleading."""
+    from babble.corpus import SOURCE_MENTION, CorpusRow, CorpusStore, make_corpus_id
+    from babble.synthetic import SyntheticPair, SyntheticPairStore, make_synthetic_id
+
+    ConsentStore(settings.consent_path).grant(author)
+    author_p = ids.user(author)
+    corpus = CorpusStore(settings.corpus_path)
+    store = SyntheticPairStore(settings.synthetic_pairs_path)
+    for i, (prompt, response) in enumerate(pairs):
+        row_text = f"source row {i} {response}"
+        row_id = make_corpus_id(row_text, author_p)
+        corpus.append(
+            CorpusRow(id=row_id, text=row_text, author=author_p, source=SOURCE_MENTION)
+        )
+        store.append(
+            SyntheticPair(
+                id=make_synthetic_id(row_id, prompt, "generic"),
+                prompt=prompt,
+                response=response,
+                source_row_id=row_id,
+                method="generic",
+            )
+        )
+
+
+def test_post_train_ignores_synthetic_pairs_by_default(settings, ids):
+    """`include_synthetic` defaults to False: a synthetic pair sitting in
+    `synthetic_pairs.jsonl` must never silently get trained on."""
+    _seed_pretrain(settings)
+    _seed_pairs(settings, ids, PAIRS)
+    _seed_synthetic(settings, ids, [("made up prompt", "made up response")])
+
+    result = post_train(settings, force=True, steps=4, seed=1, echo=False, ids=ids)
+
+    assert result.ran
+    assert result.pairs_trained == len(PAIRS)
+    assert result.synthetic_pairs_trained == 0
+
+
+def test_post_train_with_include_synthetic_trains_on_both(settings, ids):
+    _seed_pretrain(settings)
+    _seed_pairs(settings, ids, PAIRS)
+    synthetic = [(f"synthetic prompt {i}", f"synthetic response {i}") for i in range(5)]
+    _seed_synthetic(settings, ids, synthetic)
+
+    result = post_train(
+        settings, force=True, steps=4, seed=1, echo=False, ids=ids, include_synthetic=True
+    )
+
+    assert result.ran
+    assert result.pairs_trained == len(PAIRS)
+    assert result.synthetic_pairs_trained == len(synthetic)
+
+
+def test_post_train_with_only_synthetic_pairs_still_trains(settings, ids):
+    """No human corrections at all, but synthetic pairs exist and
+    `include_synthetic` is set -- this must run, not report `no_data`."""
+    _seed_pretrain(settings)
+    _seed_synthetic(settings, ids, [("synthetic prompt", "synthetic response")])
+
+    result = post_train(
+        settings, force=True, steps=2, echo=False, ids=ids, include_synthetic=True
+    )
+
+    assert result.ran
+    assert result.pairs_trained == 0
+    assert result.synthetic_pairs_trained == 1
+
+
+def test_post_train_without_include_synthetic_and_zero_human_pairs_is_no_data(settings, ids):
+    """Synthetic pairs exist, but `include_synthetic` was not passed --
+    behaviour must be identical to there being no data at all."""
+    _seed_pretrain(settings)
+    _seed_synthetic(settings, ids, [("synthetic prompt", "synthetic response")])
+
+    result = post_train(settings, force=True, steps=2, echo=False, ids=ids)
+
+    assert not result.ran and result.reason == "no_data"
+
+
+def test_post_train_synthetic_inclusion_does_not_affect_the_pair_trigger(settings, ids):
+    """The +N-pair trigger counts human corrections only -- generating (or
+    including) synthetic pairs must never make a post-train due on its own."""
+    _seed_pretrain(settings)
+    settings.post_trigger_pairs = 100
+    _seed_synthetic(settings, ids, [(f"p{i}", f"r{i}") for i in range(200)])
+
+    assert post_trigger(settings).due is False
+
+
 # --- CLI wiring --------------------------------------------------------------
 
 

@@ -222,6 +222,14 @@ class Settings:
         return self.data_dir / "corpus.jsonl"
 
     @property
+    def synthetic_pairs_path(self) -> Path:
+        """Synthetic (prompt, response) correction pairs, generated from the
+        corpus rather than typed by a human -- kept in their own file, never
+        appended to `interactions.jsonl`, so a synthetic pair can never be
+        mistaken for a human correction. See `babble/synthetic.py`."""
+        return self.data_dir / "synthetic_pairs.jsonl"
+
+    @property
     def consent_path(self) -> Path:
         return self.data_dir / "consent.json"
 

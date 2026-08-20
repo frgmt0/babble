@@ -54,13 +54,14 @@ source .venv/bin/activate
 
 babble fake-data                # made-up rows in both stores, to chew on
 babble train --force            # STAGE 1: random init -> the human corpus -> latest.pt
+babble synth-generate           # postulate prompts for reply-shaped corpus rows -> synthetic_pairs.jsonl
 babble post-train --force       # STAGE 2: fine-tune latest.pt on the correction pairs
 babble sample --prompt hello    # continue a prefix from the newest checkpoint
 babble curve                    # the loss curve, as a picture
 babble summary                  # step, loss, checkpoints, consent, row counts
 babble backfill-corpus          # flatten old pairs into the corpus (runs itself too)
 babble export                   # build the HuggingFace dataset directory
-pytest                          # 400+ tests, none of which need a token
+pytest                          # 500+ tests, none of which need a token
 ```
 
 `babble train` is the one command that pretrains the model — see
@@ -477,6 +478,67 @@ pairs.`) rather than crashing or writing a degenerate checkpoint.
 
 `babble summary` reports the pair count and whether a post-train is due
 alongside everything else.
+
+## Synthetic correction pairs
+
+ro's ask: post-train has only ever had a few dozen human corrections to learn
+from, and adding more one at a time is slow. Rather than inventing text
+nobody wrote, `babble synth-generate` looks at the corpus that already
+exists for rows that read like a *reply* or an *interjection* — his
+example, `"well the visual shells were also just *fine* again i wasnt drawn
+to *any* of them"` — and postulates the prompt each one was plausibly
+answering.
+
+**The response side is never rewritten.** A synthetic pair pairs a
+*synthesized prompt* with the *verbatim* corpus row as the response. That is
+the whole trick: voice replication is "to a tee" by construction, because the
+response half is not synthesized at all — it is the same text a real person
+already wrote, byte for byte. Only the prompt in front of it is new.
+
+```bash
+babble synth-generate      # scan the corpus -> data/synthetic_pairs.jsonl
+babble synth-status        # synthetic vs human pair counts
+```
+
+**Be honest about the method.** There is no LLM credential wired into this
+repo — `babble/config.py` has no API-key setting, and the dependency list is
+`torch` / `discord.py` / `huggingface_hub`, nothing that talks to a model API
+— so "postulate" here does not mean asking one. It means a small set of
+surface heuristics: an interjection at the front (`yeah`, `well`, `honestly`,
+…), a continuation word (`also`, `again`, `still`), an emphasis marker
+(`*word*`), a trailing `?`, each mapped to a template filled with a
+stopword-stripped topic phrase pulled from the row itself
+(`babble/synthetic.py`, `is_reactive` / `synthesize_prompt`). It is not
+language understanding, and the postulated prompts read like it — clunky,
+sometimes ungrammatical, always guessable as templated rather than typed. It
+is enough to demonstrate the mechanism ro described; it is not enough to
+call the prompts natural.
+
+**Kept strictly apart from human corrections.** Every pair lives in its own
+file, `data/synthetic_pairs.jsonl` (`Settings.synthetic_pairs_path`), and is
+never appended to `interactions.jsonl` — there is no code path that mixes
+the two files. `babble post-train` ignores `synthetic_pairs.jsonl` entirely
+unless told `--include-synthetic`; generating synthetic pairs never changes
+what a plain `babble post-train` trains on, and never makes a post-train
+*due* — the +N-pair trigger counts human corrections only. Deleting the file
+(or just never passing the flag) turns synthetic data off completely.
+
+**Re-runnable.** Every pair is content-addressed against its source corpus
+row, so running `synth-generate` again after the corpus has grown only adds
+pairs for the rows that are new since the last run — it is safe to wire into
+the same cadence as `babble train`, and re-running it twice in a row adds
+nothing the second time.
+
+**Consent, twice.** A synthetic pair is only ever built from a corpus row
+that currently passes the same consent + blocklist gate the trainer applies,
+and `--include-synthetic` re-checks that gate again at train time — so a
+`!babble forget` that purges someone's corpus row also stops any synthetic
+pair built from it from being trained on, the same belt-and-braces promise
+`trainable_pairs` gives human corrections.
+
+```bash
+babble post-train --force --include-synthetic   # human + synthetic pairs -> latest.pt
+```
 
 ## Why it babbled at loss 0.02
 
@@ -1098,6 +1160,7 @@ babble/
   trainer.py     the polite trainer: random init, human corpus, best-val + trigger
   post_state.py  the post-train +N-pair trigger and pair filtering (torch-free)
   posttrain.py   post-train: fine-tune the pretrained checkpoint on the pairs
+  synthetic.py   postulated-prompt pairs from reply-shaped corpus rows (torch-free)
   core.py        ALL bot behaviour, with zero Discord imports
   bot.py         thin discord.py adapter — the only file that imports discord
   consent.py     who agreed and to what; two scopes; fails closed

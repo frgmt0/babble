@@ -30,6 +30,12 @@ running bot watches for that crossing itself, deferring to a pretrain still in
 flight -- see `AutoPostTrigger`), or on demand with `--force`. The last-trained
 pair count is persisted (`checkpoints/post_state.json`) so a restart never
 re-fires.
+
+`include_synthetic=True` (`--include-synthetic` on the CLI) additionally
+trains on the postulated-prompt pairs in `data/synthetic_pairs.jsonl` -- see
+`synthetic.py`. Off by default and never counted by the +N-pair trigger, so
+generating synthetic pairs never changes when a post-train fires; it only
+changes what an explicit `--include-synthetic` run trains on.
 """
 
 from __future__ import annotations
@@ -62,6 +68,7 @@ from .post_state import (
     write_post_state,
 )
 from .store import Interaction
+from .synthetic import SyntheticPair, trainable_synthetic_pairs
 from .tokenizer import Example, build_example
 from .trainer import (
     SCRATCH_DIR,
@@ -97,6 +104,7 @@ class PostTrainResult:
     ran: bool
     reason: str
     pairs_trained: int = 0
+    synthetic_pairs_trained: int = 0
     current_pairs: int = 0
     last_trained_pairs: int = 0
     final_step: int = 0
@@ -156,6 +164,24 @@ def _build_examples(pairs: list[Interaction], block_size: int) -> list[Example]:
     return [build_example(p.prompt, p.chosen, block_size) for p in pairs]
 
 
+def _combined_examples(
+    pairs: list[Interaction], synthetic: list[SyntheticPair], block_size: int
+) -> list[Example]:
+    """Human and synthetic pairs, interleaved by sorting on their (both
+    content-hash) ids rather than concatenating the two lists -- so the
+    train/val tail-slice in `_split_val` below draws from a mix of both kinds
+    instead of `val` landing entirely inside whichever pool was appended
+    last. Both input lists already come pre-sorted by id from
+    `trainable_pairs` / `trainable_synthetic_pairs`; re-sorting the merge is
+    what actually interleaves them.
+    """
+    items = [(p.id, p.prompt, p.chosen) for p in pairs] + [
+        (p.id, p.prompt, p.response) for p in synthetic
+    ]
+    items.sort(key=lambda item: item[0])
+    return [build_example(prompt, response, block_size) for _, prompt, response in items]
+
+
 def post_train(
     settings: Settings,
     *,
@@ -167,6 +193,7 @@ def post_train(
     log: EventLog | None = None,
     ids: Pseudonymiser | None = None,
     blocklist: Blocklist | None = None,
+    include_synthetic: bool = False,
 ) -> PostTrainResult:
     """Fine-tune the pretrained checkpoint on the correction pairs and write
     the winning step to `latest.pt` -- the checkpoint the bot serves.
@@ -178,6 +205,15 @@ def post_train(
     are no-ops without a held-out validation set (too few pairs to spare
     any), in which case every checkpoint interval is written in turn, exactly
     like the pretrainer without validation.
+
+    `include_synthetic=True` also trains on `trainable_synthetic_pairs` --
+    the postulated-prompt pairs `babble synth-generate` writes to
+    `data/synthetic_pairs.jsonl` (see `synthetic.py`). Off by default: a
+    synthetic pair is never trained on unless this is explicitly set (or
+    `--include-synthetic` is passed on the CLI), so generating them is always
+    a separate, inspectable step from training on them. The +N-pair trigger
+    still counts human pairs only -- generating synthetic pairs never makes a
+    post-train due on its own.
     """
     settings.ensure_dirs()
     log = log or NullLog()
@@ -199,7 +235,8 @@ def post_train(
         )
 
     pairs = trainable_pairs(settings, ids, blocklist)
-    if not pairs:
+    synthetic_pairs = trainable_synthetic_pairs(settings, ids, blocklist) if include_synthetic else []
+    if not pairs and not synthetic_pairs:
         log.event("post.skipped", reason="no_data")
         return PostTrainResult(
             False, "no_data",
@@ -223,7 +260,11 @@ def post_train(
     model = _load_pretrained(pretrained_path)
     optimizer = _build_optimizer(model, settings)
 
-    examples = _build_examples(pairs, model.config.block_size)
+    examples = (
+        _combined_examples(pairs, synthetic_pairs, model.config.block_size)
+        if include_synthetic
+        else _build_examples(pairs, model.config.block_size)
+    )
     train_examples, val_examples = _split_val(examples)
     run_patience = patience if patience is not None else settings.post_patience
     rng = random.Random(seed)
@@ -232,6 +273,7 @@ def post_train(
     log.event(
         "post.start",
         pairs=len(pairs),
+        synthetic_pairs=len(synthetic_pairs),
         examples=len(examples),
         block_size=model.config.block_size,
         steps=budget,
@@ -322,6 +364,7 @@ def post_train(
         loss=round(final_loss, 6) if final_loss is not None else None,
         val_loss=round(final_val, 6) if final_val is not None else None,
         pairs_trained=len(pairs),
+        synthetic_pairs_trained=len(synthetic_pairs),
         last_trained_pairs=current,
         checkpoints=checkpoints,
         stopped_early=stop,
@@ -332,6 +375,7 @@ def post_train(
         True,
         "trained",
         pairs_trained=len(pairs),
+        synthetic_pairs_trained=len(synthetic_pairs),
         current_pairs=current,
         last_trained_pairs=current,
         final_step=final_step,
