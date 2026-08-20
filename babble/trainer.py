@@ -621,14 +621,41 @@ def _maybe_auto_publish(
     return _auto_publish(settings, log, feed, state)
 
 
-def append_curve(settings: Settings, step: int, loss: float, sample_text: str, rows: int) -> None:
-    entry = {
+def append_curve(
+    settings: Settings,
+    step: int,
+    loss: float,
+    sample_text: str,
+    *,
+    stored_rows: int,
+    train_rows: int,
+    val_rows: int = 0,
+    val_loss: float | None = None,
+) -> None:
+    """Append one checkpoint line to `loss.jsonl`.
+
+    `loss` is the window-averaged *training* loss for the interval. When a
+    held-out set exists, `val_loss` is logged alongside it so runs are
+    comparable across dates — comparing train loss to someone else's val loss
+    is how "2.44 looks worse than 1.61" happens when nothing regressed.
+
+    Row counts are split on purpose: `stored_rows` is the raw corpus size the
+    +N-row trigger measures (same as `train_state.json`), while `train_rows` /
+    `val_rows` are the split sizes that actually fed this checkpoint. The legacy
+    `rows` field mirrors `train_rows` so old readers keep working.
+    """
+    entry: dict = {
         "step": step,
         "loss": round(loss, 6),
-        "rows": rows,
+        "rows": train_rows,
+        "stored_rows": stored_rows,
+        "train_rows": train_rows,
+        "val_rows": val_rows,
         "at": utcnow_iso(),
         "sample": sample_text,
     }
+    if val_loss is not None:
+        entry["val_loss"] = round(val_loss, 6)
     settings.checkpoint_dir.mkdir(parents=True, exist_ok=True)
     with open(settings.loss_curve_path, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -721,11 +748,14 @@ def read_train_state(settings: Settings) -> dict:
         return {}
 
 
-def write_train_state(settings: Settings, *, rows: int, step: int) -> None:
-    atomic_write_text(
-        settings.train_state_path,
-        json.dumps({"last_trained_rows": rows, "step": step, "at": utcnow_iso()}, indent=2),
-    )
+def write_train_state(settings: Settings, *, rows: int, step: int, steps_run: int | None = None) -> None:
+    payload: dict = {"last_trained_rows": rows, "step": step, "at": utcnow_iso()}
+    # `step` is the best-val checkpoint written to `latest.pt`; `steps_run` is
+    # how far the loop actually got (loss.jsonl may run past `step` before early
+    # stop). Both belong in state so the two files are not read as contradictory.
+    if steps_run is not None:
+        payload["steps_run"] = steps_run
+    atomic_write_text(settings.train_state_path, json.dumps(payload, indent=2))
 
 
 def train_trigger(settings: Settings) -> TrainTrigger:
@@ -954,7 +984,7 @@ def train(
         log.event("train.interrupt", signal=interrupt.signal_name, step=step)
 
     current = corpus_row_count(settings)
-    write_train_state(settings, rows=current, step=final_step)
+    write_train_state(settings, rows=current, step=final_step, steps_run=step)
 
     cycle_seconds = round(time.perf_counter() - cycle_started, 2)
     log.event(
@@ -1085,7 +1115,16 @@ def _checkpoint(
     overfitting = val_enabled and overfit_signal(mean_loss, prev_loss, val_loss, prev_val_loss)
 
     path = save_checkpoint(settings, model, optimizer, step, mean_loss)
-    append_curve(settings, step, mean_loss, text, len(rows))
+    append_curve(
+        settings,
+        step,
+        mean_loss,
+        text,
+        stored_rows=corpus_row_count(settings),
+        train_rows=len(rows),
+        val_rows=val_rows,
+        val_loss=val_loss,
+    )
 
     log.event(
         "train.checkpoint",

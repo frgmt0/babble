@@ -179,6 +179,9 @@ def test_train_respects_the_trigger_and_persists_last_count(settings, ids):
 
     # The last-trained count is persisted, so it does not re-fire on the next call.
     assert train_trigger(settings).due is False
+    state = json.loads(settings.train_state_path.read_text(encoding="utf-8"))
+    assert state["last_trained_rows"] == CorpusStore(settings.corpus_path).count()
+    assert "steps_run" in state
     again = train(settings, steps=2, echo=False, ids=ids)
     assert not again.ran and again.stopped_because == "not_due"
 

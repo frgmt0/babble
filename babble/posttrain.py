@@ -252,7 +252,16 @@ def post_train(
         mean = sum(window) / len(window) if window else last_loss
         val = eval_loss(model, val_examples) if val_examples else None
         checkpoints += 1
-        append_curve(settings, step, mean, "", len(examples))
+        append_curve(
+            settings,
+            step,
+            mean,
+            "",
+            stored_rows=pair_count(settings),
+            train_rows=len(train_examples),
+            val_rows=len(val_examples),
+            val_loss=val,
+        )
         log.event("post.checkpoint", step=step, loss=mean, val_loss=val, examples=len(examples))
         if echo:
             val_s = f"{val:.4f}" if val is not None else "   n/a"
