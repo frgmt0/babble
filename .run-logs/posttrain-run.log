@@ -1,0 +1,14 @@
+/home/beckett/Projects/babble/.beckett/worktrees/run-20260820-pretrain-on-current-corpus-synthetic-in/.venv/lib/python3.12/site-packages/torch/_subclasses/functional_tensor.py:368: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+2026-08-20T06:47:07+00:00  train.polite           nice=19 threads=2 cpus=8 device=cpu mkldnn=True
+2026-08-20T06:47:08+00:00  post.start             pairs=46 synthetic_pairs=136 examples=182 block_size=512 steps=200 patience=3 from_pretrained=/home/beckett/babble-live/experiments/pretrain-synthetic-20260820T064057Z/checkpoints/pretrained.pt
+2026-08-20T06:47:44+00:00  post.checkpoint        step=50 loss=2.6936 val_loss=2.7479 examples=182
+[post] step      50 | loss   2.6936 | val 2.7479
+2026-08-20T06:48:16+00:00  post.checkpoint        step=100 loss=2.4886 val_loss=2.8143 examples=182
+[post] step     100 | loss   2.4886 | val 2.8143
+2026-08-20T06:48:55+00:00  post.checkpoint        step=150 loss=2.313 val_loss=2.9668 examples=182
+[post] step     150 | loss   2.3130 | val 2.9668
+2026-08-20T06:49:37+00:00  post.checkpoint        step=200 loss=2.1405 val_loss=3.0722 examples=182
+[post] step     200 | loss   2.1405 | val 3.0722
+2026-08-20T06:49:38+00:00  post.done              step=50 loss=2.6936 val_loss=2.7479 pairs_trained=46 synthetic_pairs_trained=136 last_trained_pairs=46 checkpoints=4 stopped_early=True budget=200
+stage 2 (post-train): fine-tuned 46 correction pair(s) + 136 synthetic pair(s), best checkpoint at step 50 (loss 2.6936, val 2.7479) after 4 checkpoint(s) (stopped early) -> /home/beckett/babble-live/experiments/pretrain-synthetic-20260820T064057Z/checkpoints/latest.pt

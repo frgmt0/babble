@@ -6,6 +6,8 @@
     babble train-status       rows since the last run, whether the trigger is due
     babble post-train --force STAGE 2: fine-tune the pretrained checkpoint on correction pairs
     babble post-status        pairs since the last post-train, whether the trigger is due
+    babble synth-generate     postulate prompts for reply-shaped corpus rows -> synthetic_pairs.jsonl
+    babble synth-status       synthetic vs human correction-pair counts
     babble sample -p hello    continue a prefix from the latest checkpoint
     babble curve              the loss curve, as a picture
     babble summary            one-shot state of the whole thing
@@ -67,8 +69,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     post.add_argument("--seed", type=int, default=1, help="deterministic run")
     post.add_argument("--quiet", action="store_true", help="no per-checkpoint printing")
+    post.add_argument(
+        "--include-synthetic", action="store_true",
+        help="also fine-tune on data/synthetic_pairs.jsonl (see `babble synth-generate`), "
+        "stored and counted separately from human corrections until this is passed",
+    )
 
     sub.add_parser("post-status", help="show the post-train trigger state (pairs since last post-train)")
+
+    sub.add_parser(
+        "synth-generate",
+        help="scan the corpus for reply-shaped rows, postulate their prompts -> data/synthetic_pairs.jsonl",
+    )
+    sub.add_parser("synth-status", help="show synthetic vs human correction-pair counts")
 
     gen = sub.add_parser("sample", help="continue a prefix using the latest checkpoint")
     gen.add_argument("-p", "--prompt", default="hello", help="the prefix to continue from")
@@ -180,14 +193,16 @@ def main(argv: list[str] | None = None) -> int:
             result = post_train(
                 settings, force=args.force, steps=args.steps, patience=args.patience,
                 seed=args.seed, echo=not args.quiet, log=log,
+                include_synthetic=args.include_synthetic,
             )
         finally:
             log.close()
         if result.ran:
             val_s = f"{result.val_loss:.4f}" if result.val_loss is not None else "n/a"
             early = " (stopped early)" if result.stopped_early else ""
+            synth_part = f" + {result.synthetic_pairs_trained} synthetic pair(s)" if args.include_synthetic else ""
             print(
-                f"stage 2 (post-train): fine-tuned {result.pairs_trained} correction pair(s), "
+                f"stage 2 (post-train): fine-tuned {result.pairs_trained} correction pair(s){synth_part}, "
                 f"best checkpoint at step {result.final_step} (loss {result.last_loss:.4f}, val {val_s}) "
                 f"after {result.checkpoints_written} checkpoint(s){early} -> {result.path}",
                 flush=True,
@@ -214,6 +229,45 @@ def main(argv: list[str] | None = None) -> int:
             f"new since: {status.new_pairs} · threshold: {status.threshold} · "
             f"pretrained checkpoint: {'present' if settings.pretrained_checkpoint.exists() else 'not yet'} · "
             f"due: {'yes' if status.due else 'no'}",
+            flush=True,
+        )
+        return 0
+
+    if args.command == "synth-generate":
+        from .identity import Pseudonymiser
+        from .logs import EventLog
+        from .synthetic import generate_synthetic_pairs
+
+        log = EventLog(settings, Pseudonymiser.load(settings), component="synth")
+        result = generate_synthetic_pairs(settings)
+        log.event(
+            "synth.generate",
+            scanned=result.scanned,
+            reactive=result.reactive,
+            generated=result.generated,
+            skipped_duplicate=result.skipped_duplicate,
+            skipped_blocklist=result.skipped_blocklist,
+        )
+        print(
+            f"scanned {result.scanned} consented corpus row(s), "
+            f"{result.reactive} read as a reply/interjection\n"
+            f"generated {result.generated} new synthetic pair(s) -> {settings.synthetic_pairs_path}\n"
+            f"  skipped {result.skipped_duplicate}: already generated\n"
+            f"  skipped {result.skipped_blocklist}: matched the content filter\n"
+            f"(not trained on until `babble post-train --include-synthetic`)",
+            flush=True,
+        )
+        log.close()
+        return 0
+
+    if args.command == "synth-status":
+        from .post_state import pair_count
+        from .synthetic import synthetic_pair_count
+
+        print(
+            f"synthetic pairs: {synthetic_pair_count(settings)} · "
+            f"human correction pairs: {pair_count(settings)} · "
+            f"(synthetic pairs train only with `babble post-train --include-synthetic`)",
             flush=True,
         )
         return 0
