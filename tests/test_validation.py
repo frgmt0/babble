@@ -339,6 +339,31 @@ def test_validation_does_not_perturb_the_checkpoint_format(seeded):
     assert payload["optim"]["state"]
 
 
+def test_loss_jsonl_carries_val_loss_and_row_counts(seeded, monkeypatch):
+    """`loss.jsonl` must log the same val metric the trainer picks checkpoints
+    on, plus both stored and split row counts, so a future reader is not comparing
+    train loss from one run to val loss from another."""
+    seeded.val_min_rows = 4
+    seeded.val_fraction = 0.5
+    seeded.checkpoint_every = 3
+
+    val_curve = iter([2.0, 1.5, 1.0])
+    monkeypatch.setattr("babble.trainer.eval_loss", lambda model, examples: next(val_curve))
+
+    train(seeded, force=True, steps=6, echo=False, seed=1)
+
+    entries = [
+        json.loads(line)
+        for line in seeded.loss_curve_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    enabled = [e for e in entries if "val_loss" in e]
+    assert enabled
+    for entry in enabled:
+        assert entry["stored_rows"] >= entry["train_rows"] + entry["val_rows"]
+        assert entry["rows"] == entry["train_rows"]
+
+
 # --- the feed post carries the same information ------------------------
 
 

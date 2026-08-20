@@ -250,7 +250,13 @@ def main(argv: list[str] | None = None) -> int:
         print(render_snapshot(snap, markdown=False), flush=True)
         history = loss_history(settings)
         if history:
-            recent = ", ".join(f"{h['step']}:{h['loss']:.3f}" for h in history[-5:])
+            recent_parts = []
+            for h in history[-5:]:
+                part = f"{h['step']}:{h['loss']:.3f}"
+                if "val_loss" in h:
+                    part += f"/{h['val_loss']:.3f}"
+                recent_parts.append(part)
+            recent = ", ".join(recent_parts)
             print(f"recent checkpoints  {recent}", flush=True)
             print(f"latest sample       {history[-1].get('sample', '')!r}", flush=True)
         print(f"logs                {snap.log_bytes:,} bytes in {settings.log_dir}", flush=True)
