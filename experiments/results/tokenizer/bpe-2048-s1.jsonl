@@ -1,0 +1,14 @@
+{"meta": {"name": "bpe-2048-s1", "tokenizer": "bpe", "requested_vocab_size": 2048, "actual_vocab_size": 2048, "steps": 600, "lr": 0.0003, "n_layer": 4, "n_head": 4, "n_embd": 256, "block_size": 256, "dropout": 0.2, "cosine": true, "params": 3740160, "train_rows": 359, "val_rows": 90, "train_examples": 361, "val_examples": 92, "train_chars": 19471, "val_chars": 7050, "train_tokens": 8282, "val_tokens": 3497, "seed": 1}}
+{"step": 50, "train_window": 4.85, "val_per_token": 4.6581, "val_bits_per_char": 3.3335, "elapsed_s": 11.5, "best": true}
+{"step": 100, "train_window": 3.9049, "val_per_token": 4.4886, "val_bits_per_char": 3.2121, "elapsed_s": 21.8, "best": true}
+{"step": 150, "train_window": 3.7499, "val_per_token": 4.4267, "val_bits_per_char": 3.1678, "elapsed_s": 31.8, "best": true}
+{"step": 200, "train_window": 3.6424, "val_per_token": 4.4216, "val_bits_per_char": 3.1642, "elapsed_s": 43.5, "best": true}
+{"step": 250, "train_window": 3.5385, "val_per_token": 4.3962, "val_bits_per_char": 3.146, "elapsed_s": 52.1, "best": true}
+{"step": 300, "train_window": 3.5268, "val_per_token": 4.4079, "val_bits_per_char": 3.1544, "elapsed_s": 63.6}
+{"step": 350, "train_window": 3.4112, "val_per_token": 4.4161, "val_bits_per_char": 3.1602, "elapsed_s": 76.0}
+{"step": 400, "train_window": 3.3324, "val_per_token": 4.395, "val_bits_per_char": 3.1451, "elapsed_s": 90.2, "best": true}
+{"step": 450, "train_window": 3.3504, "val_per_token": 4.4176, "val_bits_per_char": 3.1613, "elapsed_s": 102.6}
+{"step": 500, "train_window": 3.2563, "val_per_token": 4.3951, "val_bits_per_char": 3.1452, "elapsed_s": 113.2}
+{"step": 550, "train_window": 3.255, "val_per_token": 4.3929, "val_bits_per_char": 3.1436, "elapsed_s": 122.7, "best": true}
+{"step": 600, "train_window": 3.2807, "val_per_token": 4.3983, "val_bits_per_char": 3.1475, "elapsed_s": 132.9}
+{"summary": true, "tokenizer": "bpe", "actual_vocab_size": 2048, "best_step": 550, "best_val_per_token": 4.3929, "best_val_bits_per_char": 3.1436, "best_val_nats_per_char": 2.179, "val_chars": 7050, "elapsed_s": 133.5, "samples": {"hello": " you my the we to of of as like for to of and to on for as a and as data a for on and of that see but and a a", "the cat": " you my to we to of the that to for to of a to on to as a the to data it in to and of that see but to a that", "why is": " you my the the now?", "boop": ""}}

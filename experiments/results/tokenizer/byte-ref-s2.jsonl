@@ -1,0 +1,14 @@
+{"meta": {"name": "byte-ref-s2", "tokenizer": "byte", "requested_vocab_size": 260, "actual_vocab_size": 260, "steps": 600, "lr": 0.0003, "n_layer": 4, "n_head": 4, "n_embd": 256, "block_size": 256, "dropout": 0.2, "cosine": true, "params": 3282432, "train_rows": 359, "val_rows": 90, "train_examples": 377, "val_examples": 98, "train_chars": 19471, "val_chars": 7050, "train_tokens": 19912, "val_tokens": 7170, "seed": 2}}
+{"step": 50, "train_window": 3.3585, "val_per_token": 2.8853, "val_bits_per_char": 4.2335, "elapsed_s": 25.9, "best": true}
+{"step": 100, "train_window": 2.7482, "val_per_token": 2.7234, "val_bits_per_char": 3.996, "elapsed_s": 49.8, "best": true}
+{"step": 150, "train_window": 2.6605, "val_per_token": 2.6699, "val_bits_per_char": 3.9174, "elapsed_s": 77.1, "best": true}
+{"step": 200, "train_window": 2.5981, "val_per_token": 2.6418, "val_bits_per_char": 3.8761, "elapsed_s": 102.2, "best": true}
+{"step": 250, "train_window": 2.5246, "val_per_token": 2.6219, "val_bits_per_char": 3.847, "elapsed_s": 128.5, "best": true}
+{"step": 300, "train_window": 2.4367, "val_per_token": 2.5805, "val_bits_per_char": 3.7862, "elapsed_s": 153.7, "best": true}
+{"step": 350, "train_window": 2.4402, "val_per_token": 2.5726, "val_bits_per_char": 3.7746, "elapsed_s": 181.8, "best": true}
+{"step": 400, "train_window": 2.3897, "val_per_token": 2.5761, "val_bits_per_char": 3.7797, "elapsed_s": 206.2}
+{"step": 450, "train_window": 2.3706, "val_per_token": 2.5738, "val_bits_per_char": 3.7764, "elapsed_s": 228.1}
+{"step": 500, "train_window": 2.3645, "val_per_token": 2.5711, "val_bits_per_char": 3.7724, "elapsed_s": 256.2, "best": true}
+{"step": 550, "train_window": 2.3153, "val_per_token": 2.5608, "val_bits_per_char": 3.7573, "elapsed_s": 283.1, "best": true}
+{"step": 600, "train_window": 2.2839, "val_per_token": 2.5624, "val_bits_per_char": 3.7597, "elapsed_s": 308.5}
+{"summary": true, "tokenizer": "byte", "actual_vocab_size": 260, "best_step": 550, "best_val_per_token": 2.5608, "best_val_bits_per_char": 3.7573, "best_val_nats_per_char": 2.6044, "val_chars": 7050, "elapsed_s": 309.0, "samples": {"hello": " what fous lit", "the cat": "s the foushe r", "why is": " thou thathe thake cong athathe whor be t thesthe t the the atha", "boop": ""}}

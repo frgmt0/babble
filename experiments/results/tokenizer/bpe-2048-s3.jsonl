@@ -1,0 +1,14 @@
+{"meta": {"name": "bpe-2048-s3", "tokenizer": "bpe", "requested_vocab_size": 2048, "actual_vocab_size": 2048, "steps": 600, "lr": 0.0003, "n_layer": 4, "n_head": 4, "n_embd": 256, "block_size": 256, "dropout": 0.2, "cosine": true, "params": 3740160, "train_rows": 359, "val_rows": 90, "train_examples": 361, "val_examples": 92, "train_chars": 19471, "val_chars": 7050, "train_tokens": 8282, "val_tokens": 3497, "seed": 3}}
+{"step": 50, "train_window": 4.7874, "val_per_token": 4.6197, "val_bits_per_char": 3.3059, "elapsed_s": 8.8, "best": true}
+{"step": 100, "train_window": 3.8969, "val_per_token": 4.4232, "val_bits_per_char": 3.1653, "elapsed_s": 18.5, "best": true}
+{"step": 150, "train_window": 3.7093, "val_per_token": 4.4145, "val_bits_per_char": 3.1591, "elapsed_s": 28.3, "best": true}
+{"step": 200, "train_window": 3.6217, "val_per_token": 4.4504, "val_bits_per_char": 3.1848, "elapsed_s": 39.6}
+{"step": 250, "train_window": 3.5532, "val_per_token": 4.415, "val_bits_per_char": 3.1595, "elapsed_s": 50.2}
+{"step": 300, "train_window": 3.4616, "val_per_token": 4.3417, "val_bits_per_char": 3.107, "elapsed_s": 60.1, "best": true}
+{"step": 350, "train_window": 3.4088, "val_per_token": 4.3921, "val_bits_per_char": 3.1431, "elapsed_s": 69.2}
+{"step": 400, "train_window": 3.3047, "val_per_token": 4.4686, "val_bits_per_char": 3.1978, "elapsed_s": 77.9}
+{"step": 450, "train_window": 3.3061, "val_per_token": 4.426, "val_bits_per_char": 3.1673, "elapsed_s": 89.4}
+{"step": 500, "train_window": 3.2914, "val_per_token": 4.4199, "val_bits_per_char": 3.163, "elapsed_s": 100.6}
+{"step": 550, "train_window": 3.1543, "val_per_token": 4.438, "val_bits_per_char": 3.1759, "elapsed_s": 111.5}
+{"step": 600, "train_window": 3.1526, "val_per_token": 4.4338, "val_bits_per_char": 3.1729, "elapsed_s": 122.2}
+{"summary": true, "tokenizer": "bpe", "actual_vocab_size": 2048, "best_step": 300, "best_val_per_token": 4.3417, "best_val_bits_per_char": 3.107, "best_val_nats_per_char": 2.1536, "val_chars": 7050, "elapsed_s": 123.4, "samples": {"hello": " what it you we you m a as you a a a and a a a and if a the and you as to a and and on and the and the", "the cat": " you that to we like and a as a a and a and a a a and if a the and and as to a and and a and and and the", "why is": " you that to we like and a as a a a a and a a a and all for the and and as to a and and on and and and the", "boop": " what it to we you and a as you a a a and a a a and if a the and you as to a and and on and the and the"}}

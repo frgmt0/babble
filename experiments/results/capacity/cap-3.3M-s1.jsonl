@@ -1,0 +1,14 @@
+{"meta": {"name": "cap-3.3M-s1", "steps": 600, "lr": 0.0003, "n_layer": 4, "n_head": 4, "n_embd": 256, "dropout": 0.2, "weight_decay": 0.01, "cosine": true, "batch_size": 8, "params": 3347968, "train_rows": 359, "val_rows": 90, "train_examples": 361, "synthetic_examples": 0, "seed": 1}}
+{"step": 50, "train_window": 3.4611, "train_full": 2.8548, "val": 2.898, "elapsed_s": 38.0, "best": true}
+{"step": 100, "train_window": 2.7579, "train_full": 2.6886, "val": 2.7484, "elapsed_s": 75.0, "best": true}
+{"step": 150, "train_window": 2.6569, "train_full": 2.5365, "val": 2.661, "elapsed_s": 115.9, "best": true}
+{"step": 200, "train_window": 2.5675, "train_full": 2.4885, "val": 2.6623, "elapsed_s": 162.6}
+{"step": 250, "train_window": 2.4869, "train_full": 2.4299, "val": 2.615, "elapsed_s": 208.9, "best": true}
+{"step": 300, "train_window": 2.4682, "train_full": 2.3545, "val": 2.6173, "elapsed_s": 250.4}
+{"step": 350, "train_window": 2.3736, "train_full": 2.3128, "val": 2.6082, "elapsed_s": 282.8, "best": true}
+{"step": 400, "train_window": 2.3552, "train_full": 2.2751, "val": 2.6128, "elapsed_s": 323.2}
+{"step": 450, "train_window": 2.3413, "train_full": 2.2396, "val": 2.6009, "elapsed_s": 369.8, "best": true}
+{"step": 500, "train_window": 2.3241, "train_full": 2.2186, "val": 2.6098, "elapsed_s": 415.4}
+{"step": 550, "train_window": 2.3293, "train_full": 2.2052, "val": 2.6086, "elapsed_s": 451.7}
+{"step": 600, "train_window": 2.3141, "train_full": 2.1885, "val": 2.5981, "elapsed_s": 506.1, "best": true}
+{"summary": true, "final_step": 600, "final_train_full": 2.1885, "final_val": 2.5981, "best_step": 600, "best_val": 2.5981, "best_train_full": 2.1885, "elapsed_s": 522.6, "samples": {"hello": " that where thats therow nthe s whe wherere cathe the he s fore ", "the cat": "s bacoul st cono pe out t the s sor ther jut thathasike t ithat ", "why is": " that were shere pusoron gind or cat ind jun lorest wouel thar i", "boop": ""}, "val_chars": 7050, "best_val_bits_per_char": 3.8121, "best_val_bits_per_char_derived": true}

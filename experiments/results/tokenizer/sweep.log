@@ -1,0 +1,282 @@
+[driver] starting byte-ref-s1
+/home/beckett/Projects/babble/.beckett/worktrees/run-20260821-booper-capacity-sweep-tokenizer-swap/.venv/lib/python3.12/site-packages/torch/_subclasses/functional_tensor.py:368: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+[byte-ref-s1] {"name": "byte-ref-s1", "tokenizer": "byte", "requested_vocab_size": 260, "actual_vocab_size": 260, "steps": 600, "lr": 0.0003, "n_layer": 4, "n_head": 4, "n_embd": 256, "block_size": 256, "dropout": 0.2, "cosine": true, "params": 3282432, "train_rows": 359, "val_rows": 90, "train_examples": 377, "val_examples": 98, "train_chars": 19471, "val_chars": 7050, "train_tokens": 19912, "val_tokens": 7170, "seed": 1}
+[byte-ref-s1] step 50 val/token 2.8342 val_bits_per_char 4.1584
+[byte-ref-s1] step 100 val/token 2.7086 val_bits_per_char 3.9741
+[byte-ref-s1] step 150 val/token 2.6934 val_bits_per_char 3.9519
+[byte-ref-s1] step 200 val/token 2.6252 val_bits_per_char 3.8518
+[byte-ref-s1] step 250 val/token 2.6026 val_bits_per_char 3.8187
+[byte-ref-s1] step 300 val/token 2.5971 val_bits_per_char 3.8107
+[byte-ref-s1] step 350 val/token 2.5842 val_bits_per_char 3.7917
+[byte-ref-s1] step 400 val/token 2.5941 val_bits_per_char 3.8063
+[byte-ref-s1] step 450 val/token 2.5797 val_bits_per_char 3.7850
+[byte-ref-s1] step 500 val/token 2.5775 val_bits_per_char 3.7819
+[byte-ref-s1] step 550 val/token 2.5775 val_bits_per_char 3.7818
+[byte-ref-s1] step 600 val/token 2.5780 val_bits_per_char 3.7826
+[byte-ref-s1] DONE {"summary": true, "tokenizer": "byte", "actual_vocab_size": 260, "best_step": 550, "best_val_per_token": 2.5775, "best_val_bits_per_char": 3.7818, "best_val_nats_per_char": 2.6213, "val_chars": 7050, "elapsed_s": 346.1, "samples": {"hello": " you it he she watstoull nt sooushat ind we cathe the hel t llo ", "the cat": "s bat athet that pstout t the suscat athese ct t at we the fores", "why is": " you is bre he it the the thats s the thous cat berat mell there", "boop": ""}}
+[driver] finished byte-ref-s1
+[driver] starting byte-ref-s2
+/home/beckett/Projects/babble/.beckett/worktrees/run-20260821-booper-capacity-sweep-tokenizer-swap/.venv/lib/python3.12/site-packages/torch/_subclasses/functional_tensor.py:368: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+[byte-ref-s2] {"name": "byte-ref-s2", "tokenizer": "byte", "requested_vocab_size": 260, "actual_vocab_size": 260, "steps": 600, "lr": 0.0003, "n_layer": 4, "n_head": 4, "n_embd": 256, "block_size": 256, "dropout": 0.2, "cosine": true, "params": 3282432, "train_rows": 359, "val_rows": 90, "train_examples": 377, "val_examples": 98, "train_chars": 19471, "val_chars": 7050, "train_tokens": 19912, "val_tokens": 7170, "seed": 2}
+[byte-ref-s2] step 50 val/token 2.8853 val_bits_per_char 4.2335
+[byte-ref-s2] step 100 val/token 2.7234 val_bits_per_char 3.9960
+[byte-ref-s2] step 150 val/token 2.6699 val_bits_per_char 3.9174
+[byte-ref-s2] step 200 val/token 2.6418 val_bits_per_char 3.8761
+[byte-ref-s2] step 250 val/token 2.6219 val_bits_per_char 3.8470
+[byte-ref-s2] step 300 val/token 2.5805 val_bits_per_char 3.7862
+[byte-ref-s2] step 350 val/token 2.5726 val_bits_per_char 3.7746
+[byte-ref-s2] step 400 val/token 2.5761 val_bits_per_char 3.7797
+[byte-ref-s2] step 450 val/token 2.5738 val_bits_per_char 3.7764
+[byte-ref-s2] step 500 val/token 2.5711 val_bits_per_char 3.7724
+[byte-ref-s2] step 550 val/token 2.5608 val_bits_per_char 3.7573
+[byte-ref-s2] step 600 val/token 2.5624 val_bits_per_char 3.7597
+[byte-ref-s2] DONE {"summary": true, "tokenizer": "byte", "actual_vocab_size": 260, "best_step": 550, "best_val_per_token": 2.5608, "best_val_bits_per_char": 3.7573, "best_val_nats_per_char": 2.6044, "val_chars": 7050, "elapsed_s": 309.0, "samples": {"hello": " what fous lit", "the cat": "s the foushe r", "why is": " thou thathe thake cong athathe whor be t thesthe t the the atha", "boop": ""}}
+[driver] finished byte-ref-s2
+[driver] starting byte-ref-s3
+/home/beckett/Projects/babble/.beckett/worktrees/run-20260821-booper-capacity-sweep-tokenizer-swap/.venv/lib/python3.12/site-packages/torch/_subclasses/functional_tensor.py:368: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+[byte-ref-s3] {"name": "byte-ref-s3", "tokenizer": "byte", "requested_vocab_size": 260, "actual_vocab_size": 260, "steps": 600, "lr": 0.0003, "n_layer": 4, "n_head": 4, "n_embd": 256, "block_size": 256, "dropout": 0.2, "cosine": true, "params": 3282432, "train_rows": 359, "val_rows": 90, "train_examples": 377, "val_examples": 98, "train_chars": 19471, "val_chars": 7050, "train_tokens": 19912, "val_tokens": 7170, "seed": 3}
+[byte-ref-s3] step 50 val/token 2.8416 val_bits_per_char 4.1694
+[byte-ref-s3] step 100 val/token 2.7444 val_bits_per_char 4.0267
+[byte-ref-s3] step 150 val/token 2.6742 val_bits_per_char 3.9237
+[byte-ref-s3] step 200 val/token 2.6380 val_bits_per_char 3.8706
+[byte-ref-s3] step 250 val/token 2.6380 val_bits_per_char 3.8706
+[driver] skipping byte-ref-s1 (already complete)
+[driver] skipping byte-ref-s2 (already complete)
+[driver] starting byte-ref-s3
+/home/beckett/Projects/babble/.beckett/worktrees/run-20260821-booper-capacity-sweep-tokenizer-swap/.venv/lib/python3.12/site-packages/torch/_subclasses/functional_tensor.py:368: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+[byte-ref-s3] {"name": "byte-ref-s3", "tokenizer": "byte", "requested_vocab_size": 260, "actual_vocab_size": 260, "steps": 600, "lr": 0.0003, "n_layer": 4, "n_head": 4, "n_embd": 256, "block_size": 256, "dropout": 0.2, "cosine": true, "params": 3282432, "train_rows": 359, "val_rows": 90, "train_examples": 377, "val_examples": 98, "train_chars": 19471, "val_chars": 7050, "train_tokens": 19912, "val_tokens": 7170, "seed": 3}
+[byte-ref-s3] step 50 val/token 2.8416 val_bits_per_char 4.1694
+[byte-ref-s3] step 100 val/token 2.7444 val_bits_per_char 4.0267
+[byte-ref-s3] step 150 val/token 2.6742 val_bits_per_char 3.9237
+[byte-ref-s3] step 200 val/token 2.6380 val_bits_per_char 3.8706
+[byte-ref-s3] step 250 val/token 2.6380 val_bits_per_char 3.8706
+[byte-ref-s3] step 300 val/token 2.6025 val_bits_per_char 3.8185
+[byte-ref-s3] step 350 val/token 2.5820 val_bits_per_char 3.7884
+[byte-ref-s3] step 400 val/token 2.5769 val_bits_per_char 3.7809
+[byte-ref-s3] step 450 val/token 2.5693 val_bits_per_char 3.7698
+[byte-ref-s3] step 500 val/token 2.5862 val_bits_per_char 3.7946
+[byte-ref-s3] step 550 val/token 2.5801 val_bits_per_char 3.7857
+[byte-ref-s3] step 600 val/token 2.5820 val_bits_per_char 3.7885
+[byte-ref-s3] DONE {"summary": true, "tokenizer": "byte", "actual_vocab_size": 260, "best_step": 450, "best_val_per_token": 2.5693, "best_val_bits_per_char": 3.7698, "best_val_nats_per_char": 2.613, "val_chars": 7050, "elapsed_s": 231.9, "samples": {"hello": " whit that the d ss we core thelllyou nge f sinoure we whis mon ", "the cat": " wous tore mat asthat al as the was ind yofonde the wo the at ta", "why is": " wou what that dore t as thathe whoru t we whe f re wouthes mon ", "boop": " wet it"}}
+[driver] finished byte-ref-s3
+[driver] starting bpe-512-s1
+/home/beckett/Projects/babble/.beckett/worktrees/run-20260821-booper-capacity-sweep-tokenizer-swap/.venv/lib/python3.12/site-packages/torch/_subclasses/functional_tensor.py:368: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+[bpe-512-s1] {"name": "bpe-512-s1", "tokenizer": "bpe", "requested_vocab_size": 512, "actual_vocab_size": 512, "steps": 600, "lr": 0.0003, "n_layer": 4, "n_head": 4, "n_embd": 256, "block_size": 256, "dropout": 0.2, "cosine": true, "params": 3346944, "train_rows": 359, "val_rows": 90, "train_examples": 361, "val_examples": 93, "train_chars": 19471, "val_chars": 7050, "train_tokens": 11805, "val_tokens": 4348, "seed": 1}
+[bpe-512-s1] step 50 val/token 4.2071 val_bits_per_char 3.7434
+[bpe-512-s1] step 100 val/token 4.0339 val_bits_per_char 3.5892
+[bpe-512-s1] step 150 val/token 3.9295 val_bits_per_char 3.4964
+[bpe-512-s1] step 200 val/token 3.8274 val_bits_per_char 3.4054
+[bpe-512-s1] step 250 val/token 3.7333 val_bits_per_char 3.3217
+[bpe-512-s1] step 300 val/token 3.7054 val_bits_per_char 3.2969
+[bpe-512-s1] step 350 val/token 3.6689 val_bits_per_char 3.2644
+[bpe-512-s1] step 400 val/token 3.6659 val_bits_per_char 3.2618
+[bpe-512-s1] step 450 val/token 3.6403 val_bits_per_char 3.2390
+[bpe-512-s1] step 500 val/token 3.6297 val_bits_per_char 3.2296
+[bpe-512-s1] step 550 val/token 3.6211 val_bits_per_char 3.2220
+[bpe-512-s1] step 600 val/token 3.6042 val_bits_per_char 3.2069
+[bpe-512-s1] DONE {"summary": true, "tokenizer": "bpe", "actual_vocab_size": 512, "best_step": 600, "best_val_per_token": 3.6042, "best_val_bits_per_char": 3.2069, "best_val_nats_per_char": 2.2228, "val_chars": 7050, "elapsed_s": 162.5, "samples": {"hello": " I you you the ct cool gu? issues", "the cat": " the cre s red the l and a that be bran s?", "why is": " the cre ct wr cre cg?", "boop": ""}}
+[driver] finished bpe-512-s1
+[driver] starting bpe-512-s2
+/home/beckett/Projects/babble/.beckett/worktrees/run-20260821-booper-capacity-sweep-tokenizer-swap/.venv/lib/python3.12/site-packages/torch/_subclasses/functional_tensor.py:368: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+[bpe-512-s2] {"name": "bpe-512-s2", "tokenizer": "bpe", "requested_vocab_size": 512, "actual_vocab_size": 512, "steps": 600, "lr": 0.0003, "n_layer": 4, "n_head": 4, "n_embd": 256, "block_size": 256, "dropout": 0.2, "cosine": true, "params": 3346944, "train_rows": 359, "val_rows": 90, "train_examples": 361, "val_examples": 93, "train_chars": 19471, "val_chars": 7050, "train_tokens": 11805, "val_tokens": 4348, "seed": 2}
+[bpe-512-s2] step 50 val/token 4.2428 val_bits_per_char 3.7751
+[bpe-512-s2] step 100 val/token 4.0177 val_bits_per_char 3.5748
+[bpe-512-s2] step 150 val/token 3.8882 val_bits_per_char 3.4596
+[bpe-512-s2] step 200 val/token 3.8372 val_bits_per_char 3.4142
+[bpe-512-s2] step 250 val/token 3.7683 val_bits_per_char 3.3529
+[bpe-512-s2] step 300 val/token 3.7028 val_bits_per_char 3.2947
+[bpe-512-s2] step 350 val/token 3.6538 val_bits_per_char 3.2510
+[bpe-512-s2] step 400 val/token 3.6466 val_bits_per_char 3.2446
+[bpe-512-s2] step 450 val/token 3.6349 val_bits_per_char 3.2342
+[bpe-512-s2] step 500 val/token 3.6072 val_bits_per_char 3.2096
+[bpe-512-s2] step 550 val/token 3.5950 val_bits_per_char 3.1987
+[bpe-512-s2] step 600 val/token 3.5959 val_bits_per_char 3.1995
+[bpe-512-s2] DONE {"summary": true, "tokenizer": "bpe", "actual_vocab_size": 512, "best_step": 550, "best_val_per_token": 3.595, "best_val_bits_per_char": 3.1987, "best_val_nats_per_char": 2.2172, "val_chars": 7050, "elapsed_s": 169.2, "samples": {"hello": " the sire it red on we the at cre in that code couren s the that you we the in to to the t pn. you ced", "the cat": " gr it at py the we re", "why is": " the a a cred freducreat be the inor ces cad exact. at p", "boop": ""}}
+[driver] finished bpe-512-s2
+[driver] starting bpe-512-s3
+/home/beckett/Projects/babble/.beckett/worktrees/run-20260821-booper-capacity-sweep-tokenizer-swap/.venv/lib/python3.12/site-packages/torch/_subclasses/functional_tensor.py:368: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+[bpe-512-s3] {"name": "bpe-512-s3", "tokenizer": "bpe", "requested_vocab_size": 512, "actual_vocab_size": 512, "steps": 600, "lr": 0.0003, "n_layer": 4, "n_head": 4, "n_embd": 256, "block_size": 256, "dropout": 0.2, "cosine": true, "params": 3346944, "train_rows": 359, "val_rows": 90, "train_examples": 361, "val_examples": 93, "train_chars": 19471, "val_chars": 7050, "train_tokens": 11805, "val_tokens": 4348, "seed": 3}
+[bpe-512-s3] step 50 val/token 4.2027 val_bits_per_char 3.7394
+[bpe-512-s3] step 100 val/token 4.0789 val_bits_per_char 3.6292
+[bpe-512-s3] step 150 val/token 3.9211 val_bits_per_char 3.4889
+[bpe-512-s3] step 200 val/token 3.8349 val_bits_per_char 3.4122
+[bpe-512-s3] step 250 val/token 3.7760 val_bits_per_char 3.3597
+[bpe-512-s3] step 300 val/token 3.6870 val_bits_per_char 3.2806
+[bpe-512-s3] step 350 val/token 3.6684 val_bits_per_char 3.2640
+[bpe-512-s3] step 400 val/token 3.6612 val_bits_per_char 3.2576
+[bpe-512-s3] step 450 val/token 3.6112 val_bits_per_char 3.2131
+[bpe-512-s3] step 500 val/token 3.6179 val_bits_per_char 3.2191
+[bpe-512-s3] step 550 val/token 3.6119 val_bits_per_char 3.2138
+[bpe-512-s3] step 600 val/token 3.6060 val_bits_per_char 3.2085
+[bpe-512-s3] DONE {"summary": true, "tokenizer": "bpe", "actual_vocab_size": 512, "best_step": 600, "best_val_per_token": 3.606, "best_val_bits_per_char": 3.2085, "best_val_nats_per_char": 2.2239, "val_chars": 7050, "elapsed_s": 161.5, "samples": {"hello": " you re", "the cat": " you a you most", "why is": " you count it t you as pulanother it to you hove what?", "boop": " you h you inort"}}
+[driver] finished bpe-512-s3
+[driver] starting bpe-1024-s1
+/home/beckett/Projects/babble/.beckett/worktrees/run-20260821-booper-capacity-sweep-tokenizer-swap/.venv/lib/python3.12/site-packages/torch/_subclasses/functional_tensor.py:368: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+[bpe-1024-s1] {"name": "bpe-1024-s1", "tokenizer": "bpe", "requested_vocab_size": 1024, "actual_vocab_size": 1024, "steps": 600, "lr": 0.0003, "n_layer": 4, "n_head": 4, "n_embd": 256, "block_size": 256, "dropout": 0.2, "cosine": true, "params": 3478016, "train_rows": 359, "val_rows": 90, "train_examples": 361, "val_examples": 93, "train_chars": 19471, "val_chars": 7050, "train_tokens": 9670, "val_tokens": 3728, "seed": 1}
+[bpe-1024-s1] step 50 val/token 4.4314 val_bits_per_char 3.3806
+[bpe-1024-s1] step 100 val/token 4.2628 val_bits_per_char 3.2521
+[bpe-1024-s1] step 150 val/token 4.1747 val_bits_per_char 3.1848
+[bpe-1024-s1] step 200 val/token 4.1099 val_bits_per_char 3.1354
+[bpe-1024-s1] step 250 val/token 4.1153 val_bits_per_char 3.1395
+[bpe-1024-s1] step 300 val/token 4.1220 val_bits_per_char 3.1447
+[bpe-1024-s1] step 350 val/token 4.0931 val_bits_per_char 3.1226
+[bpe-1024-s1] step 400 val/token 4.0857 val_bits_per_char 3.1169
+[bpe-1024-s1] step 450 val/token 4.0771 val_bits_per_char 3.1103
+[bpe-1024-s1] step 500 val/token 4.0814 val_bits_per_char 3.1136
+[bpe-1024-s1] step 550 val/token 4.0737 val_bits_per_char 3.1078
+[bpe-1024-s1] step 600 val/token 4.0717 val_bits_per_char 3.1062
+[bpe-1024-s1] DONE {"summary": true, "tokenizer": "bpe", "actual_vocab_size": 1024, "best_step": 600, "best_val_per_token": 4.0717, "best_val_bits_per_char": 3.1062, "best_val_nats_per_char": 2.1531, "val_chars": 7050, "elapsed_s": 143.6, "samples": {"hello": " you you corpus the be a solbec11", "the cat": "", "why is": " you you t the be to at not more a a 5 cap bui a a to in in a of for 4 work to ced to be think to ", "boop": ""}}
+[driver] finished bpe-1024-s1
+[driver] starting bpe-1024-s2
+/home/beckett/Projects/babble/.beckett/worktrees/run-20260821-booper-capacity-sweep-tokenizer-swap/.venv/lib/python3.12/site-packages/torch/_subclasses/functional_tensor.py:368: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+[bpe-1024-s2] {"name": "bpe-1024-s2", "tokenizer": "bpe", "requested_vocab_size": 1024, "actual_vocab_size": 1024, "steps": 600, "lr": 0.0003, "n_layer": 4, "n_head": 4, "n_embd": 256, "block_size": 256, "dropout": 0.2, "cosine": true, "params": 3478016, "train_rows": 359, "val_rows": 90, "train_examples": 361, "val_examples": 93, "train_chars": 19471, "val_chars": 7050, "train_tokens": 9670, "val_tokens": 3728, "seed": 2}
+[bpe-1024-s2] step 50 val/token 4.4234 val_bits_per_char 3.3746
+[bpe-1024-s2] step 100 val/token 4.2667 val_bits_per_char 3.2550
+[bpe-1024-s2] step 150 val/token 4.2062 val_bits_per_char 3.2089
+[bpe-1024-s2] step 200 val/token 4.1225 val_bits_per_char 3.1450
+[bpe-1024-s2] step 250 val/token 4.1320 val_bits_per_char 3.1523
+[bpe-1024-s2] step 300 val/token 4.1019 val_bits_per_char 3.1293
+[bpe-1024-s2] step 350 val/token 4.0798 val_bits_per_char 3.1124
+[bpe-1024-s2] step 400 val/token 4.0420 val_bits_per_char 3.0836
+[bpe-1024-s2] step 450 val/token 4.0455 val_bits_per_char 3.0862
+[bpe-1024-s2] step 500 val/token 4.0534 val_bits_per_char 3.0923
+[bpe-1024-s2] step 550 val/token 4.0533 val_bits_per_char 3.0922
+[bpe-1024-s2] step 600 val/token 4.0380 val_bits_per_char 3.0806
+[bpe-1024-s2] DONE {"summary": true, "tokenizer": "bpe", "actual_vocab_size": 1024, "best_step": 600, "best_val_per_token": 4.038, "best_val_bits_per_char": 3.0806, "best_val_nats_per_char": 2.1353, "val_chars": 7050, "elapsed_s": 144.1, "samples": {"hello": " are you", "the cat": "s the ins in a in jap to the sty the to and we and in s and \" a and in the in a on of and \"s like ", "why is": " the coage", "boop": ""}}
+[driver] finished bpe-1024-s2
+[driver] starting bpe-1024-s3
+/home/beckett/Projects/babble/.beckett/worktrees/run-20260821-booper-capacity-sweep-tokenizer-swap/.venv/lib/python3.12/site-packages/torch/_subclasses/functional_tensor.py:368: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+[bpe-1024-s3] {"name": "bpe-1024-s3", "tokenizer": "bpe", "requested_vocab_size": 1024, "actual_vocab_size": 1024, "steps": 600, "lr": 0.0003, "n_layer": 4, "n_head": 4, "n_embd": 256, "block_size": 256, "dropout": 0.2, "cosine": true, "params": 3478016, "train_rows": 359, "val_rows": 90, "train_examples": 361, "val_examples": 93, "train_chars": 19471, "val_chars": 7050, "train_tokens": 9670, "val_tokens": 3728, "seed": 3}
+[bpe-1024-s3] step 50 val/token 4.4308 val_bits_per_char 3.3802
+[bpe-1024-s3] step 100 val/token 4.2819 val_bits_per_char 3.2666
+[bpe-1024-s3] step 150 val/token 4.2069 val_bits_per_char 3.2094
+[bpe-1024-s3] step 200 val/token 4.1138 val_bits_per_char 3.1384
+[bpe-1024-s3] step 250 val/token 4.1077 val_bits_per_char 3.1337
+[bpe-1024-s3] step 300 val/token 4.1042 val_bits_per_char 3.1310
+[bpe-1024-s3] step 350 val/token 4.0758 val_bits_per_char 3.1094
+[bpe-1024-s3] step 400 val/token 4.0696 val_bits_per_char 3.1047
+[bpe-1024-s3] step 450 val/token 4.0568 val_bits_per_char 3.0949
+[bpe-1024-s3] step 500 val/token 4.0404 val_bits_per_char 3.0824
+[bpe-1024-s3] step 550 val/token 4.0407 val_bits_per_char 3.0826
+[bpe-1024-s3] step 600 val/token 4.0616 val_bits_per_char 3.0986
+[bpe-1024-s3] DONE {"summary": true, "tokenizer": "bpe", "actual_vocab_size": 1024, "best_step": 500, "best_val_per_token": 4.0404, "best_val_bits_per_char": 3.0824, "best_val_nats_per_char": 2.1366, "val_chars": 7050, "elapsed_s": 142.0, "samples": {"hello": " do what you to that the see the aner to that to to of as a to like and in to in a was like to to to task?", "the cat": " you goy it is to to a or like a an to en of as a  in it the a aling to l?", "why is": " the fun?", "boop": " do what you to that to you the aner to that to to of as a you to a in a in to to like that like to task in a "}}
+[driver] finished bpe-1024-s3
+[driver] starting bpe-2048-s1
+/home/beckett/Projects/babble/.beckett/worktrees/run-20260821-booper-capacity-sweep-tokenizer-swap/.venv/lib/python3.12/site-packages/torch/_subclasses/functional_tensor.py:368: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+[bpe-2048-s1] {"name": "bpe-2048-s1", "tokenizer": "bpe", "requested_vocab_size": 2048, "actual_vocab_size": 2048, "steps": 600, "lr": 0.0003, "n_layer": 4, "n_head": 4, "n_embd": 256, "block_size": 256, "dropout": 0.2, "cosine": true, "params": 3740160, "train_rows": 359, "val_rows": 90, "train_examples": 361, "val_examples": 92, "train_chars": 19471, "val_chars": 7050, "train_tokens": 8282, "val_tokens": 3497, "seed": 1}
+[bpe-2048-s1] step 50 val/token 4.6581 val_bits_per_char 3.3335
+[bpe-2048-s1] step 100 val/token 4.4886 val_bits_per_char 3.2121
+[bpe-2048-s1] step 150 val/token 4.4267 val_bits_per_char 3.1678
+[bpe-2048-s1] step 200 val/token 4.4216 val_bits_per_char 3.1642
+[bpe-2048-s1] step 250 val/token 4.3962 val_bits_per_char 3.1460
+[bpe-2048-s1] step 300 val/token 4.4079 val_bits_per_char 3.1544
+[bpe-2048-s1] step 350 val/token 4.4161 val_bits_per_char 3.1602
+[bpe-2048-s1] step 400 val/token 4.3950 val_bits_per_char 3.1451
+[bpe-2048-s1] step 450 val/token 4.4176 val_bits_per_char 3.1613
+[bpe-2048-s1] step 500 val/token 4.3951 val_bits_per_char 3.1452
+[bpe-2048-s1] step 550 val/token 4.3929 val_bits_per_char 3.1436
+[bpe-2048-s1] step 600 val/token 4.3983 val_bits_per_char 3.1475
+[bpe-2048-s1] DONE {"summary": true, "tokenizer": "bpe", "actual_vocab_size": 2048, "best_step": 550, "best_val_per_token": 4.3929, "best_val_bits_per_char": 3.1436, "best_val_nats_per_char": 2.179, "val_chars": 7050, "elapsed_s": 133.5, "samples": {"hello": " you my the we to of of as like for to of and to on for as a and as data a for on and of that see but and a a", "the cat": " you my to we to of the that to for to of a to on to as a the to data it in to and of that see but to a that", "why is": " you my the the now?", "boop": ""}}
+[driver] finished bpe-2048-s1
+[driver] starting bpe-2048-s2
+/home/beckett/Projects/babble/.beckett/worktrees/run-20260821-booper-capacity-sweep-tokenizer-swap/.venv/lib/python3.12/site-packages/torch/_subclasses/functional_tensor.py:368: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+[bpe-2048-s2] {"name": "bpe-2048-s2", "tokenizer": "bpe", "requested_vocab_size": 2048, "actual_vocab_size": 2048, "steps": 600, "lr": 0.0003, "n_layer": 4, "n_head": 4, "n_embd": 256, "block_size": 256, "dropout": 0.2, "cosine": true, "params": 3740160, "train_rows": 359, "val_rows": 90, "train_examples": 361, "val_examples": 92, "train_chars": 19471, "val_chars": 7050, "train_tokens": 8282, "val_tokens": 3497, "seed": 2}
+[bpe-2048-s2] step 50 val/token 4.6180 val_bits_per_char 3.3048
+[bpe-2048-s2] step 100 val/token 4.4713 val_bits_per_char 3.1998
+[bpe-2048-s2] step 150 val/token 4.4020 val_bits_per_char 3.1502
+[bpe-2048-s2] step 200 val/token 4.3954 val_bits_per_char 3.1455
+[bpe-2048-s2] step 250 val/token 4.3855 val_bits_per_char 3.1383
+[bpe-2048-s2] step 300 val/token 4.4439 val_bits_per_char 3.1801
+[bpe-2048-s2] step 350 val/token 4.3501 val_bits_per_char 3.1130
+[bpe-2048-s2] step 400 val/token 4.3914 val_bits_per_char 3.1425
+[bpe-2048-s2] step 450 val/token 4.4077 val_bits_per_char 3.1542
+[bpe-2048-s2] step 500 val/token 4.3860 val_bits_per_char 3.1387
+[bpe-2048-s2] step 550 val/token 4.4039 val_bits_per_char 3.1515
+[bpe-2048-s2] step 600 val/token 4.4082 val_bits_per_char 3.1546
+[bpe-2048-s2] DONE {"summary": true, "tokenizer": "bpe", "actual_vocab_size": 2048, "best_step": 350, "best_val_per_token": 4.3501, "best_val_bits_per_char": 3.113, "best_val_nats_per_char": 2.1578, "val_chars": 7050, "elapsed_s": 124.2, "samples": {"hello": " is but make the the a the in for the and like of you that like the to is a to if the if the you that make a \" a and", "the cat": "", "why is": " the you a about at a emp", "boop": ""}}
+[driver] finished bpe-2048-s2
+[driver] starting bpe-2048-s3
+/home/beckett/Projects/babble/.beckett/worktrees/run-20260821-booper-capacity-sweep-tokenizer-swap/.venv/lib/python3.12/site-packages/torch/_subclasses/functional_tensor.py:368: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+[bpe-2048-s3] {"name": "bpe-2048-s3", "tokenizer": "bpe", "requested_vocab_size": 2048, "actual_vocab_size": 2048, "steps": 600, "lr": 0.0003, "n_layer": 4, "n_head": 4, "n_embd": 256, "block_size": 256, "dropout": 0.2, "cosine": true, "params": 3740160, "train_rows": 359, "val_rows": 90, "train_examples": 361, "val_examples": 92, "train_chars": 19471, "val_chars": 7050, "train_tokens": 8282, "val_tokens": 3497, "seed": 3}
+[bpe-2048-s3] step 50 val/token 4.6197 val_bits_per_char 3.3059
+[bpe-2048-s3] step 100 val/token 4.4232 val_bits_per_char 3.1653
+[bpe-2048-s3] step 150 val/token 4.4145 val_bits_per_char 3.1591
+[bpe-2048-s3] step 200 val/token 4.4504 val_bits_per_char 3.1848
+[bpe-2048-s3] step 250 val/token 4.4150 val_bits_per_char 3.1595
+[bpe-2048-s3] step 300 val/token 4.3417 val_bits_per_char 3.1070
+[bpe-2048-s3] step 350 val/token 4.3921 val_bits_per_char 3.1431
+[bpe-2048-s3] step 400 val/token 4.4686 val_bits_per_char 3.1978
+[bpe-2048-s3] step 450 val/token 4.4260 val_bits_per_char 3.1673
+[bpe-2048-s3] step 500 val/token 4.4199 val_bits_per_char 3.1630
+[bpe-2048-s3] step 550 val/token 4.4380 val_bits_per_char 3.1759
+[bpe-2048-s3] step 600 val/token 4.4338 val_bits_per_char 3.1729
+[bpe-2048-s3] DONE {"summary": true, "tokenizer": "bpe", "actual_vocab_size": 2048, "best_step": 300, "best_val_per_token": 4.3417, "best_val_bits_per_char": 3.107, "best_val_nats_per_char": 2.1536, "val_chars": 7050, "elapsed_s": 123.4, "samples": {"hello": " what it you we you m a as you a a a and a a a and if a the and you as to a and and on and the and the", "the cat": " you that to we like and a as a a and a and a a a and if a the and and as to a and and a and and and the", "why is": " you that to we like and a as a a a a and a a a and all for the and and as to a and and on and and and the", "boop": " what it to we you and a as you a a a and a a a and if a the and you as to a and and on and the and the"}}
+[driver] finished bpe-2048-s3
+[driver] starting word-1024-s1
+/home/beckett/Projects/babble/.beckett/worktrees/run-20260821-booper-capacity-sweep-tokenizer-swap/.venv/lib/python3.12/site-packages/torch/_subclasses/functional_tensor.py:368: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+[word-1024-s1] {"name": "word-1024-s1", "tokenizer": "word", "requested_vocab_size": 1024, "actual_vocab_size": 1024, "steps": 600, "lr": 0.0003, "n_layer": 4, "n_head": 4, "n_embd": 256, "block_size": 256, "dropout": 0.2, "cosine": true, "params": 3478016, "train_rows": 359, "val_rows": 90, "train_examples": 361, "val_examples": 95, "train_chars": 19471, "val_chars": 7050, "train_tokens": 11024, "val_tokens": 4924, "seed": 1}
+[word-1024-s1] step 50 val/token 3.6831 val_bits_per_char 3.7112
+[word-1024-s1] step 100 val/token 3.4797 val_bits_per_char 3.5063
+[word-1024-s1] step 150 val/token 3.2879 val_bits_per_char 3.3130
+[word-1024-s1] step 200 val/token 3.3217 val_bits_per_char 3.3471
+[word-1024-s1] step 250 val/token 3.2623 val_bits_per_char 3.2872
+[word-1024-s1] step 300 val/token 3.2428 val_bits_per_char 3.2676
+[word-1024-s1] step 350 val/token 3.2844 val_bits_per_char 3.3094
+[word-1024-s1] step 400 val/token 3.3105 val_bits_per_char 3.3358
+[word-1024-s1] step 450 val/token 3.3133 val_bits_per_char 3.3386
+[word-1024-s1] step 500 val/token 3.3191 val_bits_per_char 3.3445
+[word-1024-s1] step 550 val/token 3.3094 val_bits_per_char 3.3347
+[word-1024-s1] step 600 val/token 3.3193 val_bits_per_char 3.3446
+[word-1024-s1] DONE {"summary": true, "tokenizer": "word", "actual_vocab_size": 1024, "best_step": 300, "best_val_per_token": 3.2428, "best_val_bits_per_char": 3.2676, "best_val_nats_per_char": 2.2649, "val_chars": 7050, "elapsed_s": 149.7, "samples": {"hello": " is it teng menss that ss tinorent it of ssin the llinlulesin of the it of in is", "the cat": " resit of on to to a the statrorent it of stitacrklise the s the of the it of in is", "why is": " you it teng messs that ssenge ment it of ssing fllis you the of the pin on pers", "boop": ""}}
+[driver] finished word-1024-s1
+[driver] starting word-1024-s2
+/home/beckett/Projects/babble/.beckett/worktrees/run-20260821-booper-capacity-sweep-tokenizer-swap/.venv/lib/python3.12/site-packages/torch/_subclasses/functional_tensor.py:368: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+[word-1024-s2] {"name": "word-1024-s2", "tokenizer": "word", "requested_vocab_size": 1024, "actual_vocab_size": 1024, "steps": 600, "lr": 0.0003, "n_layer": 4, "n_head": 4, "n_embd": 256, "block_size": 256, "dropout": 0.2, "cosine": true, "params": 3478016, "train_rows": 359, "val_rows": 90, "train_examples": 361, "val_examples": 95, "train_chars": 19471, "val_chars": 7050, "train_tokens": 11024, "val_tokens": 4924, "seed": 2}
+[word-1024-s2] step 50 val/token 3.6975 val_bits_per_char 3.7257
+[word-1024-s2] step 100 val/token 3.4028 val_bits_per_char 3.4288
+[word-1024-s2] step 150 val/token 3.2913 val_bits_per_char 3.3164
+[word-1024-s2] step 200 val/token 3.2986 val_bits_per_char 3.3238
+[word-1024-s2] step 250 val/token 3.2483 val_bits_per_char 3.2732
+[word-1024-s2] step 300 val/token 3.2853 val_bits_per_char 3.3104
+[word-1024-s2] step 350 val/token 3.2584 val_bits_per_char 3.2832
+[word-1024-s2] step 400 val/token 3.2694 val_bits_per_char 3.2944
+[word-1024-s2] step 450 val/token 3.2724 val_bits_per_char 3.2974
+[word-1024-s2] step 500 val/token 3.3325 val_bits_per_char 3.3580
+[word-1024-s2] step 550 val/token 3.3174 val_bits_per_char 3.3428
+[word-1024-s2] step 600 val/token 3.3448 val_bits_per_char 3.3704
+[word-1024-s2] DONE {"summary": true, "tokenizer": "word", "actual_vocab_size": 1024, "best_step": 250, "best_val_per_token": 3.2483, "best_val_bits_per_char": 3.2732, "best_val_nats_per_char": 2.2688, "val_chars": 7050, "elapsed_s": 147.3, "samples": {"hello": " you moplupat but s like to of s ping the int se in to the like at stihinointe inin", "the cat": "e the the and the a but a like to of prinerinkintte and like s data sils it ppointe inin", "why is": " you moplupar but a me llalalie p the of on f in to the of ils it piorone wino", "boop": ""}}
+[driver] finished word-1024-s2
+[driver] starting word-1024-s3
+/home/beckett/Projects/babble/.beckett/worktrees/run-20260821-booper-capacity-sweep-tokenizer-swap/.venv/lib/python3.12/site-packages/torch/_subclasses/functional_tensor.py:368: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+[word-1024-s3] {"name": "word-1024-s3", "tokenizer": "word", "requested_vocab_size": 1024, "actual_vocab_size": 1024, "steps": 600, "lr": 0.0003, "n_layer": 4, "n_head": 4, "n_embd": 256, "block_size": 256, "dropout": 0.2, "cosine": true, "params": 3478016, "train_rows": 359, "val_rows": 90, "train_examples": 361, "val_examples": 95, "train_chars": 19471, "val_chars": 7050, "train_tokens": 11024, "val_tokens": 4924, "seed": 3}
+[word-1024-s3] step 50 val/token 3.6708 val_bits_per_char 3.6988
+[word-1024-s3] step 100 val/token 3.3903 val_bits_per_char 3.4161
+[word-1024-s3] step 150 val/token 3.3563 val_bits_per_char 3.3819
+[word-1024-s3] step 200 val/token 3.2648 val_bits_per_char 3.2897
+[word-1024-s3] step 250 val/token 3.2721 val_bits_per_char 3.2971
+[word-1024-s3] step 300 val/token 3.2746 val_bits_per_char 3.2996
+[word-1024-s3] step 350 val/token 3.2742 val_bits_per_char 3.2992
+[word-1024-s3] step 400 val/token 3.2940 val_bits_per_char 3.3191
+[word-1024-s3] step 450 val/token 3.2966 val_bits_per_char 3.3218
+[word-1024-s3] step 500 val/token 3.2976 val_bits_per_char 3.3228
+[word-1024-s3] step 550 val/token 3.3126 val_bits_per_char 3.3379
+[word-1024-s3] step 600 val/token 3.3034 val_bits_per_char 3.3286
+[word-1024-s3] DONE {"summary": true, "tokenizer": "word", "actual_vocab_size": 1024, "best_step": 200, "best_val_per_token": 3.2648, "best_val_bits_per_char": 3.2897, "best_val_nats_per_char": 2.2802, "val_chars": 7050, "elapsed_s": 146.7, "samples": {"hello": " you its the a you r", "the cat": "en", "why is": " you we the a you ratent a of mer like to fonoooone the and the of a wat you you and the a ", "boop": ""}}
+[driver] finished word-1024-s3
+[driver] TOKENIZER_SWEEP_DONE

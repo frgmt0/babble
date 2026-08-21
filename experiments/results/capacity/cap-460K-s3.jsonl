@@ -1,0 +1,14 @@
+{"meta": {"name": "cap-460K-s3", "steps": 1200, "lr": 0.0003, "n_layer": 2, "n_head": 4, "n_embd": 128, "dropout": 0.2, "weight_decay": 0.01, "cosine": true, "batch_size": 8, "params": 460544, "train_rows": 359, "val_rows": 90, "train_examples": 377, "synthetic_examples": 0, "seed": 3}}
+{"step": 100, "train_window": 3.6148, "train_full": 2.9159, "val": 2.9364, "elapsed_s": 13.7, "best": true}
+{"step": 200, "train_window": 2.8334, "train_full": 2.6788, "val": 2.7345, "elapsed_s": 24.8, "best": true}
+{"step": 300, "train_window": 2.6788, "train_full": 2.5839, "val": 2.6713, "elapsed_s": 36.6, "best": true}
+{"step": 400, "train_window": 2.6029, "train_full": 2.513, "val": 2.6278, "elapsed_s": 49.3, "best": true}
+{"step": 500, "train_window": 2.5123, "train_full": 2.4693, "val": 2.6111, "elapsed_s": 62.4, "best": true}
+{"step": 600, "train_window": 2.4912, "train_full": 2.4406, "val": 2.6179, "elapsed_s": 74.2}
+{"step": 700, "train_window": 2.4936, "train_full": 2.403, "val": 2.5885, "elapsed_s": 86.6, "best": true}
+{"step": 800, "train_window": 2.4672, "train_full": 2.3784, "val": 2.5825, "elapsed_s": 98.4, "best": true}
+{"step": 900, "train_window": 2.4495, "train_full": 2.358, "val": 2.5709, "elapsed_s": 109.6, "best": true}
+{"step": 1000, "train_window": 2.4204, "train_full": 2.3472, "val": 2.5709, "elapsed_s": 121.3}
+{"step": 1100, "train_window": 2.4098, "train_full": 2.341, "val": 2.5716, "elapsed_s": 133.3}
+{"step": 1200, "train_window": 2.4055, "train_full": 2.3294, "val": 2.5649, "elapsed_s": 145.5, "best": true}
+{"summary": true, "final_step": 1200, "final_train_full": 2.3294, "final_val": 2.5649, "best_step": 1200, "best_val": 2.5649, "best_train_full": 2.3294, "best_val_bits_per_char": 3.7634, "val_chars": 7050, "elapsed_s": 147.8, "samples": {"hello": " whe it that the ssthe core the thorus me f souserend to the", "the cat": " wous tor that ass d sal as the thatus ind whe fere wo the at ta", "why is": " wou we thathe d sthe acore the thoru ngre whe f re southe coun ", "boop": " wor"}}

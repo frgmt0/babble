@@ -1,0 +1,14 @@
+{"meta": {"name": "cap-460K-s2", "steps": 1200, "lr": 0.0003, "n_layer": 2, "n_head": 4, "n_embd": 128, "dropout": 0.2, "weight_decay": 0.01, "cosine": true, "batch_size": 8, "params": 460544, "train_rows": 359, "val_rows": 90, "train_examples": 377, "synthetic_examples": 0, "seed": 2}}
+{"step": 100, "train_window": 3.5848, "train_full": 2.9055, "val": 2.926, "elapsed_s": 12.7, "best": true}
+{"step": 200, "train_window": 2.8319, "train_full": 2.6693, "val": 2.7408, "elapsed_s": 25.2, "best": true}
+{"step": 300, "train_window": 2.6663, "train_full": 2.579, "val": 2.6652, "elapsed_s": 37.0, "best": true}
+{"step": 400, "train_window": 2.6105, "train_full": 2.5132, "val": 2.635, "elapsed_s": 50.1, "best": true}
+{"step": 500, "train_window": 2.5554, "train_full": 2.4622, "val": 2.6133, "elapsed_s": 62.7, "best": true}
+{"step": 600, "train_window": 2.4894, "train_full": 2.4269, "val": 2.5976, "elapsed_s": 75.1, "best": true}
+{"step": 700, "train_window": 2.4816, "train_full": 2.3925, "val": 2.5932, "elapsed_s": 87.1, "best": true}
+{"step": 800, "train_window": 2.4524, "train_full": 2.3702, "val": 2.5855, "elapsed_s": 100.2, "best": true}
+{"step": 900, "train_window": 2.4392, "train_full": 2.3524, "val": 2.5778, "elapsed_s": 112.7, "best": true}
+{"step": 1000, "train_window": 2.4111, "train_full": 2.3412, "val": 2.5709, "elapsed_s": 125.2, "best": true}
+{"step": 1100, "train_window": 2.4088, "train_full": 2.3276, "val": 2.5704, "elapsed_s": 137.7, "best": true}
+{"step": 1200, "train_window": 2.4037, "train_full": 2.3221, "val": 2.5717, "elapsed_s": 150.4}
+{"summary": true, "final_step": 1200, "final_train_full": 2.3221, "final_val": 2.5717, "best_step": 1100, "best_val": 2.5704, "best_train_full": 2.3276, "best_val_bits_per_char": 3.7715, "val_chars": 7050, "elapsed_s": 152.6, "samples": {"hello": " what f cateren sesthe in sing the the ore sos inde toron t asor", "the cat": "s the f carelrn soso mas ase ber tor bupr pe s atou touson sesor", "why is": " walyo t a athe se an ise ase berongore t the wethe the ithest a", "boop": ""}}

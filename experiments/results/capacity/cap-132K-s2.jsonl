@@ -1,0 +1,17 @@
+{"meta": {"name": "cap-132K-s2", "steps": 1500, "lr": 0.0003, "n_layer": 2, "n_head": 2, "n_embd": 64, "dropout": 0.2, "weight_decay": 0.01, "cosine": true, "batch_size": 8, "params": 131968, "train_rows": 359, "val_rows": 90, "train_examples": 377, "synthetic_examples": 0, "seed": 2}}
+{"step": 100, "train_window": 4.1653, "train_full": 3.3908, "val": 3.3833, "elapsed_s": 6.2, "best": true}
+{"step": 200, "train_window": 3.2504, "train_full": 3.0888, "val": 3.0984, "elapsed_s": 11.8, "best": true}
+{"step": 300, "train_window": 3.014, "train_full": 2.9028, "val": 2.9185, "elapsed_s": 17.1, "best": true}
+{"step": 400, "train_window": 2.8983, "train_full": 2.7698, "val": 2.8036, "elapsed_s": 22.7, "best": true}
+{"step": 500, "train_window": 2.8019, "train_full": 2.695, "val": 2.742, "elapsed_s": 28.2, "best": true}
+{"step": 600, "train_window": 2.7215, "train_full": 2.6532, "val": 2.7198, "elapsed_s": 33.7, "best": true}
+{"step": 700, "train_window": 2.6906, "train_full": 2.6158, "val": 2.6909, "elapsed_s": 38.7, "best": true}
+{"step": 800, "train_window": 2.6674, "train_full": 2.5938, "val": 2.6762, "elapsed_s": 44.8, "best": true}
+{"step": 900, "train_window": 2.6328, "train_full": 2.5748, "val": 2.667, "elapsed_s": 50.2, "best": true}
+{"step": 1000, "train_window": 2.6143, "train_full": 2.5614, "val": 2.6554, "elapsed_s": 56.5, "best": true}
+{"step": 1100, "train_window": 2.6148, "train_full": 2.5477, "val": 2.6482, "elapsed_s": 62.8, "best": true}
+{"step": 1200, "train_window": 2.6113, "train_full": 2.5414, "val": 2.6464, "elapsed_s": 69.8, "best": true}
+{"step": 1300, "train_window": 2.5783, "train_full": 2.5379, "val": 2.6434, "elapsed_s": 75.9, "best": true}
+{"step": 1400, "train_window": 2.6048, "train_full": 2.5315, "val": 2.6405, "elapsed_s": 82.7, "best": true}
+{"step": 1500, "train_window": 2.6027, "train_full": 2.5303, "val": 2.6369, "elapsed_s": 90.5, "best": true}
+{"summary": true, "final_step": 1500, "final_train_full": 2.5303, "final_val": 2.6369, "best_step": 1500, "best_val": 2.6369, "best_train_full": 2.5303, "best_val_bits_per_char": 3.869, "val_chars": 7050, "elapsed_s": 92.2, "samples": {"hello": " tho thacade thake con s ine bousonthe the", "the cat": "helly f cate thakes we so sousouson me ousous wenou the in sesou", "why is": " thou f cade thake con sa sthe thont be t thes inde the ithess a", "boop": " who thecade thake con s int be whe me the"}}

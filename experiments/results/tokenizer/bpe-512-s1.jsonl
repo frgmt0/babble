@@ -1,0 +1,14 @@
+{"meta": {"name": "bpe-512-s1", "tokenizer": "bpe", "requested_vocab_size": 512, "actual_vocab_size": 512, "steps": 600, "lr": 0.0003, "n_layer": 4, "n_head": 4, "n_embd": 256, "block_size": 256, "dropout": 0.2, "cosine": true, "params": 3346944, "train_rows": 359, "val_rows": 90, "train_examples": 361, "val_examples": 93, "train_chars": 19471, "val_chars": 7050, "train_tokens": 11805, "val_tokens": 4348, "seed": 1}}
+{"step": 50, "train_window": 4.5665, "val_per_token": 4.2071, "val_bits_per_char": 3.7434, "elapsed_s": 14.1, "best": true}
+{"step": 100, "train_window": 4.0315, "val_per_token": 4.0339, "val_bits_per_char": 3.5892, "elapsed_s": 27.2, "best": true}
+{"step": 150, "train_window": 3.8758, "val_per_token": 3.9295, "val_bits_per_char": 3.4964, "elapsed_s": 41.0, "best": true}
+{"step": 200, "train_window": 3.717, "val_per_token": 3.8274, "val_bits_per_char": 3.4054, "elapsed_s": 55.2, "best": true}
+{"step": 250, "train_window": 3.5322, "val_per_token": 3.7333, "val_bits_per_char": 3.3217, "elapsed_s": 66.6, "best": true}
+{"step": 300, "train_window": 3.477, "val_per_token": 3.7054, "val_bits_per_char": 3.2969, "elapsed_s": 81.6, "best": true}
+{"step": 350, "train_window": 3.3152, "val_per_token": 3.6689, "val_bits_per_char": 3.2644, "elapsed_s": 94.4, "best": true}
+{"step": 400, "train_window": 3.2646, "val_per_token": 3.6659, "val_bits_per_char": 3.2618, "elapsed_s": 108.5, "best": true}
+{"step": 450, "train_window": 3.2184, "val_per_token": 3.6403, "val_bits_per_char": 3.239, "elapsed_s": 122.6, "best": true}
+{"step": 500, "train_window": 3.1329, "val_per_token": 3.6297, "val_bits_per_char": 3.2296, "elapsed_s": 135.9, "best": true}
+{"step": 550, "train_window": 3.1158, "val_per_token": 3.6211, "val_bits_per_char": 3.222, "elapsed_s": 148.2, "best": true}
+{"step": 600, "train_window": 3.119, "val_per_token": 3.6042, "val_bits_per_char": 3.2069, "elapsed_s": 162.3, "best": true}
+{"summary": true, "tokenizer": "bpe", "actual_vocab_size": 512, "best_step": 600, "best_val_per_token": 3.6042, "best_val_bits_per_char": 3.2069, "best_val_nats_per_char": 2.2228, "val_chars": 7050, "elapsed_s": 162.5, "samples": {"hello": " I you you the ct cool gu? issues", "the cat": " the cre s red the l and a that be bran s?", "why is": " the cre ct wr cre cg?", "boop": ""}}

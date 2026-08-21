@@ -1,0 +1,14 @@
+{"meta": {"name": "bpe-512-s2", "tokenizer": "bpe", "requested_vocab_size": 512, "actual_vocab_size": 512, "steps": 600, "lr": 0.0003, "n_layer": 4, "n_head": 4, "n_embd": 256, "block_size": 256, "dropout": 0.2, "cosine": true, "params": 3346944, "train_rows": 359, "val_rows": 90, "train_examples": 361, "val_examples": 93, "train_chars": 19471, "val_chars": 7050, "train_tokens": 11805, "val_tokens": 4348, "seed": 2}}
+{"step": 50, "train_window": 4.5601, "val_per_token": 4.2428, "val_bits_per_char": 3.7751, "elapsed_s": 14.5, "best": true}
+{"step": 100, "train_window": 4.0888, "val_per_token": 4.0177, "val_bits_per_char": 3.5748, "elapsed_s": 27.2, "best": true}
+{"step": 150, "train_window": 3.8611, "val_per_token": 3.8882, "val_bits_per_char": 3.4596, "elapsed_s": 41.3, "best": true}
+{"step": 200, "train_window": 3.7103, "val_per_token": 3.8372, "val_bits_per_char": 3.4142, "elapsed_s": 55.6, "best": true}
+{"step": 250, "train_window": 3.564, "val_per_token": 3.7683, "val_bits_per_char": 3.3529, "elapsed_s": 68.3, "best": true}
+{"step": 300, "train_window": 3.4287, "val_per_token": 3.7028, "val_bits_per_char": 3.2947, "elapsed_s": 83.6, "best": true}
+{"step": 350, "train_window": 3.3457, "val_per_token": 3.6538, "val_bits_per_char": 3.251, "elapsed_s": 98.0, "best": true}
+{"step": 400, "train_window": 3.2159, "val_per_token": 3.6466, "val_bits_per_char": 3.2446, "elapsed_s": 112.3, "best": true}
+{"step": 450, "train_window": 3.1694, "val_per_token": 3.6349, "val_bits_per_char": 3.2342, "elapsed_s": 127.4, "best": true}
+{"step": 500, "train_window": 3.1222, "val_per_token": 3.6072, "val_bits_per_char": 3.2096, "elapsed_s": 140.5, "best": true}
+{"step": 550, "train_window": 3.1226, "val_per_token": 3.595, "val_bits_per_char": 3.1987, "elapsed_s": 154.2, "best": true}
+{"step": 600, "train_window": 3.0615, "val_per_token": 3.5959, "val_bits_per_char": 3.1995, "elapsed_s": 168.6}
+{"summary": true, "tokenizer": "bpe", "actual_vocab_size": 512, "best_step": 550, "best_val_per_token": 3.595, "best_val_bits_per_char": 3.1987, "best_val_nats_per_char": 2.2172, "val_chars": 7050, "elapsed_s": 169.2, "samples": {"hello": " the sire it red on we the at cre in that code couren s the that you we the in to to the t pn. you ced", "the cat": " gr it at py the we re", "why is": " the a a cred freducreat be the inor ces cad exact. at p", "boop": ""}}

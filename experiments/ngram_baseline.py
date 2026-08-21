@@ -120,6 +120,14 @@ def main() -> int:
             best = (lambdas, train_loss)
     lambdas, train_loss = best
     val_loss = model.mean_loss(val_streams, lambdas)
+    # Char-normalised, so this sits on the same axis as
+    # experiments/tokenizer_sweep.py's BPE/word numbers: `val_loss` above is
+    # nats *per byte* (this baseline is byte-level), which is not quite the
+    # same as nats per Unicode character whenever the corpus has any non-ASCII
+    # text. See CAPACITY_TOKENIZER_REPORT.md for the full normalisation note.
+    val_chars = sum(len(row.text) for row in split.val)
+    val_nats_total = val_loss * sum(1 for tokens, mask in val_streams for i in range(1, len(tokens)) if mask[i])
+    val_bits_per_char = (val_nats_total / max(val_chars, 1)) / math.log(2)
     print(
         json.dumps(
             {
@@ -129,6 +137,8 @@ def main() -> int:
                 "val_rows": len(split.val),
                 "train_loss": round(train_loss, 4),
                 "val_loss": round(val_loss, 4),
+                "val_chars": val_chars,
+                "val_bits_per_char": round(val_bits_per_char, 4),
             }
         ),
         flush=True,

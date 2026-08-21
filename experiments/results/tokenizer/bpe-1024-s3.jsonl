@@ -1,0 +1,14 @@
+{"meta": {"name": "bpe-1024-s3", "tokenizer": "bpe", "requested_vocab_size": 1024, "actual_vocab_size": 1024, "steps": 600, "lr": 0.0003, "n_layer": 4, "n_head": 4, "n_embd": 256, "block_size": 256, "dropout": 0.2, "cosine": true, "params": 3478016, "train_rows": 359, "val_rows": 90, "train_examples": 361, "val_examples": 93, "train_chars": 19471, "val_chars": 7050, "train_tokens": 9670, "val_tokens": 3728, "seed": 3}}
+{"step": 50, "train_window": 4.842, "val_per_token": 4.4308, "val_bits_per_char": 3.3802, "elapsed_s": 11.0, "best": true}
+{"step": 100, "train_window": 4.1365, "val_per_token": 4.2819, "val_bits_per_char": 3.2666, "elapsed_s": 22.6, "best": true}
+{"step": 150, "train_window": 3.9558, "val_per_token": 4.2069, "val_bits_per_char": 3.2094, "elapsed_s": 34.4, "best": true}
+{"step": 200, "train_window": 3.8475, "val_per_token": 4.1138, "val_bits_per_char": 3.1384, "elapsed_s": 48.0, "best": true}
+{"step": 250, "train_window": 3.7409, "val_per_token": 4.1077, "val_bits_per_char": 3.1337, "elapsed_s": 60.5, "best": true}
+{"step": 300, "train_window": 3.6467, "val_per_token": 4.1042, "val_bits_per_char": 3.131, "elapsed_s": 72.4, "best": true}
+{"step": 350, "train_window": 3.6208, "val_per_token": 4.0758, "val_bits_per_char": 3.1094, "elapsed_s": 84.2, "best": true}
+{"step": 400, "train_window": 3.4641, "val_per_token": 4.0696, "val_bits_per_char": 3.1047, "elapsed_s": 93.9, "best": true}
+{"step": 450, "train_window": 3.4692, "val_per_token": 4.0568, "val_bits_per_char": 3.0949, "elapsed_s": 107.2, "best": true}
+{"step": 500, "train_window": 3.4296, "val_per_token": 4.0404, "val_bits_per_char": 3.0824, "elapsed_s": 118.5, "best": true}
+{"step": 550, "train_window": 3.3063, "val_per_token": 4.0407, "val_bits_per_char": 3.0826, "elapsed_s": 129.8}
+{"step": 600, "train_window": 3.3141, "val_per_token": 4.0616, "val_bits_per_char": 3.0986, "elapsed_s": 141.3}
+{"summary": true, "tokenizer": "bpe", "actual_vocab_size": 1024, "best_step": 500, "best_val_per_token": 4.0404, "best_val_bits_per_char": 3.0824, "best_val_nats_per_char": 2.1366, "val_chars": 7050, "elapsed_s": 142.0, "samples": {"hello": " do what you to that the see the aner to that to to of as a to like and in to in a was like to to to task?", "the cat": " you goy it is to to a or like a an to en of as a  in it the a aling to l?", "why is": " the fun?", "boop": " do what you to that to you the aner to that to to of as a you to a in a in to to like that like to task in a "}}

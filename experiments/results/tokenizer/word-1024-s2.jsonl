@@ -1,0 +1,14 @@
+{"meta": {"name": "word-1024-s2", "tokenizer": "word", "requested_vocab_size": 1024, "actual_vocab_size": 1024, "steps": 600, "lr": 0.0003, "n_layer": 4, "n_head": 4, "n_embd": 256, "block_size": 256, "dropout": 0.2, "cosine": true, "params": 3478016, "train_rows": 359, "val_rows": 90, "train_examples": 361, "val_examples": 95, "train_chars": 19471, "val_chars": 7050, "train_tokens": 11024, "val_tokens": 4924, "seed": 2}}
+{"step": 50, "train_window": 4.4382, "val_per_token": 3.6975, "val_bits_per_char": 3.7257, "elapsed_s": 12.1, "best": true}
+{"step": 100, "train_window": 3.4695, "val_per_token": 3.4028, "val_bits_per_char": 3.4288, "elapsed_s": 23.2, "best": true}
+{"step": 150, "train_window": 3.2623, "val_per_token": 3.2913, "val_bits_per_char": 3.3164, "elapsed_s": 35.5, "best": true}
+{"step": 200, "train_window": 3.1528, "val_per_token": 3.2986, "val_bits_per_char": 3.3238, "elapsed_s": 47.1}
+{"step": 250, "train_window": 3.0136, "val_per_token": 3.2483, "val_bits_per_char": 3.2732, "elapsed_s": 57.7, "best": true}
+{"step": 300, "train_window": 2.9441, "val_per_token": 3.2853, "val_bits_per_char": 3.3104, "elapsed_s": 70.6}
+{"step": 350, "train_window": 2.885, "val_per_token": 3.2584, "val_bits_per_char": 3.2832, "elapsed_s": 83.0}
+{"step": 400, "train_window": 2.8277, "val_per_token": 3.2694, "val_bits_per_char": 3.2944, "elapsed_s": 95.5}
+{"step": 450, "train_window": 2.7821, "val_per_token": 3.2724, "val_bits_per_char": 3.2974, "elapsed_s": 109.4}
+{"step": 500, "train_window": 2.7432, "val_per_token": 3.3325, "val_bits_per_char": 3.358, "elapsed_s": 122.3}
+{"step": 550, "train_window": 2.7294, "val_per_token": 3.3174, "val_bits_per_char": 3.3428, "elapsed_s": 134.8}
+{"step": 600, "train_window": 2.7094, "val_per_token": 3.3448, "val_bits_per_char": 3.3704, "elapsed_s": 146.5}
+{"summary": true, "tokenizer": "word", "actual_vocab_size": 1024, "best_step": 250, "best_val_per_token": 3.2483, "best_val_bits_per_char": 3.2732, "best_val_nats_per_char": 2.2688, "val_chars": 7050, "elapsed_s": 147.3, "samples": {"hello": " you moplupat but s like to of s ping the int se in to the like at stihinointe inin", "the cat": "e the the and the a but a like to of prinerinkintte and like s data sils it ppointe inin", "why is": " you moplupar but a me llalalie p the of on f in to the of ils it piorone wino", "boop": ""}}

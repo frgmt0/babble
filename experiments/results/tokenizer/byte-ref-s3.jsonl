@@ -1,0 +1,14 @@
+{"meta": {"name": "byte-ref-s3", "tokenizer": "byte", "requested_vocab_size": 260, "actual_vocab_size": 260, "steps": 600, "lr": 0.0003, "n_layer": 4, "n_head": 4, "n_embd": 256, "block_size": 256, "dropout": 0.2, "cosine": true, "params": 3282432, "train_rows": 359, "val_rows": 90, "train_examples": 377, "val_examples": 98, "train_chars": 19471, "val_chars": 7050, "train_tokens": 19912, "val_tokens": 7170, "seed": 3}}
+{"step": 50, "train_window": 3.4444, "val_per_token": 2.8416, "val_bits_per_char": 4.1694, "elapsed_s": 21.4, "best": true}
+{"step": 100, "train_window": 2.7393, "val_per_token": 2.7444, "val_bits_per_char": 4.0267, "elapsed_s": 40.2, "best": true}
+{"step": 150, "train_window": 2.6571, "val_per_token": 2.6742, "val_bits_per_char": 3.9237, "elapsed_s": 56.6, "best": true}
+{"step": 200, "train_window": 2.5723, "val_per_token": 2.638, "val_bits_per_char": 3.8706, "elapsed_s": 76.2, "best": true}
+{"step": 250, "train_window": 2.5097, "val_per_token": 2.638, "val_bits_per_char": 3.8706, "elapsed_s": 98.7, "best": true}
+{"step": 300, "train_window": 2.4854, "val_per_token": 2.6025, "val_bits_per_char": 3.8185, "elapsed_s": 116.0, "best": true}
+{"step": 350, "train_window": 2.4446, "val_per_token": 2.582, "val_bits_per_char": 3.7884, "elapsed_s": 135.3, "best": true}
+{"step": 400, "train_window": 2.3912, "val_per_token": 2.5769, "val_bits_per_char": 3.7809, "elapsed_s": 153.5, "best": true}
+{"step": 450, "train_window": 2.338, "val_per_token": 2.5693, "val_bits_per_char": 3.7698, "elapsed_s": 174.3, "best": true}
+{"step": 500, "train_window": 2.3022, "val_per_token": 2.5862, "val_bits_per_char": 3.7946, "elapsed_s": 192.4}
+{"step": 550, "train_window": 2.3081, "val_per_token": 2.5801, "val_bits_per_char": 3.7857, "elapsed_s": 211.2}
+{"step": 600, "train_window": 2.2985, "val_per_token": 2.582, "val_bits_per_char": 3.7885, "elapsed_s": 230.9}
+{"summary": true, "tokenizer": "byte", "actual_vocab_size": 260, "best_step": 450, "best_val_per_token": 2.5693, "best_val_bits_per_char": 3.7698, "best_val_nats_per_char": 2.613, "val_chars": 7050, "elapsed_s": 231.9, "samples": {"hello": " whit that the d ss we core thelllyou nge f sinoure we whis mon ", "the cat": " wous tore mat asthat al as the was ind yofonde the wo the at ta", "why is": " wou what that dore t as thathe whoru t we whe f re wouthes mon ", "boop": " wet it"}}

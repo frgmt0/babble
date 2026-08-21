@@ -1,0 +1,14 @@
+{"meta": {"name": "cap-3.3M-s2", "steps": 600, "lr": 0.0003, "n_layer": 4, "n_head": 4, "n_embd": 256, "dropout": 0.2, "weight_decay": 0.01, "cosine": true, "batch_size": 8, "params": 3347968, "train_rows": 359, "val_rows": 90, "train_examples": 361, "synthetic_examples": 0, "seed": 2}}
+{"step": 50, "train_window": 3.4336, "train_full": 2.8401, "val": 2.8638, "elapsed_s": 42.7, "best": true}
+{"step": 100, "train_window": 2.8043, "train_full": 2.6559, "val": 2.7449, "elapsed_s": 90.9, "best": true}
+{"step": 150, "train_window": 2.6589, "train_full": 2.5342, "val": 2.6669, "elapsed_s": 140.2, "best": true}
+{"step": 200, "train_window": 2.6201, "train_full": 2.4747, "val": 2.6597, "elapsed_s": 191.9, "best": true}
+{"step": 250, "train_window": 2.4939, "train_full": 2.4121, "val": 2.633, "elapsed_s": 244.8, "best": true}
+{"step": 300, "train_window": 2.4276, "train_full": 2.3662, "val": 2.6153, "elapsed_s": 298.4, "best": true}
+{"step": 350, "train_window": 2.414, "train_full": 2.3085, "val": 2.5963, "elapsed_s": 341.7, "best": true}
+{"step": 400, "train_window": 2.3492, "train_full": 2.2697, "val": 2.6021, "elapsed_s": 388.1}
+{"step": 450, "train_window": 2.3114, "train_full": 2.2404, "val": 2.6021, "elapsed_s": 441.6}
+{"step": 500, "train_window": 2.2836, "train_full": 2.2094, "val": 2.5949, "elapsed_s": 490.3, "best": true}
+{"step": 550, "train_window": 2.3, "train_full": 2.1884, "val": 2.6029, "elapsed_s": 539.0}
+{"step": 600, "train_window": 2.2799, "train_full": 2.1757, "val": 2.6107, "elapsed_s": 585.1}
+{"summary": true, "final_step": 600, "final_train_full": 2.1757, "final_val": 2.6107, "best_step": 500, "best_val": 2.5949, "best_train_full": 2.2094, "best_val_bits_per_char": 3.8074, "val_chars": 7050, "elapsed_s": 605.2, "samples": {"hello": " what fouree t", "the cat": "s lolof ckeell", "why is": " you thacke ithake as ing as ithe there t the the the as thestha", "boop": ""}}

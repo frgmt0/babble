@@ -1,0 +1,14 @@
+{"meta": {"name": "word-1024-s3", "tokenizer": "word", "requested_vocab_size": 1024, "actual_vocab_size": 1024, "steps": 600, "lr": 0.0003, "n_layer": 4, "n_head": 4, "n_embd": 256, "block_size": 256, "dropout": 0.2, "cosine": true, "params": 3478016, "train_rows": 359, "val_rows": 90, "train_examples": 361, "val_examples": 95, "train_chars": 19471, "val_chars": 7050, "train_tokens": 11024, "val_tokens": 4924, "seed": 3}}
+{"step": 50, "train_window": 4.5283, "val_per_token": 3.6708, "val_bits_per_char": 3.6988, "elapsed_s": 11.4, "best": true}
+{"step": 100, "train_window": 3.4514, "val_per_token": 3.3903, "val_bits_per_char": 3.4161, "elapsed_s": 23.2, "best": true}
+{"step": 150, "train_window": 3.2256, "val_per_token": 3.3563, "val_bits_per_char": 3.3819, "elapsed_s": 35.6, "best": true}
+{"step": 200, "train_window": 3.1001, "val_per_token": 3.2648, "val_bits_per_char": 3.2897, "elapsed_s": 49.4, "best": true}
+{"step": 250, "train_window": 3.0288, "val_per_token": 3.2721, "val_bits_per_char": 3.2971, "elapsed_s": 62.2}
+{"step": 300, "train_window": 2.9434, "val_per_token": 3.2746, "val_bits_per_char": 3.2996, "elapsed_s": 73.1}
+{"step": 350, "train_window": 2.9129, "val_per_token": 3.2742, "val_bits_per_char": 3.2992, "elapsed_s": 85.3}
+{"step": 400, "train_window": 2.8044, "val_per_token": 3.294, "val_bits_per_char": 3.3191, "elapsed_s": 95.9}
+{"step": 450, "train_window": 2.7475, "val_per_token": 3.2966, "val_bits_per_char": 3.3218, "elapsed_s": 109.5}
+{"step": 500, "train_window": 2.7626, "val_per_token": 3.2976, "val_bits_per_char": 3.3228, "elapsed_s": 122.0}
+{"step": 550, "train_window": 2.6734, "val_per_token": 3.3126, "val_bits_per_char": 3.3379, "elapsed_s": 133.9}
+{"step": 600, "train_window": 2.6885, "val_per_token": 3.3034, "val_bits_per_char": 3.3286, "elapsed_s": 146.4}
+{"summary": true, "tokenizer": "word", "actual_vocab_size": 1024, "best_step": 200, "best_val_per_token": 3.2648, "best_val_bits_per_char": 3.2897, "best_val_nats_per_char": 2.2802, "val_chars": 7050, "elapsed_s": 146.7, "samples": {"hello": " you its the a you r", "the cat": "en", "why is": " you we the a you ratent a of mer like to fonoooone the and the of a wat you you and the a ", "boop": ""}}
