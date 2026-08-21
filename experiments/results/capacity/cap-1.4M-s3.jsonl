@@ -1,0 +1,18 @@
+{"meta": {"name": "cap-1.4M-s3", "steps": 800, "lr": 0.0003, "n_layer": 3, "n_head": 4, "n_embd": 192, "dropout": 0.2, "weight_decay": 0.01, "cosine": true, "batch_size": 8, "params": 1428864, "train_rows": 359, "val_rows": 90, "train_examples": 377, "synthetic_examples": 0, "seed": 3}}
+{"step": 50, "train_window": 3.6975, "train_full": 2.9475, "val": 2.9618, "elapsed_s": 14.9, "best": true}
+{"step": 100, "train_window": 2.8398, "train_full": 2.725, "val": 2.7746, "elapsed_s": 29.4, "best": true}
+{"step": 150, "train_window": 2.7276, "train_full": 2.6205, "val": 2.7034, "elapsed_s": 42.1, "best": true}
+{"step": 200, "train_window": 2.6324, "train_full": 2.5579, "val": 2.659, "elapsed_s": 57.6, "best": true}
+{"step": 250, "train_window": 2.577, "train_full": 2.5095, "val": 2.6488, "elapsed_s": 73.8, "best": true}
+{"step": 300, "train_window": 2.5518, "train_full": 2.4649, "val": 2.6141, "elapsed_s": 87.6, "best": true}
+{"step": 350, "train_window": 2.5113, "train_full": 2.4209, "val": 2.5999, "elapsed_s": 102.4, "best": true}
+{"step": 400, "train_window": 2.47, "train_full": 2.3972, "val": 2.5932, "elapsed_s": 116.4, "best": true}
+{"step": 450, "train_window": 2.4099, "train_full": 2.3665, "val": 2.5805, "elapsed_s": 133.2, "best": true}
+{"step": 500, "train_window": 2.3858, "train_full": 2.3415, "val": 2.5829, "elapsed_s": 147.1}
+{"step": 550, "train_window": 2.3711, "train_full": 2.3283, "val": 2.5875, "elapsed_s": 162.0}
+{"step": 600, "train_window": 2.3715, "train_full": 2.3057, "val": 2.5802, "elapsed_s": 177.2, "best": true}
+{"step": 650, "train_window": 2.402, "train_full": 2.2876, "val": 2.5728, "elapsed_s": 192.4, "best": true}
+{"step": 700, "train_window": 2.3395, "train_full": 2.2762, "val": 2.5706, "elapsed_s": 207.6, "best": true}
+{"step": 750, "train_window": 2.3603, "train_full": 2.2672, "val": 2.566, "elapsed_s": 221.6, "best": true}
+{"step": 800, "train_window": 2.3526, "train_full": 2.2626, "val": 2.5746, "elapsed_s": 236.7}
+{"summary": true, "final_step": 800, "final_train_full": 2.2626, "final_val": 2.5746, "best_step": 750, "best_val": 2.566, "best_train_full": 2.2672, "best_val_bits_per_char": 3.765, "val_chars": 7050, "elapsed_s": 241.5, "samples": {"hello": " whis t thathe asss thalore thelllyou nge f se furexan whe coun ", "the cat": " wous tore mat ass at al as thelinore ng if sousere we t that th", "why is": " wou it that t doss t s masthallis tupe weles sonre wo thes mon ", "boop": " int it"}}

@@ -38,9 +38,24 @@ from babble.model import sequence_loss
 PROBES = ("hello", "the cat", "why is", "boop")
 
 
+def char_count(rows) -> int:
+    """Unicode character count of `rows`' raw text -- the normalisation base
+    for bits/nats-per-character. Counted once per row regardless of how many
+    block-sized chunks the tokenizer splits it into, so it stays comparable
+    across tokenizers with different chunking (see experiments/tokenizer_sweep.py,
+    where a token is not a character and per-token loss alone would mislead)."""
+    return sum(len(row.text) for row in rows)
+
+
 @torch.inference_mode()
-def full_loss(model: Babbler, examples, chunk: int = 64) -> float:
-    """Token-weighted mean loss over `examples`, batched in chunks."""
+def full_loss_stats(model: Babbler, examples, chunk: int = 64, pad_id: int = 256) -> tuple[float, int]:
+    """`(total nats, target-token count)` over `examples`, batched in chunks.
+
+    The sum, not just the mean `full_loss` reports, is what bits-per-character
+    normalisation needs: dividing total nats by a token count would still be a
+    per-token number, just relabelled -- dividing by a character count instead
+    requires the un-averaged total.
+    """
     was_training = model.training
     model.eval()
     try:
@@ -48,7 +63,7 @@ def full_loss(model: Babbler, examples, chunk: int = 64) -> float:
         for i in range(0, len(examples), chunk):
             batch = examples[i : i + chunk]
             width = max(len(e) for e in batch)
-            t = torch.full((len(batch), width), 256, dtype=torch.long)  # PAD_ID
+            t = torch.full((len(batch), width), pad_id, dtype=torch.long)
             m = torch.zeros((len(batch), width), dtype=torch.long)
             for j, ex in enumerate(batch):
                 t[j, : len(ex)] = torch.as_tensor(ex.tokens, dtype=torch.long)
@@ -57,9 +72,19 @@ def full_loss(model: Babbler, examples, chunk: int = 64) -> float:
             tm = m[:, 1:].to(pt.dtype)
             total += float((pt * tm).sum())
             tokens += int(tm.sum())
-        return total / max(tokens, 1)
+        return total, tokens
     finally:
         model.train(was_training)
+
+
+def full_loss(model: Babbler, examples, chunk: int = 64) -> float:
+    """Token-weighted mean loss over `examples`, batched in chunks."""
+    total, tokens = full_loss_stats(model, examples, chunk)
+    return total / max(tokens, 1)
+
+
+def bits_per_char(nats_total: float, chars: int) -> float:
+    return (nats_total / max(chars, 1)) / math.log(2)
 
 
 def load_synthetic_rows(path: Path):
@@ -205,6 +230,13 @@ def main() -> int:
     if best["state"] is not None:
         model.load_state_dict(best["state"])
     model.eval()
+    # Bits-per-character at the best-val checkpoint: byte-level here means one
+    # token is one byte, so this is close to a formality -- but computing it
+    # the same way (total nats / raw Unicode char count of the held-out text)
+    # as experiments/tokenizer_sweep.py does is what makes this run's number
+    # and a BPE/word run's number sit on the same axis. See CAPACITY_TOKENIZER_REPORT.md.
+    best_val_nats, _ = full_loss_stats(model, val_examples)
+    best_val_bpc = bits_per_char(best_val_nats, char_count(split.val))
     samples = {}
     for probe in PROBES:
         torch.manual_seed(args.seed)
@@ -217,6 +249,8 @@ def main() -> int:
         "best_step": best["step"],
         "best_val": round(best["val"], 4) if best["val"] < math.inf else None,
         "best_train_full": round(best["train_full"], 4) if best["train_full"] else None,
+        "best_val_bits_per_char": round(best_val_bpc, 4),
+        "val_chars": char_count(split.val),
         "elapsed_s": round(time.time() - started, 1),
         "samples": samples,
     }

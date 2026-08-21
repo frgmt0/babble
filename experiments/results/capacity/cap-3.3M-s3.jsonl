@@ -1,0 +1,14 @@
+{"meta": {"name": "cap-3.3M-s3", "steps": 600, "lr": 0.0003, "n_layer": 4, "n_head": 4, "n_embd": 256, "dropout": 0.2, "weight_decay": 0.01, "cosine": true, "batch_size": 8, "params": 3347968, "train_rows": 359, "val_rows": 90, "train_examples": 361, "synthetic_examples": 0, "seed": 3}}
+{"step": 50, "train_window": 3.5272, "train_full": 2.8527, "val": 2.8925, "elapsed_s": 33.5, "best": true}
+{"step": 100, "train_window": 2.7695, "train_full": 2.6412, "val": 2.7302, "elapsed_s": 77.7, "best": true}
+{"step": 150, "train_window": 2.641, "train_full": 2.5651, "val": 2.7146, "elapsed_s": 118.7, "best": true}
+{"step": 200, "train_window": 2.5577, "train_full": 2.4625, "val": 2.6434, "elapsed_s": 159.2, "best": true}
+{"step": 250, "train_window": 2.5007, "train_full": 2.409, "val": 2.6344, "elapsed_s": 197.5, "best": true}
+{"step": 300, "train_window": 2.4572, "train_full": 2.3516, "val": 2.6184, "elapsed_s": 232.4, "best": true}
+{"step": 350, "train_window": 2.423, "train_full": 2.3225, "val": 2.6226, "elapsed_s": 268.7}
+{"step": 400, "train_window": 2.3356, "train_full": 2.2746, "val": 2.6071, "elapsed_s": 305.8, "best": true}
+{"step": 450, "train_window": 2.3187, "train_full": 2.2391, "val": 2.6177, "elapsed_s": 362.9}
+{"step": 500, "train_window": 2.3157, "train_full": 2.2192, "val": 2.6099, "elapsed_s": 411.1}
+{"step": 550, "train_window": 2.2277, "train_full": 2.1955, "val": 2.6168, "elapsed_s": 450.8}
+{"step": 600, "train_window": 2.2577, "train_full": 2.1816, "val": 2.6119, "elapsed_s": 491.4}
+{"summary": true, "final_step": 600, "final_train_full": 2.1816, "final_val": 2.6119, "best_step": 400, "best_val": 2.6071, "best_train_full": 2.2746, "best_val_bits_per_char": 3.8253, "val_chars": 7050, "elapsed_s": 509.6, "samples": {"hello": " whe we that thasest s core thellasthange f se furex thantha", "the cat": " wous tore tha asthat al as the thore n t fesousthe we thas me a", "why is": " wou it re tha dore thas ss thes a auan a fond onre wo thas men ", "boop": " whe west that d se thalors the thor an ake sonorrer t t thor th"}}

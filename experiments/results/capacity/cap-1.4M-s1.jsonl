@@ -1,0 +1,18 @@
+{"meta": {"name": "cap-1.4M-s1", "steps": 800, "lr": 0.0003, "n_layer": 3, "n_head": 4, "n_embd": 192, "dropout": 0.2, "weight_decay": 0.01, "cosine": true, "batch_size": 8, "params": 1428864, "train_rows": 359, "val_rows": 90, "train_examples": 377, "synthetic_examples": 0, "seed": 1}}
+{"step": 50, "train_window": 3.6898, "train_full": 2.9468, "val": 2.9519, "elapsed_s": 16.7, "best": true}
+{"step": 100, "train_window": 2.847, "train_full": 2.712, "val": 2.7632, "elapsed_s": 32.1, "best": true}
+{"step": 150, "train_window": 2.6994, "train_full": 2.6261, "val": 2.7107, "elapsed_s": 45.7, "best": true}
+{"step": 200, "train_window": 2.6499, "train_full": 2.5521, "val": 2.6635, "elapsed_s": 60.4, "best": true}
+{"step": 250, "train_window": 2.5761, "train_full": 2.4977, "val": 2.6268, "elapsed_s": 76.0, "best": true}
+{"step": 300, "train_window": 2.549, "train_full": 2.4548, "val": 2.6127, "elapsed_s": 91.3, "best": true}
+{"step": 350, "train_window": 2.4919, "train_full": 2.4206, "val": 2.5974, "elapsed_s": 106.1, "best": true}
+{"step": 400, "train_window": 2.4538, "train_full": 2.3955, "val": 2.6075, "elapsed_s": 120.3}
+{"step": 450, "train_window": 2.4534, "train_full": 2.3665, "val": 2.5936, "elapsed_s": 135.3, "best": true}
+{"step": 500, "train_window": 2.4405, "train_full": 2.3428, "val": 2.5824, "elapsed_s": 149.7, "best": true}
+{"step": 550, "train_window": 2.3987, "train_full": 2.3178, "val": 2.5835, "elapsed_s": 164.3}
+{"step": 600, "train_window": 2.3929, "train_full": 2.3047, "val": 2.5837, "elapsed_s": 179.1}
+{"step": 650, "train_window": 2.361, "train_full": 2.2833, "val": 2.5723, "elapsed_s": 193.1, "best": true}
+{"step": 700, "train_window": 2.3628, "train_full": 2.2786, "val": 2.575, "elapsed_s": 208.1}
+{"step": 750, "train_window": 2.3766, "train_full": 2.2654, "val": 2.565, "elapsed_s": 223.2, "best": true}
+{"step": 800, "train_window": 2.3207, "train_full": 2.2601, "val": 2.5627, "elapsed_s": 238.8, "best": true}
+{"summary": true, "final_step": 800, "final_train_full": 2.2601, "final_val": 2.5627, "best_step": 800, "best_val": 2.5627, "best_train_full": 2.2601, "best_val_bits_per_char": 3.7602, "val_chars": 7050, "elapsed_s": 243.9, "samples": {"hello": " that wher you watstoull ghas s so tha wou and susthe he t that ", "the cat": "s ou", "why is": " that the the athathe lo ghat s st tha sthe cathestaske ll tore ", "boop": ""}}

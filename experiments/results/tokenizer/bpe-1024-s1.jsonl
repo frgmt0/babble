@@ -1,0 +1,14 @@
+{"meta": {"name": "bpe-1024-s1", "tokenizer": "bpe", "requested_vocab_size": 1024, "actual_vocab_size": 1024, "steps": 600, "lr": 0.0003, "n_layer": 4, "n_head": 4, "n_embd": 256, "block_size": 256, "dropout": 0.2, "cosine": true, "params": 3478016, "train_rows": 359, "val_rows": 90, "train_examples": 361, "val_examples": 93, "train_chars": 19471, "val_chars": 7050, "train_tokens": 9670, "val_tokens": 3728, "seed": 1}}
+{"step": 50, "train_window": 4.7723, "val_per_token": 4.4314, "val_bits_per_char": 3.3806, "elapsed_s": 12.5, "best": true}
+{"step": 100, "train_window": 4.0707, "val_per_token": 4.2628, "val_bits_per_char": 3.2521, "elapsed_s": 24.7, "best": true}
+{"step": 150, "train_window": 3.9624, "val_per_token": 4.1747, "val_bits_per_char": 3.1848, "elapsed_s": 36.7, "best": true}
+{"step": 200, "train_window": 3.8498, "val_per_token": 4.1099, "val_bits_per_char": 3.1354, "elapsed_s": 49.2, "best": true}
+{"step": 250, "train_window": 3.693, "val_per_token": 4.1153, "val_bits_per_char": 3.1395, "elapsed_s": 59.9}
+{"step": 300, "train_window": 3.7256, "val_per_token": 4.122, "val_bits_per_char": 3.1447, "elapsed_s": 73.7}
+{"step": 350, "train_window": 3.5764, "val_per_token": 4.0931, "val_bits_per_char": 3.1226, "elapsed_s": 85.6, "best": true}
+{"step": 400, "train_window": 3.511, "val_per_token": 4.0857, "val_bits_per_char": 3.1169, "elapsed_s": 97.0, "best": true}
+{"step": 450, "train_window": 3.5046, "val_per_token": 4.0771, "val_bits_per_char": 3.1103, "elapsed_s": 108.6, "best": true}
+{"step": 500, "train_window": 3.4384, "val_per_token": 4.0814, "val_bits_per_char": 3.1136, "elapsed_s": 119.1}
+{"step": 550, "train_window": 3.4204, "val_per_token": 4.0737, "val_bits_per_char": 3.1078, "elapsed_s": 131.0, "best": true}
+{"step": 600, "train_window": 3.4134, "val_per_token": 4.0717, "val_bits_per_char": 3.1062, "elapsed_s": 143.2, "best": true}
+{"summary": true, "tokenizer": "bpe", "actual_vocab_size": 1024, "best_step": 600, "best_val_per_token": 4.0717, "best_val_bits_per_char": 3.1062, "best_val_nats_per_char": 2.1531, "val_chars": 7050, "elapsed_s": 143.6, "samples": {"hello": " you you corpus the be a solbec11", "the cat": "", "why is": " you you t the be to at not more a a 5 cap bui a a to in in a of for 4 work to ced to be think to ", "boop": ""}}

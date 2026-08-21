@@ -1,0 +1,17 @@
+{"meta": {"name": "cap-132K-s3", "steps": 1500, "lr": 0.0003, "n_layer": 2, "n_head": 2, "n_embd": 64, "dropout": 0.2, "weight_decay": 0.01, "cosine": true, "batch_size": 8, "params": 131968, "train_rows": 359, "val_rows": 90, "train_examples": 377, "synthetic_examples": 0, "seed": 3}}
+{"step": 100, "train_window": 4.1785, "train_full": 3.3899, "val": 3.381, "elapsed_s": 7.1, "best": true}
+{"step": 200, "train_window": 3.2543, "train_full": 3.1121, "val": 3.1176, "elapsed_s": 13.1, "best": true}
+{"step": 300, "train_window": 3.0399, "train_full": 2.9092, "val": 2.9299, "elapsed_s": 19.6, "best": true}
+{"step": 400, "train_window": 2.893, "train_full": 2.7852, "val": 2.8246, "elapsed_s": 26.3, "best": true}
+{"step": 500, "train_window": 2.7637, "train_full": 2.7163, "val": 2.7704, "elapsed_s": 33.2, "best": true}
+{"step": 600, "train_window": 2.7237, "train_full": 2.6835, "val": 2.7492, "elapsed_s": 39.8, "best": true}
+{"step": 700, "train_window": 2.73, "train_full": 2.6376, "val": 2.712, "elapsed_s": 46.8, "best": true}
+{"step": 800, "train_window": 2.6868, "train_full": 2.6049, "val": 2.6909, "elapsed_s": 53.7, "best": true}
+{"step": 900, "train_window": 2.6619, "train_full": 2.5861, "val": 2.6753, "elapsed_s": 59.8, "best": true}
+{"step": 1000, "train_window": 2.6371, "train_full": 2.5717, "val": 2.6686, "elapsed_s": 68.1, "best": true}
+{"step": 1100, "train_window": 2.6253, "train_full": 2.5613, "val": 2.6639, "elapsed_s": 76.9, "best": true}
+{"step": 1200, "train_window": 2.6041, "train_full": 2.5519, "val": 2.6575, "elapsed_s": 83.8, "best": true}
+{"step": 1300, "train_window": 2.6128, "train_full": 2.5472, "val": 2.6529, "elapsed_s": 90.0, "best": true}
+{"step": 1400, "train_window": 2.6101, "train_full": 2.5414, "val": 2.6516, "elapsed_s": 96.6, "best": true}
+{"step": 1500, "train_window": 2.6013, "train_full": 2.5376, "val": 2.6483, "elapsed_s": 102.8, "best": true}
+{"summary": true, "final_step": 1500, "final_train_full": 2.5376, "final_val": 2.6483, "best_step": 1500, "best_val": 2.6483, "best_train_full": 2.5376, "best_val_bits_per_char": 3.8858, "val_chars": 7050, "elapsed_s": 104.2, "samples": {"hello": " wore t touthe d se thacore the wasou nge f se oure wouthe coun ", "the cat": " worer are t t d se thacore thesthe inng ifondusthe we the cont ", "why is": " wore t that t d sode acore theses thange fonderere wo the coun ", "boop": " worer are t t d se thacore the wasou n te whe inreson t the"}}

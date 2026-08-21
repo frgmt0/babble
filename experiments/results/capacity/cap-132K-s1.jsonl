@@ -1,0 +1,17 @@
+{"meta": {"name": "cap-132K-s1", "steps": 1500, "lr": 0.0003, "n_layer": 2, "n_head": 2, "n_embd": 64, "dropout": 0.2, "weight_decay": 0.01, "cosine": true, "batch_size": 8, "params": 131968, "train_rows": 359, "val_rows": 90, "train_examples": 377, "synthetic_examples": 0, "seed": 1}}
+{"step": 100, "train_window": 4.2209, "train_full": 3.4102, "val": 3.4025, "elapsed_s": 5.8, "best": true}
+{"step": 200, "train_window": 3.2614, "train_full": 3.0903, "val": 3.0949, "elapsed_s": 10.6, "best": true}
+{"step": 300, "train_window": 3.0402, "train_full": 2.8827, "val": 2.9004, "elapsed_s": 16.7, "best": true}
+{"step": 400, "train_window": 2.8583, "train_full": 2.7674, "val": 2.8096, "elapsed_s": 22.1, "best": true}
+{"step": 500, "train_window": 2.8085, "train_full": 2.7062, "val": 2.7639, "elapsed_s": 29.0, "best": true}
+{"step": 600, "train_window": 2.7521, "train_full": 2.6493, "val": 2.7166, "elapsed_s": 34.2, "best": true}
+{"step": 700, "train_window": 2.6935, "train_full": 2.6241, "val": 2.6964, "elapsed_s": 40.6, "best": true}
+{"step": 800, "train_window": 2.6492, "train_full": 2.5928, "val": 2.6714, "elapsed_s": 46.7, "best": true}
+{"step": 900, "train_window": 2.6455, "train_full": 2.5778, "val": 2.6663, "elapsed_s": 53.3, "best": true}
+{"step": 1000, "train_window": 2.6384, "train_full": 2.557, "val": 2.6532, "elapsed_s": 59.3, "best": true}
+{"step": 1100, "train_window": 2.6305, "train_full": 2.5491, "val": 2.6513, "elapsed_s": 65.4, "best": true}
+{"step": 1200, "train_window": 2.6352, "train_full": 2.544, "val": 2.648, "elapsed_s": 70.4, "best": true}
+{"step": 1300, "train_window": 2.6135, "train_full": 2.5353, "val": 2.6441, "elapsed_s": 75.3, "best": true}
+{"step": 1400, "train_window": 2.5967, "train_full": 2.5323, "val": 2.6396, "elapsed_s": 80.3, "best": true}
+{"step": 1500, "train_window": 2.5891, "train_full": 2.5275, "val": 2.6376, "elapsed_s": 85.8, "best": true}
+{"summary": true, "final_step": 1500, "final_train_full": 2.5275, "final_val": 2.6376, "best_step": 1500, "best_val": 2.6376, "best_train_full": 2.5275, "best_val_bits_per_char": 3.8701, "val_chars": 7050, "elapsed_s": 87.1, "samples": {"hello": " t ange ore than pstoulo nthe ouso thi wou t bore the hel in in ", "the cat": "h bangou st than pthouthenthe s sore i wous clore t we whe there", "why is": " t angoure ye an pusoulo nthe s so thinende cathe the hel in in ", "boop": " t angoure y mat pe oulounthe s sore i wous cous athe hel in in "}}

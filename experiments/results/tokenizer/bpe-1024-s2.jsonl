@@ -1,0 +1,14 @@
+{"meta": {"name": "bpe-1024-s2", "tokenizer": "bpe", "requested_vocab_size": 1024, "actual_vocab_size": 1024, "steps": 600, "lr": 0.0003, "n_layer": 4, "n_head": 4, "n_embd": 256, "block_size": 256, "dropout": 0.2, "cosine": true, "params": 3478016, "train_rows": 359, "val_rows": 90, "train_examples": 361, "val_examples": 93, "train_chars": 19471, "val_chars": 7050, "train_tokens": 9670, "val_tokens": 3728, "seed": 2}}
+{"step": 50, "train_window": 4.7778, "val_per_token": 4.4234, "val_bits_per_char": 3.3746, "elapsed_s": 11.8, "best": true}
+{"step": 100, "train_window": 4.153, "val_per_token": 4.2667, "val_bits_per_char": 3.255, "elapsed_s": 22.8, "best": true}
+{"step": 150, "train_window": 3.9782, "val_per_token": 4.2062, "val_bits_per_char": 3.2089, "elapsed_s": 35.2, "best": true}
+{"step": 200, "train_window": 3.9016, "val_per_token": 4.1225, "val_bits_per_char": 3.145, "elapsed_s": 45.8, "best": true}
+{"step": 250, "train_window": 3.7513, "val_per_token": 4.132, "val_bits_per_char": 3.1523, "elapsed_s": 56.7}
+{"step": 300, "train_window": 3.6574, "val_per_token": 4.1019, "val_bits_per_char": 3.1293, "elapsed_s": 70.3, "best": true}
+{"step": 350, "train_window": 3.6156, "val_per_token": 4.0798, "val_bits_per_char": 3.1124, "elapsed_s": 82.1, "best": true}
+{"step": 400, "train_window": 3.5126, "val_per_token": 4.042, "val_bits_per_char": 3.0836, "elapsed_s": 94.1, "best": true}
+{"step": 450, "train_window": 3.4609, "val_per_token": 4.0455, "val_bits_per_char": 3.0862, "elapsed_s": 107.7}
+{"step": 500, "train_window": 3.4099, "val_per_token": 4.0534, "val_bits_per_char": 3.0923, "elapsed_s": 120.0}
+{"step": 550, "train_window": 3.4206, "val_per_token": 4.0533, "val_bits_per_char": 3.0922, "elapsed_s": 132.5}
+{"step": 600, "train_window": 3.3622, "val_per_token": 4.038, "val_bits_per_char": 3.0806, "elapsed_s": 143.7, "best": true}
+{"summary": true, "tokenizer": "bpe", "actual_vocab_size": 1024, "best_step": 600, "best_val_per_token": 4.038, "best_val_bits_per_char": 3.0806, "best_val_nats_per_char": 2.1353, "val_chars": 7050, "elapsed_s": 144.1, "samples": {"hello": " are you", "the cat": "s the ins in a in jap to the sty the to and we and in s and \" a and in the in a on of and \"s like ", "why is": " the coage", "boop": ""}}

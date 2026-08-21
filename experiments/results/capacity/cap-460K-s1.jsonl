@@ -1,0 +1,14 @@
+{"meta": {"name": "cap-460K-s1", "steps": 1200, "lr": 0.0003, "n_layer": 2, "n_head": 4, "n_embd": 128, "dropout": 0.2, "weight_decay": 0.01, "cosine": true, "batch_size": 8, "params": 460544, "train_rows": 359, "val_rows": 90, "train_examples": 377, "synthetic_examples": 0, "seed": 1}}
+{"step": 100, "train_window": 3.6013, "train_full": 2.9066, "val": 2.9257, "elapsed_s": 12.1, "best": true}
+{"step": 200, "train_window": 2.8328, "train_full": 2.6811, "val": 2.7452, "elapsed_s": 22.2, "best": true}
+{"step": 300, "train_window": 2.6885, "train_full": 2.5713, "val": 2.6708, "elapsed_s": 33.2, "best": true}
+{"step": 400, "train_window": 2.5845, "train_full": 2.5097, "val": 2.6434, "elapsed_s": 43.3, "best": true}
+{"step": 500, "train_window": 2.5658, "train_full": 2.461, "val": 2.6237, "elapsed_s": 56.6, "best": true}
+{"step": 600, "train_window": 2.522, "train_full": 2.4299, "val": 2.602, "elapsed_s": 69.8, "best": true}
+{"step": 700, "train_window": 2.4829, "train_full": 2.407, "val": 2.603, "elapsed_s": 82.9}
+{"step": 800, "train_window": 2.453, "train_full": 2.3723, "val": 2.5786, "elapsed_s": 95.5, "best": true}
+{"step": 900, "train_window": 2.4415, "train_full": 2.3548, "val": 2.5786, "elapsed_s": 108.6, "best": true}
+{"step": 1000, "train_window": 2.4284, "train_full": 2.3374, "val": 2.5741, "elapsed_s": 121.6, "best": true}
+{"step": 1100, "train_window": 2.4299, "train_full": 2.3299, "val": 2.5778, "elapsed_s": 134.1}
+{"step": 1200, "train_window": 2.4204, "train_full": 2.3264, "val": 2.5785, "elapsed_s": 147.1}
+{"summary": true, "final_step": 1200, "final_train_full": 2.3264, "final_val": 2.5785, "best_step": 1000, "best_val": 2.5741, "best_train_full": 2.3374, "best_val_bits_per_char": 3.7769, "val_chars": 7050, "elapsed_s": 149.3, "samples": {"hello": " that where that pstoulo ghis s so thine jus bore t we it in in ", "the cat": " that there that ps outh ghas s sor ther jus lo be st he t o tha", "why is": " thathe ore that pthe the thatore the thous t thesus thel tolind", "boop": ""}}

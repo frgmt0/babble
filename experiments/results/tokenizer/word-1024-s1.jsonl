@@ -1,0 +1,14 @@
+{"meta": {"name": "word-1024-s1", "tokenizer": "word", "requested_vocab_size": 1024, "actual_vocab_size": 1024, "steps": 600, "lr": 0.0003, "n_layer": 4, "n_head": 4, "n_embd": 256, "block_size": 256, "dropout": 0.2, "cosine": true, "params": 3478016, "train_rows": 359, "val_rows": 90, "train_examples": 361, "val_examples": 95, "train_chars": 19471, "val_chars": 7050, "train_tokens": 11024, "val_tokens": 4924, "seed": 1}}
+{"step": 50, "train_window": 4.5255, "val_per_token": 3.6831, "val_bits_per_char": 3.7112, "elapsed_s": 13.6, "best": true}
+{"step": 100, "train_window": 3.4181, "val_per_token": 3.4797, "val_bits_per_char": 3.5063, "elapsed_s": 25.7, "best": true}
+{"step": 150, "train_window": 3.2635, "val_per_token": 3.2879, "val_bits_per_char": 3.313, "elapsed_s": 38.8, "best": true}
+{"step": 200, "train_window": 3.1596, "val_per_token": 3.3217, "val_bits_per_char": 3.3471, "elapsed_s": 51.9}
+{"step": 250, "train_window": 3.0225, "val_per_token": 3.2623, "val_bits_per_char": 3.2872, "elapsed_s": 62.5, "best": true}
+{"step": 300, "train_window": 2.9735, "val_per_token": 3.2428, "val_bits_per_char": 3.2676, "elapsed_s": 76.4, "best": true}
+{"step": 350, "train_window": 2.8737, "val_per_token": 3.2844, "val_bits_per_char": 3.3094, "elapsed_s": 88.0}
+{"step": 400, "train_window": 2.8232, "val_per_token": 3.3105, "val_bits_per_char": 3.3358, "elapsed_s": 101.2}
+{"step": 450, "train_window": 2.8239, "val_per_token": 3.3133, "val_bits_per_char": 3.3386, "elapsed_s": 113.1}
+{"step": 500, "train_window": 2.7773, "val_per_token": 3.3191, "val_bits_per_char": 3.3445, "elapsed_s": 124.8}
+{"step": 550, "train_window": 2.7751, "val_per_token": 3.3094, "val_bits_per_char": 3.3347, "elapsed_s": 135.9}
+{"step": 600, "train_window": 2.7521, "val_per_token": 3.3193, "val_bits_per_char": 3.3446, "elapsed_s": 148.8}
+{"summary": true, "tokenizer": "word", "actual_vocab_size": 1024, "best_step": 300, "best_val_per_token": 3.2428, "best_val_bits_per_char": 3.2676, "best_val_nats_per_char": 2.2649, "val_chars": 7050, "elapsed_s": 149.7, "samples": {"hello": " is it teng menss that ss tinorent it of ssin the llinlulesin of the it of in is", "the cat": " resit of on to to a the statrorent it of stitacrklise the s the of the it of in is", "why is": " you it teng messs that ssenge ment it of ssing fllis you the of the pin on pers", "boop": ""}}

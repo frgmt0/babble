@@ -1,0 +1,14 @@
+{"meta": {"name": "bpe-512-s3", "tokenizer": "bpe", "requested_vocab_size": 512, "actual_vocab_size": 512, "steps": 600, "lr": 0.0003, "n_layer": 4, "n_head": 4, "n_embd": 256, "block_size": 256, "dropout": 0.2, "cosine": true, "params": 3346944, "train_rows": 359, "val_rows": 90, "train_examples": 361, "val_examples": 93, "train_chars": 19471, "val_chars": 7050, "train_tokens": 11805, "val_tokens": 4348, "seed": 3}}
+{"step": 50, "train_window": 4.5993, "val_per_token": 4.2027, "val_bits_per_char": 3.7394, "elapsed_s": 12.3, "best": true}
+{"step": 100, "train_window": 4.0375, "val_per_token": 4.0789, "val_bits_per_char": 3.6292, "elapsed_s": 24.9, "best": true}
+{"step": 150, "train_window": 3.8286, "val_per_token": 3.9211, "val_bits_per_char": 3.4889, "elapsed_s": 38.0, "best": true}
+{"step": 200, "train_window": 3.6858, "val_per_token": 3.8349, "val_bits_per_char": 3.4122, "elapsed_s": 53.8, "best": true}
+{"step": 250, "train_window": 3.5406, "val_per_token": 3.776, "val_bits_per_char": 3.3597, "elapsed_s": 68.1, "best": true}
+{"step": 300, "train_window": 3.4237, "val_per_token": 3.687, "val_bits_per_char": 3.2806, "elapsed_s": 80.5, "best": true}
+{"step": 350, "train_window": 3.3187, "val_per_token": 3.6684, "val_bits_per_char": 3.264, "elapsed_s": 96.3, "best": true}
+{"step": 400, "train_window": 3.1851, "val_per_token": 3.6612, "val_bits_per_char": 3.2576, "elapsed_s": 108.0, "best": true}
+{"step": 450, "train_window": 3.167, "val_per_token": 3.6112, "val_bits_per_char": 3.2131, "elapsed_s": 122.2, "best": true}
+{"step": 500, "train_window": 3.1369, "val_per_token": 3.6179, "val_bits_per_char": 3.2191, "elapsed_s": 135.3}
+{"step": 550, "train_window": 3.0244, "val_per_token": 3.6119, "val_bits_per_char": 3.2138, "elapsed_s": 148.0}
+{"step": 600, "train_window": 3.0192, "val_per_token": 3.606, "val_bits_per_char": 3.2085, "elapsed_s": 161.3, "best": true}
+{"summary": true, "tokenizer": "bpe", "actual_vocab_size": 512, "best_step": 600, "best_val_per_token": 3.606, "best_val_bits_per_char": 3.2085, "best_val_nats_per_char": 2.2239, "val_chars": 7050, "elapsed_s": 161.5, "samples": {"hello": " you re", "the cat": " you a you most", "why is": " you count it t you as pulanother it to you hove what?", "boop": " you h you inort"}}
