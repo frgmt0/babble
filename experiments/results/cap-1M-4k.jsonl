@@ -1,0 +1,22 @@
+{"meta": {"name": "cap-1M-4k", "steps": 4000, "lr": 0.001, "n_layer": 3, "n_head": 4, "n_embd": 160, "dropout": 0.0, "weight_decay": 0.01, "cosine": false, "batch_size": 8, "params": 1047360, "train_rows": 326, "val_rows": 81, "train_examples": 328, "synthetic_examples": 0, "seed": 1}}
+{"step": 200, "train_window": 2.7519, "train_full": 2.4067, "val": 2.6793, "elapsed_s": 31.4, "best": true}
+{"step": 400, "train_window": 2.253, "train_full": 2.1115, "val": 2.8094, "elapsed_s": 61.4}
+{"step": 600, "train_window": 1.8932, "train_full": 1.7674, "val": 3.0771, "elapsed_s": 91.8}
+{"step": 800, "train_window": 1.4773, "train_full": 1.2822, "val": 3.5106, "elapsed_s": 123.6}
+{"step": 1000, "train_window": 1.1174, "train_full": 0.9533, "val": 3.9381, "elapsed_s": 153.8}
+{"step": 1200, "train_window": 0.8319, "train_full": 0.728, "val": 4.3607, "elapsed_s": 182.0}
+{"step": 1400, "train_window": 0.6114, "train_full": 0.5388, "val": 4.7133, "elapsed_s": 214.9}
+{"step": 1600, "train_window": 0.4741, "train_full": 0.3989, "val": 4.9697, "elapsed_s": 245.7}
+{"step": 1800, "train_window": 0.3979, "train_full": 0.2931, "val": 5.2118, "elapsed_s": 278.5}
+{"step": 2000, "train_window": 0.3449, "train_full": 0.3004, "val": 5.4748, "elapsed_s": 310.4}
+{"step": 2200, "train_window": 0.3183, "train_full": 0.2709, "val": 5.5798, "elapsed_s": 342.7}
+{"step": 2400, "train_window": 0.2909, "train_full": 0.2474, "val": 5.7288, "elapsed_s": 372.4}
+{"step": 2600, "train_window": 0.2825, "train_full": 0.2204, "val": 5.7054, "elapsed_s": 404.0}
+{"step": 2800, "train_window": 0.2742, "train_full": 0.214, "val": 5.8907, "elapsed_s": 433.8}
+{"step": 3000, "train_window": 0.2506, "train_full": 0.2193, "val": 6.036, "elapsed_s": 465.4}
+{"step": 3200, "train_window": 0.2505, "train_full": 0.2213, "val": 6.2422, "elapsed_s": 495.6}
+{"step": 3400, "train_window": 0.2554, "train_full": 0.2116, "val": 6.2894, "elapsed_s": 524.0}
+{"step": 3600, "train_window": 0.2338, "train_full": 0.1882, "val": 6.3157, "elapsed_s": 556.2}
+{"step": 3800, "train_window": 0.2187, "train_full": 0.2049, "val": 6.3797, "elapsed_s": 587.4}
+{"step": 4000, "train_window": 0.2235, "train_full": 0.1762, "val": 6.4974, "elapsed_s": 616.8}
+{"summary": true, "final_step": 4000, "final_train_full": 0.1762, "final_val": 6.4974, "best_step": 200, "best_val": 2.6793, "best_train_full": 2.4067, "elapsed_s": 621.3, "samples": {"hello": " t angous", "the cat": " t angalon whe waps ouge nnd tore a wa wore clore bulihe w f wan", "why is": " t ange be nemang theelo nthanorecta ind we cat ind wine t flind", "boop": ""}}

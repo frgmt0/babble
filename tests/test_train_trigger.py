@@ -112,9 +112,11 @@ def test_train_writes_the_best_val_checkpoint_not_the_last(settings, ids, monkey
 
 def test_train_stops_early_after_patience_non_improving_checkpoints(settings, ids, monkeypatch):
     _seed_plenty_of_human_rows(settings, ids)
+    settings.train_min_steps = 0  # this test exercises pure patience, not the floor
 
     # Best is at the 2nd checkpoint (step 4); the run should stop 2 non-improving
-    # checkpoints later (step 8), long before the step-20 budget.
+    # checkpoints later (step 8), long before the step-20 budget. Every rise is
+    # far beyond the stall margin, so each one burns patience.
     val_curve = iter([2.0, 1.0, 1.5, 1.8, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0])
     monkeypatch.setattr("babble.trainer.eval_loss", lambda model, examples: next(val_curve))
 
@@ -126,6 +128,41 @@ def test_train_stops_early_after_patience_non_improving_checkpoints(settings, id
     assert result.steps_run == 8  # did not run the full 20-step budget
     assert result.final_step == 4
     assert result.val_loss == 1.0
+
+
+def test_patience_cannot_fire_before_the_min_steps_floor(settings, ids, monkeypatch):
+    _seed_plenty_of_human_rows(settings, ids)
+    settings.train_min_steps = 1_000  # far past the 20-step budget
+
+    # The same worsening curve that stops the run above -- but the floor says
+    # a 20-step run is far too early to conclude anything from val.
+    val_curve = iter([2.0, 1.0, 1.5, 1.8, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0])
+    monkeypatch.setattr("babble.trainer.eval_loss", lambda model, examples: next(val_curve))
+
+    result = train(settings, force=True, steps=20, patience=2, seed=1, echo=False, ids=ids)
+
+    assert result.stopped_early is False
+    assert result.steps_run == 20  # the full budget ran
+    assert result.final_step == 4  # ...and the best-val checkpoint still won the write
+
+
+def test_val_wobble_inside_the_stall_margin_burns_no_patience(settings, ids, monkeypatch):
+    _seed_plenty_of_human_rows(settings, ids)
+    settings.train_min_steps = 0
+    settings.train_stall_margin = 0.05
+
+    # Best 1.0 at the 2nd checkpoint, then wobble within the measured noise
+    # band (< best + 0.05) forever: neutral, never a stall, so patience=1
+    # must not stop the run even though val never sets a new best.
+    val_curve = iter([2.0, 1.0, 1.04, 1.03, 1.04, 1.02, 1.04, 1.03, 1.04, 1.02])
+    monkeypatch.setattr("babble.trainer.eval_loss", lambda model, examples: next(val_curve))
+
+    result = train(settings, force=True, steps=20, patience=1, seed=1, echo=False, ids=ids)
+
+    assert result.stopped_early is False
+    assert result.steps_run == 20
+    assert result.val_loss == 1.0
+    assert result.final_step == 4
 
 
 def test_train_stop_log_names_the_winning_step_and_val_loss(settings, ids, monkeypatch):

@@ -9,11 +9,28 @@ uses to score a correction against its rejected answer), so the model has at
 least seen what answering looks like.
 
 There are only a few dozen pairs against a ~3.3M-parameter model. It will
-memorise those pairs and generalise to approximately nothing -- that is the
-expected result of this stage, not a bug to engineer around. The `rejected`
-half of each correction is captured and published, but it is not the
-objective here: this is supervised fine-tuning on the chosen answer, not
-preference optimisation.
+memorise those pairs and generalise to approximately nothing -- and measured
+on the live corpus, the old settings did real damage on the way there: 38
+pairs at the pretrain LR shipped a checkpoint whose held-out corpus loss was
++1.15 nats worse than the pretrain it started from. Four guardrails now stand
+between a fine-tune and the served bot, each config-flippable:
+
+1. **Its own learning rate** (`post_learning_rate`, default 1e-4) -- the
+   pretrain LR tears through the weights in a handful of steps at this scale.
+2. **Rehearsal** (`post_rehearsal`, default 0.5): that fraction of every
+   batch is plain corpus text under the pretrain objective, so the fine-tune
+   cannot drift off the corpus distribution unopposed.
+3. **A pair floor** (`post_min_pairs`): below it the run refuses to start
+   (`--force` overrides for experiments).
+4. **A promotion gate** (`post_gate_margin`): the candidate is scored against
+   the pretrain snapshot on the held-out corpus split -- the layout the bot
+   actually serves -- and a candidate worse by more than the margin never
+   touches `latest.pt`. Nothing writes `latest.pt` mid-run either, so a
+   half-finished fine-tune can never ship.
+
+The `rejected` half of each correction is captured and published, but it is
+not the objective here: this is supervised fine-tuning on the chosen answer,
+not preference optimisation.
 
 Every run restarts from `checkpoints/pretrained.pt`, a snapshot of the
 pretrained checkpoint taken the first time a post-train ever runs -- so a
@@ -69,16 +86,19 @@ from .post_state import (
 )
 from .store import Interaction
 from .synthetic import SyntheticPair, trainable_synthetic_pairs
-from .tokenizer import Example, build_example
+from .tokenizer import Example, build_continuation_example, build_example
 from .trainer import (
     SCRATCH_DIR,
     _build_optimizer,
+    _stack_examples,
     append_curve,
     be_polite,
+    corpus_rows,
     eval_loss,
-    make_batch,
     save_checkpoint,
+    split_rows,
     sweep_scratch,
+    to_examples,
 )
 
 __all__ = [
@@ -114,6 +134,14 @@ class PostTrainResult:
     budget: int = 0
     stopped_early: bool = False
     path: Path | None = None
+    # The promotion gate's verdict: `promoted` says whether `latest.pt` was
+    # actually written, and the two corpus-val numbers are what decided it --
+    # candidate vs the pretrain snapshot it started from, both scored on the
+    # same held-out real corpus rows the bot's serving layout is judged by.
+    promoted: bool = False
+    gated: bool = False
+    corpus_val_before: float | None = None
+    corpus_val_after: float | None = None
 
 
 def _split_val(examples: list[Example]) -> tuple[list[Example], list[Example]]:
@@ -160,12 +188,31 @@ def _load_pretrained(path: Path) -> Babbler:
     return maybe_compile(model)
 
 
-def _build_examples(pairs: list[Interaction], block_size: int) -> list[Example]:
-    return [build_example(p.prompt, p.chosen, block_size) for p in pairs]
+def _example_builder(settings: Settings):
+    """The layout post-train teaches, per `Settings.post_layout`.
+
+    "continuation" is the default and the one the bot can actually reach:
+    `<bos> prompt response <eos>` with the prompt masked, byte-identical to
+    the `text_context` prefix serving generates from. "pair" is the
+    historical `<bos> prompt <sep> response <eos>` -- a layout whose `<sep>`
+    never appears at inference, kept for experiments.
+    """
+    if settings.post_layout == "pair":
+        return build_example
+    return build_continuation_example
+
+
+def _build_examples(
+    pairs: list[Interaction], block_size: int, builder=build_continuation_example
+) -> list[Example]:
+    return [builder(p.prompt, p.chosen, block_size) for p in pairs]
 
 
 def _combined_examples(
-    pairs: list[Interaction], synthetic: list[SyntheticPair], block_size: int
+    pairs: list[Interaction],
+    synthetic: list[SyntheticPair],
+    block_size: int,
+    builder=build_continuation_example,
 ) -> list[Example]:
     """Human and synthetic pairs, interleaved by sorting on their (both
     content-hash) ids rather than concatenating the two lists -- so the
@@ -179,7 +226,7 @@ def _combined_examples(
         (p.id, p.prompt, p.response) for p in synthetic
     ]
     items.sort(key=lambda item: item[0])
-    return [build_example(prompt, response, block_size) for _, prompt, response in items]
+    return [builder(prompt, response, block_size) for _, prompt, response in items]
 
 
 def post_train(
@@ -243,6 +290,22 @@ def post_train(
             current_pairs=status.current_pairs, last_trained_pairs=status.last_trained_pairs,
         )
 
+    # A supervised pass over a few dozen rows memorises them and generalises
+    # to nothing -- measured, not hypothetical: 38 pairs at the old settings
+    # drove pair-val from 3.59 to 5.56 while pair-train fell to 0.32. Below
+    # this floor the run refuses to start; `--force` overrides for an explicit
+    # experiment, and the promotion gate below still decides what ships.
+    total_pairs = len(pairs) + len(synthetic_pairs)
+    if not force and total_pairs < settings.post_min_pairs:
+        log.event(
+            "post.skipped", reason="too_few_pairs",
+            pairs=total_pairs, threshold=settings.post_min_pairs,
+        )
+        return PostTrainResult(
+            False, "too_few_pairs",
+            current_pairs=status.current_pairs, last_trained_pairs=status.last_trained_pairs,
+        )
+
     budget = steps if steps is not None else settings.post_steps
     if budget <= 0:
         # A non-positive ceiling trains nothing -- bail out before touching the
@@ -258,23 +321,40 @@ def post_train(
     sweep_scratch(settings)
     pretrained_path = _ensure_pretrained_snapshot(settings)
     model = _load_pretrained(pretrained_path)
-    optimizer = _build_optimizer(model, settings)
+    post_lr = settings.post_learning_rate if settings.post_learning_rate > 0 else None
+    optimizer = _build_optimizer(model, settings, lr=post_lr)
 
+    builder = _example_builder(settings)
     examples = (
-        _combined_examples(pairs, synthetic_pairs, model.config.block_size)
+        _combined_examples(pairs, synthetic_pairs, model.config.block_size, builder)
         if include_synthetic
-        else _build_examples(pairs, model.config.block_size)
+        else _build_examples(pairs, model.config.block_size, builder)
     )
     train_examples, val_examples = _split_val(examples)
     run_patience = patience if patience is not None else settings.post_patience
     rng = random.Random(seed)
     torch.manual_seed(seed)
 
+    # Rehearsal: a slice of every batch is plain corpus text, trained with the
+    # same next-token objective the pretrain used, so the fine-tune cannot
+    # drift the weights off the corpus distribution unopposed. The corpus val
+    # rows are excluded, so the promotion gate below still scores the
+    # candidate on text it never fine-tuned on.
+    rehearsal = min(1.0, max(0.0, settings.post_rehearsal))
+    corpus_split = split_rows(corpus_rows(settings, ids, blocklist), settings)
+    rehearsal_examples = (
+        to_examples(corpus_split.train, model.config.block_size) if rehearsal > 0 else []
+    )
+    corpus_val_examples = to_examples(corpus_split.val, model.config.block_size)
+
     log.event(
         "post.start",
         pairs=len(pairs),
         synthetic_pairs=len(synthetic_pairs),
         examples=len(examples),
+        rehearsal=rehearsal if rehearsal_examples else 0.0,
+        rehearsal_examples=len(rehearsal_examples),
+        lr=post_lr if post_lr is not None else settings.learning_rate,
         block_size=model.config.block_size,
         steps=budget,
         patience=run_patience,
@@ -292,7 +372,17 @@ def post_train(
     def checkpoint() -> None:
         nonlocal checkpoints, best, stalls, stop, window
         mean = sum(window) / len(window) if window else last_loss
-        val = eval_loss(model, val_examples) if val_examples else None
+        pair_val = eval_loss(model, val_examples) if val_examples else None
+        corpus_val = eval_loss(model, corpus_val_examples) if corpus_val_examples else None
+        # Selection runs on corpus val whenever it exists. The pair holdout is
+        # a handful of rows (its standard error at the live pair count is on
+        # the order of half a nat), so an argmin over it is close to random --
+        # and worse, a pair-val winner can fail the promotion gate while an
+        # earlier checkpoint would have passed. Corpus val is better measured
+        # AND the number the gate judges, so selecting on it means the gate
+        # scores the best candidate the run actually produced. Pair val is
+        # still computed and logged.
+        metric = corpus_val if corpus_val is not None else pair_val
         checkpoints += 1
         append_curve(
             settings,
@@ -302,18 +392,29 @@ def post_train(
             stored_rows=pair_count(settings),
             train_rows=len(train_examples),
             val_rows=len(val_examples),
-            val_loss=val,
+            val_loss=pair_val,
         )
-        log.event("post.checkpoint", step=step, loss=mean, val_loss=val, examples=len(examples))
+        log.event(
+            "post.checkpoint",
+            step=step, loss=mean, val_loss=pair_val,
+            corpus_val=round(corpus_val, 6) if corpus_val is not None else None,
+            examples=len(examples),
+        )
         if echo:
-            val_s = f"{val:.4f}" if val is not None else "   n/a"
-            print(f"[post] step {step:7d} | loss {mean:8.4f} | val {val_s}", flush=True)
-        if val is not None:
-            if best is None or val < best["val"]:
+            val_s = f"{pair_val:.4f}" if pair_val is not None else "   n/a"
+            cval_s = f"{corpus_val:.4f}" if corpus_val is not None else "   n/a"
+            print(
+                f"[post] step {step:7d} | loss {mean:8.4f} | pair val {val_s} | corpus val {cval_s}",
+                flush=True,
+            )
+        if metric is not None:
+            if best is None or metric < best["metric"]:
                 best = {
                     "step": step,
                     "loss": mean,
-                    "val": val,
+                    "val": pair_val,
+                    "corpus_val": corpus_val,
+                    "metric": metric,
                     "model": copy.deepcopy(model_state_dict(model)),
                     "optim": copy.deepcopy(optimizer.state_dict()),
                 }
@@ -322,15 +423,26 @@ def post_train(
                 stalls += 1
                 if run_patience and stalls >= run_patience:
                     stop = True
-        else:
-            # No held-out set to compare against: every interval is written in
-            # turn, exactly like the pretrainer without validation.
-            save_checkpoint(settings, model, optimizer, step, mean)
+        # With no held-out examples at all the candidate is simply the final
+        # weights -- nothing is written mid-run either way: the promotion gate
+        # below is the only thing that ever writes `latest.pt`, so a fine-tune
+        # can never ship without being scored first.
         window = []
+
+    def make_mixed_batch() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """A batch of pair examples with a rehearsal slice of plain corpus
+        text mixed in, per `post_rehearsal`."""
+        chosen: list[Example] = []
+        for _ in range(settings.batch_size):
+            if rehearsal_examples and rng.random() < rehearsal:
+                chosen.append(rng.choice(rehearsal_examples))
+            else:
+                chosen.append(rng.choice(train_examples))
+        return _stack_examples(chosen)
 
     model.train()
     for _ in range(budget):
-        tokens, mask, weights = make_batch(train_examples, settings.batch_size, rng)
+        tokens, mask, weights = make_mixed_batch()
         loss = sequence_loss(model, tokens, mask, weights)
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
@@ -348,11 +460,35 @@ def post_train(
         checkpoint()
 
     final_step, final_loss, final_val = step, last_loss, None
+    candidate_corpus_val: float | None = None
     if best is not None:
         uncompiled(model).load_state_dict(best["model"])
         optimizer.load_state_dict(best["optim"])
-        save_checkpoint(settings, model, optimizer, best["step"], best["loss"])
         final_step, final_loss, final_val = best["step"], best["loss"], best["val"]
+        candidate_corpus_val = best.get("corpus_val")
+
+    # --- promotion gate ---------------------------------------------------
+    # The bot serves plain-text continuations, so the number that decides
+    # promotion is corpus val loss: the candidate against the very pretrain it
+    # started from, on the same held-out real rows. A candidate that gave up
+    # more than `post_gate_margin` of corpus ability does not ship, no matter
+    # how good its pair loss looks -- pair loss on a few dozen rows is mostly
+    # a measure of memorisation.
+    corpus_val_before: float | None = None
+    corpus_val_after: float | None = None
+    promoted = True
+    if corpus_val_examples and settings.post_gate_margin >= 0:
+        corpus_val_after = (
+            candidate_corpus_val
+            if candidate_corpus_val is not None
+            else eval_loss(model, corpus_val_examples)
+        )
+        pretrain_model = _load_pretrained(pretrained_path)
+        corpus_val_before = eval_loss(pretrain_model, corpus_val_examples)
+        del pretrain_model
+        promoted = corpus_val_after <= corpus_val_before + settings.post_gate_margin
+    if promoted:
+        save_checkpoint(settings, model, optimizer, final_step, final_loss)
 
     current = pair_count(settings)
     write_post_state(
@@ -363,6 +499,9 @@ def post_train(
         step=final_step,
         loss=round(final_loss, 6) if final_loss is not None else None,
         val_loss=round(final_val, 6) if final_val is not None else None,
+        corpus_val_before=round(corpus_val_before, 6) if corpus_val_before is not None else None,
+        corpus_val_after=round(corpus_val_after, 6) if corpus_val_after is not None else None,
+        promoted=promoted,
         pairs_trained=len(pairs),
         synthetic_pairs_trained=len(synthetic_pairs),
         last_trained_pairs=current,
@@ -373,7 +512,7 @@ def post_train(
 
     return PostTrainResult(
         True,
-        "trained",
+        "trained" if promoted else "gated",
         pairs_trained=len(pairs),
         synthetic_pairs_trained=len(synthetic_pairs),
         current_pairs=current,
@@ -384,7 +523,11 @@ def post_train(
         checkpoints_written=checkpoints,
         budget=budget,
         stopped_early=stop,
-        path=settings.latest_checkpoint,
+        path=settings.latest_checkpoint if promoted else None,
+        promoted=promoted,
+        gated=not promoted,
+        corpus_val_before=corpus_val_before,
+        corpus_val_after=corpus_val_after,
     )
 
 

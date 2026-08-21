@@ -53,6 +53,7 @@ def config_from_settings(settings) -> ModelConfig:
         n_layer=settings.n_layer,
         n_head=settings.n_head,
         n_embd=settings.n_embd,
+        dropout=getattr(settings, "dropout", 0.0),
     )
 
 

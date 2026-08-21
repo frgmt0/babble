@@ -1,0 +1,12 @@
+/home/beckett/Projects/babble/.beckett/worktrees/run-20260820-revamp-the-training-pipeline-corpus-inte/.venv/lib/python3.12/site-packages/torch/_subclasses/functional_tensor.py:368: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+[win-synth-s1] {"name": "win-synth-s1", "steps": 1600, "lr": 0.0003, "n_layer": 4, "n_head": 4, "n_embd": 256, "dropout": 0.2, "weight_decay": 0.01, "cosine": true, "batch_size": 8, "params": 3347968, "train_rows": 326, "val_rows": 81, "train_examples": 328, "synthetic_examples": 1200, "seed": 1}
+[win-synth-s1] step 200 train 2.5792 val 2.6958
+[win-synth-s1] step 400 train 2.4178 val 2.6100
+[win-synth-s1] step 600 train 2.3152 val 2.5936
+[win-synth-s1] step 800 train 2.1939 val 2.5706
+[win-synth-s1] step 1000 train 2.1033 val 2.5836
+[win-synth-s1] step 1200 train 2.0347 val 2.5923
+[win-synth-s1] step 1400 train 1.9852 val 2.6026
+[win-synth-s1] step 1600 train 1.9493 val 2.6120
+[win-synth-s1] DONE {"summary": true, "final_step": 1600, "final_train_full": 1.9493, "final_val": 2.612, "best_step": 800, "best_val": 2.5706, "best_train_full": 2.1939, "elapsed_s": 1220.2, "samples": {"hello": " youh is re that ats e fonthe ou cathind jus the ats me is o ind", "the cat": "s the the", "why is": " thats the ithat fue ithe nd touroror orou ack s ing be in forou", "boop": "er abe is"}}

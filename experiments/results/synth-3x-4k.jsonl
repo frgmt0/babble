@@ -1,0 +1,22 @@
+{"meta": {"name": "synth-3x-4k", "steps": 4000, "lr": 0.001, "n_layer": 4, "n_head": 4, "n_embd": 256, "dropout": 0.0, "weight_decay": 0.01, "cosine": false, "batch_size": 8, "params": 3347968, "train_rows": 326, "val_rows": 81, "train_examples": 328, "synthetic_examples": 1200, "seed": 1}}
+{"step": 200, "train_window": 2.8757, "train_full": 2.6529, "val": 2.7161, "elapsed_s": 105.0, "best": true}
+{"step": 400, "train_window": 2.4397, "train_full": 2.5204, "val": 2.6318, "elapsed_s": 212.9, "best": true}
+{"step": 600, "train_window": 2.2935, "train_full": 2.397, "val": 2.5824, "elapsed_s": 318.5, "best": true}
+{"step": 800, "train_window": 2.187, "train_full": 2.2845, "val": 2.54, "elapsed_s": 425.6, "best": true}
+{"step": 1000, "train_window": 2.0697, "train_full": 2.2285, "val": 2.5518, "elapsed_s": 498.9}
+{"step": 1200, "train_window": 1.9907, "train_full": 2.1754, "val": 2.5541, "elapsed_s": 567.6}
+{"step": 1400, "train_window": 1.9325, "train_full": 2.0931, "val": 2.5318, "elapsed_s": 642.3, "best": true}
+{"step": 1600, "train_window": 1.8509, "train_full": 2.0298, "val": 2.5314, "elapsed_s": 727.6, "best": true}
+{"step": 1800, "train_window": 1.772, "train_full": 1.9707, "val": 2.5194, "elapsed_s": 800.7, "best": true}
+{"step": 2000, "train_window": 1.7453, "train_full": 1.8998, "val": 2.4887, "elapsed_s": 887.3, "best": true}
+{"step": 2200, "train_window": 1.675, "train_full": 1.8739, "val": 2.5555, "elapsed_s": 979.0}
+{"step": 2400, "train_window": 1.6415, "train_full": 1.8042, "val": 2.4681, "elapsed_s": 1055.5, "best": true}
+{"step": 2600, "train_window": 1.5927, "train_full": 1.7769, "val": 2.4918, "elapsed_s": 1126.7}
+{"step": 2800, "train_window": 1.5232, "train_full": 1.7176, "val": 2.5029, "elapsed_s": 1205.6}
+{"step": 3000, "train_window": 1.4997, "train_full": 1.6477, "val": 2.5175, "elapsed_s": 1291.8}
+{"step": 3200, "train_window": 1.4071, "train_full": 1.592, "val": 2.488, "elapsed_s": 1368.2}
+{"step": 3400, "train_window": 1.3805, "train_full": 1.5563, "val": 2.5412, "elapsed_s": 1450.3}
+{"step": 3600, "train_window": 1.3433, "train_full": 1.5189, "val": 2.5318, "elapsed_s": 1536.5}
+{"step": 3800, "train_window": 1.2944, "train_full": 1.448, "val": 2.5418, "elapsed_s": 1613.6}
+{"step": 4000, "train_window": 1.2557, "train_full": 1.4572, "val": 2.5773, "elapsed_s": 1697.3}
+{"summary": true, "final_step": 4000, "final_train_full": 1.4572, "final_val": 2.5773, "best_step": 2400, "best_val": 2.4681, "best_train_full": 1.8042, "elapsed_s": 1712.6, "samples": {"hello": " won at re perat argee to to as so asins we codstinge hel and a ", "the cat": " we can’re mandpetpett goidke scauring we coos ankether at rea", "why is": " thaver a", "boop": "er it war"}}

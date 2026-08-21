@@ -1,0 +1,19 @@
+/home/beckett/Projects/babble/.beckett/worktrees/run-20260820-revamp-the-training-pipeline-corpus-inte/.venv/lib/python3.12/site-packages/torch/_subclasses/functional_tensor.py:368: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+[synth3x-shuf] {"name": "synth3x-shuf", "steps": 3000, "lr": 0.001, "n_layer": 4, "n_head": 4, "n_embd": 256, "dropout": 0.0, "weight_decay": 0.01, "cosine": false, "batch_size": 8, "params": 3347968, "train_rows": 326, "val_rows": 81, "train_examples": 328, "synthetic_examples": 1200, "seed": 1}
+[synth3x-shuf] step 200 train 2.6410 val 2.7173
+[synth3x-shuf] step 400 train 2.5025 val 2.6758
+[synth3x-shuf] step 600 train 2.3753 val 2.6478
+[synth3x-shuf] step 800 train 2.2438 val 2.5692
+[synth3x-shuf] step 1000 train 2.1518 val 2.5628
+[synth3x-shuf] step 1200 train 2.0780 val 2.5500
+[synth3x-shuf] step 1400 train 2.0393 val 2.6061
+[synth3x-shuf] step 1600 train 1.9346 val 2.5954
+[synth3x-shuf] step 1800 train 1.8948 val 2.6236
+[synth3x-shuf] step 2000 train 1.8204 val 2.5981
+[synth3x-shuf] step 2200 train 1.7672 val 2.6750
+[synth3x-shuf] step 2400 train 1.7218 val 2.6281
+[synth3x-shuf] step 2600 train 1.7026 val 2.6162
+[synth3x-shuf] step 2800 train 1.6683 val 2.6482
+[synth3x-shuf] step 3000 train 1.5717 val 2.7068
+[synth3x-shuf] DONE {"summary": true, "final_step": 3000, "final_train_full": 1.5717, "final_val": 2.7068, "best_step": 1200, "best_val": 2.55, "best_train_full": 2.078, "elapsed_s": 1807.9, "samples": {"hello": " to the can that pos won going gh the though the you the the thi", "the cat": "s the what yeats whave then docks the thou thats that he thot be", "why is": " thats the whe the would think go the couse can the whe think th", "boop": "er an what yeve the ould to do good ther we clos to whe to to th"}}

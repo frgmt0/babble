@@ -1,0 +1,16 @@
+/home/beckett/Projects/babble/.beckett/worktrees/run-20260820-revamp-the-training-pipeline-corpus-inte/.venv/lib/python3.12/site-packages/torch/_subclasses/functional_tensor.py:368: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+[lr3e-4-2k4] {"name": "lr3e-4-2k4", "steps": 2400, "lr": 0.0003, "n_layer": 4, "n_head": 4, "n_embd": 256, "dropout": 0.0, "weight_decay": 0.01, "cosine": false, "batch_size": 8, "params": 3347968, "train_rows": 326, "val_rows": 81, "train_examples": 328, "synthetic_examples": 0, "seed": 1}
+[lr3e-4-2k4] step 200 train 2.3646 val 2.6502
+[lr3e-4-2k4] step 400 train 2.0588 val 2.7827
+[lr3e-4-2k4] step 600 train 1.6720 val 3.0305
+[lr3e-4-2k4] step 800 train 1.2093 val 3.4028
+[lr3e-4-2k4] step 1000 train 0.8473 val 3.7829
+[lr3e-4-2k4] step 1200 train 0.6377 val 4.0119
+[lr3e-4-2k4] step 1400 train 0.4823 val 4.3395
+[lr3e-4-2k4] step 1600 train 0.3521 val 4.5189
+[lr3e-4-2k4] step 1800 train 0.2637 val 4.7067
+[lr3e-4-2k4] step 2000 train 0.2742 val 4.8985
+[lr3e-4-2k4] step 2200 train 0.2343 val 4.9661
+[lr3e-4-2k4] step 2400 train 0.2197 val 5.0564
+[lr3e-4-2k4] DONE {"summary": true, "final_step": 2400, "final_train_full": 0.2197, "final_val": 5.0564, "best_step": 200, "best_val": 2.6502, "best_train_full": 2.3646, "elapsed_s": 1769.2, "samples": {"hello": " that wher norat w toull nt soore t wo what cat berow he thanor ", "the cat": " that we st than pse wo thindo f cat ine we cl stan wine w f re ", "why is": " that we cthe at ppevelo ntis or cthan s junoror thas f it flino", "boop": ""}}

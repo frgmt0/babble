@@ -1,0 +1,8 @@
+{"meta": {"name": "synth5xT-s1", "steps": 3000, "lr": 0.001, "n_layer": 4, "n_head": 4, "n_embd": 256, "dropout": 0.0, "weight_decay": 0.01, "cosine": false, "batch_size": 8, "params": 3347968, "train_rows": 326, "val_rows": 81, "train_examples": 328, "synthetic_examples": 2000, "seed": 1}}
+{"step": 200, "train_window": 2.6498, "train_full": 2.5425, "val": 2.6872, "elapsed_s": 129.4, "best": true}
+{"step": 400, "train_window": 2.2143, "train_full": 2.3673, "val": 2.7022, "elapsed_s": 265.0}
+{"step": 600, "train_window": 1.9992, "train_full": 2.2604, "val": 2.7261, "elapsed_s": 396.2}
+{"step": 800, "train_window": 1.8021, "train_full": 2.1278, "val": 2.7858, "elapsed_s": 526.9}
+{"step": 1000, "train_window": 1.6832, "train_full": 2.0007, "val": 2.8013, "elapsed_s": 657.5}
+{"step": 1200, "train_window": 1.5457, "train_full": 1.8554, "val": 2.8091, "elapsed_s": 792.5}
+{"step": 1400, "train_window": 1.4388, "train_full": 1.8195, "val": 2.8719, "elapsed_s": 916.5}

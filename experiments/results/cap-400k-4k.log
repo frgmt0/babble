@@ -1,0 +1,24 @@
+/home/beckett/Projects/babble/.beckett/worktrees/run-20260820-revamp-the-training-pipeline-corpus-inte/.venv/lib/python3.12/site-packages/torch/_subclasses/functional_tensor.py:368: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+[cap-400k-4k] {"name": "cap-400k-4k", "steps": 4000, "lr": 0.001, "n_layer": 2, "n_head": 4, "n_embd": 112, "dropout": 0.0, "weight_decay": 0.01, "cosine": false, "batch_size": 8, "params": 388640, "train_rows": 326, "val_rows": 81, "train_examples": 328, "synthetic_examples": 0, "seed": 1}
+[cap-400k-4k] step 200 train 2.4553 val 2.7022
+[cap-400k-4k] step 400 train 2.2293 val 2.7738
+[cap-400k-4k] step 600 train 1.9707 val 2.8946
+[cap-400k-4k] step 800 train 1.6270 val 3.1715
+[cap-400k-4k] step 1000 train 1.3267 val 3.5809
+[cap-400k-4k] step 1200 train 1.0472 val 3.8983
+[cap-400k-4k] step 1400 train 0.7825 val 4.2528
+[cap-400k-4k] step 1600 train 0.5925 val 4.6326
+[cap-400k-4k] step 1800 train 0.3991 val 4.9637
+[cap-400k-4k] step 2000 train 0.3728 val 5.2816
+[cap-400k-4k] step 2200 train 0.3232 val 5.3709
+[cap-400k-4k] step 2400 train 0.2769 val 5.6365
+[cap-400k-4k] step 2600 train 0.2586 val 5.8090
+[cap-400k-4k] step 2800 train 0.2388 val 5.8983
+[cap-400k-4k] step 3000 train 0.2267 val 6.0377
+[cap-400k-4k] step 3200 train 0.2306 val 6.3058
+[cap-400k-4k] step 3400 train 0.2229 val 6.3757
+[cap-400k-4k] step 3600 train 0.1995 val 6.4743
+[cap-400k-4k] step 3800 train 0.1955 val 6.4386
+[cap-400k-4k] step 4000 train 0.1808 val 6.5566
+[cap-400k-4k] DONE {"summary": true, "final_step": 4000, "final_train_full": 0.1808, "final_val": 6.5566, "best_step": 200, "best_val": 2.7022, "best_train_full": 2.4553, "elapsed_s": 286.4, "samples": {"hello": " t anghe s nthar woupe wont s suso thind we cat bat w he whallin", "the cat": " t angalor whe is thoull nthanous a wa wouly lo be s ine w fure ", "why is": " t anghe ct he inousoulo nthanous th i whan ind be as wel indr i", "boop": ""}}

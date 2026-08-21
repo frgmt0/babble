@@ -1,0 +1,22 @@
+{"meta": {"name": "b-drop0.2-lr3e-4-s2", "steps": 1000, "lr": 0.0003, "n_layer": 4, "n_head": 4, "n_embd": 256, "dropout": 0.2, "weight_decay": 0.01, "cosine": true, "batch_size": 8, "params": 3347968, "train_rows": 326, "val_rows": 81, "train_examples": 328, "synthetic_examples": 0, "seed": 2}}
+{"step": 50, "train_window": 3.4536, "train_full": 2.8299, "val": 2.8845, "elapsed_s": 63.4, "best": true}
+{"step": 100, "train_window": 2.7502, "train_full": 2.6439, "val": 2.7655, "elapsed_s": 126.7, "best": true}
+{"step": 150, "train_window": 2.6416, "train_full": 2.5271, "val": 2.6832, "elapsed_s": 190.9, "best": true}
+{"step": 200, "train_window": 2.5372, "train_full": 2.4643, "val": 2.6812, "elapsed_s": 250.3, "best": true}
+{"step": 250, "train_window": 2.4823, "train_full": 2.3918, "val": 2.6481, "elapsed_s": 314.7, "best": true}
+{"step": 300, "train_window": 2.4203, "train_full": 2.3433, "val": 2.6387, "elapsed_s": 378.7, "best": true}
+{"step": 350, "train_window": 2.3895, "train_full": 2.3114, "val": 2.6699, "elapsed_s": 441.1}
+{"step": 400, "train_window": 2.3725, "train_full": 2.2297, "val": 2.6411, "elapsed_s": 507.0}
+{"step": 450, "train_window": 2.2832, "train_full": 2.1912, "val": 2.6578, "elapsed_s": 570.4}
+{"step": 500, "train_window": 2.2676, "train_full": 2.1428, "val": 2.6608, "elapsed_s": 631.7}
+{"step": 550, "train_window": 2.2466, "train_full": 2.0891, "val": 2.6679, "elapsed_s": 700.6}
+{"step": 600, "train_window": 2.2012, "train_full": 2.0476, "val": 2.6822, "elapsed_s": 754.3}
+{"step": 650, "train_window": 2.1275, "train_full": 2.0055, "val": 2.7035, "elapsed_s": 818.0}
+{"step": 700, "train_window": 2.0881, "train_full": 1.9622, "val": 2.7284, "elapsed_s": 890.2}
+{"step": 750, "train_window": 2.1204, "train_full": 1.9204, "val": 2.712, "elapsed_s": 952.0}
+{"step": 800, "train_window": 2.0876, "train_full": 1.8989, "val": 2.7563, "elapsed_s": 1004.5}
+{"step": 850, "train_window": 2.0378, "train_full": 1.8684, "val": 2.757, "elapsed_s": 1058.2}
+{"step": 900, "train_window": 2.0071, "train_full": 1.8523, "val": 2.7847, "elapsed_s": 1122.2}
+{"step": 950, "train_window": 2.0091, "train_full": 1.8283, "val": 2.7682, "elapsed_s": 1179.8}
+{"step": 1000, "train_window": 2.0059, "train_full": 1.8082, "val": 2.7782, "elapsed_s": 1247.5}
+{"summary": true, "final_step": 1000, "final_train_full": 1.8082, "final_val": 2.7782, "best_step": 300, "best_val": 2.6387, "best_train_full": 2.3433, "elapsed_s": 1268.2, "samples": {"hello": " you wh ca sir", "the cat": " you", "why is": " wou wo che ithake cong a ss is wherous t the we tho te ithono a", "boop": ""}}

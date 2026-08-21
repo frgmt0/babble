@@ -1,0 +1,9 @@
+{"meta": {"name": "lr3e-4-10k", "steps": 10000, "lr": 0.0003, "n_layer": 4, "n_head": 4, "n_embd": 256, "dropout": 0.0, "weight_decay": 0.01, "batch_size": 8, "params": 3347968, "train_rows": 326, "val_rows": 81, "train_examples": 328, "synthetic_examples": 0, "seed": 1}}
+{"step": 250, "train_window": 2.6586, "train_full": 2.3028, "val": 2.6871, "elapsed_s": 168.0, "best": true}
+{"step": 500, "train_window": 2.0768, "train_full": 1.8508, "val": 2.8834, "elapsed_s": 326.3}
+{"step": 750, "train_window": 1.5383, "train_full": 1.3096, "val": 3.403, "elapsed_s": 517.0}
+{"step": 1000, "train_window": 1.032, "train_full": 0.8473, "val": 3.7829, "elapsed_s": 746.9}
+{"step": 1250, "train_window": 0.6691, "train_full": 0.5634, "val": 4.183, "elapsed_s": 973.2}
+{"step": 1500, "train_window": 0.4836, "train_full": 0.3899, "val": 4.4347, "elapsed_s": 1308.6}
+{"step": 1750, "train_window": 0.3617, "train_full": 0.2848, "val": 4.6371, "elapsed_s": 1888.4}
+{"step": 2000, "train_window": 0.3039, "train_full": 0.2742, "val": 4.8985, "elapsed_s": 2337.7}

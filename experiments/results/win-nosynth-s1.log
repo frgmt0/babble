@@ -1,0 +1,10 @@
+/home/beckett/Projects/babble/.beckett/worktrees/run-20260820-revamp-the-training-pipeline-corpus-inte/.venv/lib/python3.12/site-packages/torch/_subclasses/functional_tensor.py:368: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+[win-nosynth-s1] {"name": "win-nosynth-s1", "steps": 1600, "lr": 0.0003, "n_layer": 4, "n_head": 4, "n_embd": 256, "dropout": 0.2, "weight_decay": 0.01, "cosine": true, "batch_size": 8, "params": 3347968, "train_rows": 326, "val_rows": 81, "train_examples": 328, "synthetic_examples": 0, "seed": 1}
+[win-nosynth-s1] step 200 train 2.4517 val 2.6548
+[win-nosynth-s1] step 400 train 2.2475 val 2.6763
+[win-nosynth-s1] step 600 train 2.0441 val 2.7206
+[win-nosynth-s1] step 800 train 1.8188 val 2.8080
+[win-nosynth-s1] step 1000 train 1.6050 val 2.9092
+[win-nosynth-s1] step 1200 train 1.4350 val 3.0119
+[win-nosynth-s1] step 1400 train 1.3094 val 3.0623

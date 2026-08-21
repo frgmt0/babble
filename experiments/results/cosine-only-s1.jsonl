@@ -1,0 +1,22 @@
+{"meta": {"name": "cosine-only-s1", "steps": 1000, "lr": 0.001, "n_layer": 4, "n_head": 4, "n_embd": 256, "dropout": 0.0, "weight_decay": 0.01, "cosine": true, "batch_size": 8, "params": 3347968, "train_rows": 326, "val_rows": 81, "train_examples": 328, "synthetic_examples": 0, "seed": 1}}
+{"step": 50, "train_window": 3.3253, "train_full": 2.912, "val": 2.9791, "elapsed_s": 47.0, "best": true}
+{"step": 100, "train_window": 2.7415, "train_full": 2.69, "val": 2.8186, "elapsed_s": 80.9, "best": true}
+{"step": 150, "train_window": 2.6662, "train_full": 2.5448, "val": 2.7423, "elapsed_s": 130.0, "best": true}
+{"step": 200, "train_window": 2.508, "train_full": 2.4579, "val": 2.7514, "elapsed_s": 165.7}
+{"step": 250, "train_window": 2.4301, "train_full": 2.3886, "val": 2.7943, "elapsed_s": 205.7}
+{"step": 300, "train_window": 2.326, "train_full": 2.28, "val": 2.7613, "elapsed_s": 233.0}
+{"step": 350, "train_window": 2.2339, "train_full": 2.1678, "val": 2.8173, "elapsed_s": 270.9}
+{"step": 400, "train_window": 2.0932, "train_full": 2.0864, "val": 2.9092, "elapsed_s": 295.4}
+{"step": 450, "train_window": 2.065, "train_full": 2.0094, "val": 2.9228, "elapsed_s": 320.3}
+{"step": 500, "train_window": 1.8994, "train_full": 1.8944, "val": 3.0089, "elapsed_s": 346.5}
+{"step": 550, "train_window": 1.8423, "train_full": 1.7654, "val": 3.036, "elapsed_s": 374.7}
+{"step": 600, "train_window": 1.6332, "train_full": 1.7015, "val": 3.1267, "elapsed_s": 400.1}
+{"step": 650, "train_window": 1.6365, "train_full": 1.5304, "val": 3.1572, "elapsed_s": 430.7}
+{"step": 700, "train_window": 1.4987, "train_full": 1.4179, "val": 3.2936, "elapsed_s": 459.1}
+{"step": 750, "train_window": 1.3006, "train_full": 1.335, "val": 3.4779, "elapsed_s": 486.1}
+{"step": 800, "train_window": 1.251, "train_full": 1.2337, "val": 3.5396, "elapsed_s": 511.0}
+{"step": 850, "train_window": 1.1852, "train_full": 1.1525, "val": 3.654, "elapsed_s": 537.8}
+{"step": 900, "train_window": 1.121, "train_full": 1.0637, "val": 3.7273, "elapsed_s": 563.6}
+{"step": 950, "train_window": 1.0057, "train_full": 0.9973, "val": 3.8117, "elapsed_s": 591.4}
+{"step": 1000, "train_window": 0.9677, "train_full": 0.9437, "val": 3.9378, "elapsed_s": 617.1}
+{"summary": true, "final_step": 1000, "final_train_full": 0.9437, "final_val": 3.9378, "best_step": 150, "best_val": 2.7423, "best_train_full": 2.5448, "elapsed_s": 628.6, "samples": {"hello": " t at alore heat p goul t ng aoure thi what cl s at we e t f re ", "the cat": " t at alere pean ppaoull ng roous a at r jur lor at we bl iflire", "why is": " t anoulore that p goul t ng as s the ind mand s ange hel ig re ", "boop": " that alo t hear pl oulo g manous at i woun cat be s ke l it re "}}

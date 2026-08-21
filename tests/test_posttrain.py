@@ -252,6 +252,7 @@ def test_trigger_fires_only_after_the_threshold_of_new_pairs(settings, ids):
 def test_post_train_respects_the_trigger_and_persists_last_count(settings, ids):
     _seed_pretrain(settings)
     settings.post_trigger_pairs = 3
+    settings.post_min_pairs = 0  # this test exercises the +N trigger, not the floor
     _seed_pairs(settings, ids, PAIRS[:2])  # 2 < 3
 
     # Not forced and not due -> a no-op that says why, and writes no post-train.
@@ -493,3 +494,115 @@ def test_the_automatic_post_trigger_off_when_threshold_is_zero(settings, ids, mo
     AutoPostTrigger(settings).maybe_run()
 
     assert launches == []
+
+
+# --- the min-pairs floor and the promotion gate ----------------------------
+
+
+def _seed_corpus_rows(settings, ids, n=25, *, author_raw="alice-raw"):
+    """Enough consented corpus rows that `split_rows` holds out a val set,
+    so the promotion gate has real held-out text to score against."""
+    from babble.consent import SCOPE_CORPUS
+    from babble.corpus import SOURCE_MENTION, CorpusRow, CorpusStore, make_corpus_id
+
+    ConsentStore(settings.consent_path).grant(author_raw, SCOPE_CORPUS)
+    store = CorpusStore(settings.corpus_path)
+    author = ids.user(author_raw)
+    for i in range(n):
+        text = f"corpus row {i} with a little more text to chew on"
+        store.append(
+            CorpusRow(id=make_corpus_id(text, author), text=text, author=author, source=SOURCE_MENTION)
+        )
+
+
+def test_post_train_refuses_below_the_min_pairs_floor(settings, ids):
+    _seed_pretrain(settings)
+    settings.post_trigger_pairs = 1
+    settings.post_min_pairs = 100
+    _seed_pairs(settings, ids, PAIRS)  # 20 pairs: past the +N threshold, below the floor
+
+    # The floor lives in the trigger itself, so `AutoPostTrigger` never even
+    # spawns a subprocess for a below-floor pair count -- without this, every
+    # new correction launched a run whose only act was to refuse.
+    assert post_trigger(settings).due is False
+
+    result = post_train(settings, steps=2, echo=False, ids=ids)
+
+    assert not result.ran
+    assert result.reason in ("not_due", "too_few_pairs")  # either guard, same refusal
+    assert not settings.pretrained_checkpoint.exists()  # bailed before touching anything
+
+
+def test_force_overrides_the_min_pairs_floor(settings, ids):
+    _seed_pretrain(settings)
+    settings.post_min_pairs = 100
+    _seed_pairs(settings, ids, PAIRS)
+
+    result = post_train(settings, force=True, steps=2, echo=False, ids=ids)
+
+    assert result.ran  # forced past the floor; the gate still decided promotion
+
+
+def test_gate_blocks_a_destructive_post_train_from_shipping(settings, ids):
+    """A fine-tune that wrecks corpus ability must not reach `latest.pt`. The
+    wrecking is real here: a huge post-train LR destroys the weights in a few
+    steps, and the gate has held-out corpus rows to catch it against."""
+    _seed_corpus_rows(settings, ids)
+    _seed_pretrain(settings)
+    latest_before = settings.latest_checkpoint.read_bytes()
+    _seed_pairs(settings, ids, PAIRS)
+    settings.post_learning_rate = 5.0  # deliberately ruinous
+    settings.post_rehearsal = 0.0  # nothing softening the damage
+    settings.post_gate_margin = 0.05
+
+    result = post_train(settings, force=True, steps=6, patience=0, echo=False, ids=ids)
+
+    assert result.ran
+    assert result.gated and not result.promoted
+    assert result.reason == "gated"
+    assert result.path is None
+    assert result.corpus_val_after > result.corpus_val_before + settings.post_gate_margin
+    assert settings.latest_checkpoint.read_bytes() == latest_before  # untouched
+
+
+def test_gate_promotes_a_harmless_post_train(settings, ids):
+    _seed_corpus_rows(settings, ids)
+    _seed_pretrain(settings)
+    latest_before = settings.latest_checkpoint.read_bytes()
+    _seed_pairs(settings, ids, PAIRS)
+    settings.post_learning_rate = 1e-5  # gentle enough to stay within the margin
+    settings.post_gate_margin = 0.5
+
+    result = post_train(settings, force=True, steps=4, echo=False, ids=ids)
+
+    assert result.ran
+    assert result.promoted and not result.gated
+    assert result.corpus_val_before is not None and result.corpus_val_after is not None
+    assert settings.latest_checkpoint.read_bytes() != latest_before  # the candidate shipped
+
+
+def test_gate_skipped_when_there_are_no_corpus_val_rows(settings, ids):
+    """No corpus, no held-out rows to score -- the gate cannot fire and says
+    so by reporting no corpus-val numbers, promoting the candidate as before."""
+    _seed_pretrain(settings)
+    _seed_pairs(settings, ids, PAIRS)
+
+    result = post_train(settings, force=True, steps=2, echo=False, ids=ids)
+
+    assert result.ran and result.promoted
+    assert result.corpus_val_before is None and result.corpus_val_after is None
+
+
+def test_rehearsal_mixes_corpus_rows_into_post_train_batches(settings, ids, monkeypatch):
+    """With rehearsal at 1.0 every batch slot draws from the corpus pool; the
+    run must still complete, select a best checkpoint on pair-val, and gate on
+    corpus val. This pins the mixed-batch path so a refactor cannot quietly
+    drop rehearsal."""
+    _seed_corpus_rows(settings, ids)
+    _seed_pretrain(settings)
+    _seed_pairs(settings, ids, PAIRS)
+    settings.post_rehearsal = 1.0
+
+    result = post_train(settings, force=True, steps=4, echo=False, ids=ids)
+
+    assert result.ran and result.promoted

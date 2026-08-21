@@ -1,0 +1,3 @@
+{"meta": {"name": "drop0.1-4k", "steps": 4000, "lr": 0.001, "n_layer": 4, "n_head": 4, "n_embd": 256, "dropout": 0.1, "weight_decay": 0.01, "cosine": false, "batch_size": 8, "params": 3347968, "train_rows": 326, "val_rows": 81, "train_examples": 328, "synthetic_examples": 0, "seed": 1}}
+{"step": 200, "train_window": 2.8324, "train_full": 2.4465, "val": 2.7117, "elapsed_s": 307.6, "best": true}
+{"step": 400, "train_window": 2.3457, "train_full": 2.155, "val": 2.827, "elapsed_s": 575.4}

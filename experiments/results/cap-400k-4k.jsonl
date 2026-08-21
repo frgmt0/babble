@@ -1,0 +1,22 @@
+{"meta": {"name": "cap-400k-4k", "steps": 4000, "lr": 0.001, "n_layer": 2, "n_head": 4, "n_embd": 112, "dropout": 0.0, "weight_decay": 0.01, "cosine": false, "batch_size": 8, "params": 388640, "train_rows": 326, "val_rows": 81, "train_examples": 328, "synthetic_examples": 0, "seed": 1}}
+{"step": 200, "train_window": 2.8267, "train_full": 2.4553, "val": 2.7022, "elapsed_s": 14.7, "best": true}
+{"step": 400, "train_window": 2.3414, "train_full": 2.2293, "val": 2.7738, "elapsed_s": 27.6}
+{"step": 600, "train_window": 2.0846, "train_full": 1.9707, "val": 2.8946, "elapsed_s": 41.2}
+{"step": 800, "train_window": 1.7567, "train_full": 1.627, "val": 3.1715, "elapsed_s": 56.6}
+{"step": 1000, "train_window": 1.4685, "train_full": 1.3267, "val": 3.5809, "elapsed_s": 70.5}
+{"step": 1200, "train_window": 1.1443, "train_full": 1.0472, "val": 3.8983, "elapsed_s": 83.7}
+{"step": 1400, "train_window": 0.8769, "train_full": 0.7825, "val": 4.2528, "elapsed_s": 98.9}
+{"step": 1600, "train_window": 0.6566, "train_full": 0.5925, "val": 4.6326, "elapsed_s": 113.0}
+{"step": 1800, "train_window": 0.5341, "train_full": 0.3991, "val": 4.9637, "elapsed_s": 128.2}
+{"step": 2000, "train_window": 0.4236, "train_full": 0.3728, "val": 5.2816, "elapsed_s": 142.9}
+{"step": 2200, "train_window": 0.3731, "train_full": 0.3232, "val": 5.3709, "elapsed_s": 157.9}
+{"step": 2400, "train_window": 0.3353, "train_full": 0.2769, "val": 5.6365, "elapsed_s": 171.5}
+{"step": 2600, "train_window": 0.3029, "train_full": 0.2586, "val": 5.809, "elapsed_s": 185.7}
+{"step": 2800, "train_window": 0.2934, "train_full": 0.2388, "val": 5.8983, "elapsed_s": 199.5}
+{"step": 3000, "train_window": 0.2646, "train_full": 0.2267, "val": 6.0377, "elapsed_s": 213.8}
+{"step": 3200, "train_window": 0.258, "train_full": 0.2306, "val": 6.3058, "elapsed_s": 227.8}
+{"step": 3400, "train_window": 0.2627, "train_full": 0.2229, "val": 6.3757, "elapsed_s": 241.2}
+{"step": 3600, "train_window": 0.2429, "train_full": 0.1995, "val": 6.4743, "elapsed_s": 256.0}
+{"step": 3800, "train_window": 0.2241, "train_full": 0.1955, "val": 6.4386, "elapsed_s": 270.5}
+{"step": 4000, "train_window": 0.2338, "train_full": 0.1808, "val": 6.5566, "elapsed_s": 284.1}
+{"summary": true, "final_step": 4000, "final_train_full": 0.1808, "final_val": 6.5566, "best_step": 200, "best_val": 2.7022, "best_train_full": 2.4553, "elapsed_s": 286.4, "samples": {"hello": " t anghe s nthar woupe wont s suso thind we cat bat w he whallin", "the cat": " t angalor whe is thoull nthanous a wa wouly lo be s ine w fure ", "why is": " t anghe ct he inousoulo nthanous th i whan ind be as wel indr i", "boop": ""}}

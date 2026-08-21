@@ -1,0 +1,19 @@
+/home/beckett/Projects/babble/.beckett/worktrees/run-20260820-revamp-the-training-pipeline-corpus-inte/.venv/lib/python3.12/site-packages/torch/_subclasses/functional_tensor.py:368: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+[synth3xT-s2] {"name": "synth3xT-s2", "steps": 3000, "lr": 0.001, "n_layer": 4, "n_head": 4, "n_embd": 256, "dropout": 0.0, "weight_decay": 0.01, "cosine": false, "batch_size": 8, "params": 3347968, "train_rows": 326, "val_rows": 81, "train_examples": 328, "synthetic_examples": 1200, "seed": 2}
+[synth3xT-s2] step 200 train 2.5926 val 2.7584
+[synth3xT-s2] step 400 train 2.3978 val 2.7104
+[synth3xT-s2] step 600 train 2.2617 val 2.7392
+[synth3xT-s2] step 800 train 2.1513 val 2.7792
+[synth3xT-s2] step 1000 train 2.0812 val 2.8327
+[synth3xT-s2] step 1200 train 1.9697 val 2.9164
+[synth3xT-s2] step 1400 train 1.9006 val 2.8492
+[synth3xT-s2] step 1600 train 1.8326 val 2.9368
+[synth3xT-s2] step 1800 train 1.7432 val 2.9634
+[synth3xT-s2] step 2000 train 1.6932 val 3.0084
+[synth3xT-s2] step 2200 train 1.6863 val 3.1055
+[synth3xT-s2] step 2400 train 1.6280 val 3.0719
+[synth3xT-s2] step 2600 train 1.5121 val 3.0967
+[synth3xT-s2] step 2800 train 1.4455 val 3.2089
+[synth3xT-s2] step 3000 train 1.4243 val 3.2589
+[synth3xT-s2] DONE {"summary": true, "final_step": 3000, "final_train_full": 1.4243, "final_val": 3.2589, "best_step": 400, "best_val": 2.7104, "best_train_full": 2.3978, "elapsed_s": 1999.8, "samples": {"hello": " you we ca to noulse whin it ie it t ma thasou inde t whit ses w", "the cat": " that forede to shat wh i ing iur momat t tho wende thathin sond", "why is": " thoughacke it", "boop": "erlly it we it"}}

@@ -359,14 +359,24 @@ restart never re-fires. Set the threshold to 0 to run by hand only.
 long before the step budget is spent — val loss bottoms out, then climbs. So
 `train()` tracks val loss at every checkpoint interval and, **at the end of the
 run**, writes whichever step had the *lowest* val loss to `latest.pt` — never
-just whatever the last step happened to produce. It also stops early once
-`BABBLE_TRAIN_PATIENCE` (default 3) checkpoint intervals in a row fail to beat
-that best, so a run that has already found its minimum does not keep burning
-CPU past it. `train.stop` in `logs/babble.log` names the winning step, its val
-loss, and how many steps ran versus the ceiling. Both the best-checkpoint
-selection and the early stop are no-ops without a held-out validation set (too
-little data to spare any) — see [Validation](#validation) below, in which case
-every checkpoint interval is simply written in turn, same as before.
+just whatever the last step happened to produce.
+
+**Early stopping is noise-aware.** On a corpus this size the val estimate
+itself is noisy: hold a checkpoint fixed and recompute val over thousands of
+resampled 20% holdouts and the spread is ~0.05 nats std
+(`experiments/val_noise.py` measures it; an early version of this stop once
+killed a run over a 0.075 wobble — within that band — while train loss was
+still falling fast). So "failed to improve" is not evidence, and patience is
+gated twice: it cannot fire before `BABBLE_TRAIN_MIN_STEPS` (default 600),
+and a checkpoint only burns patience when val exceeds the best seen by more
+than `BABBLE_TRAIN_STALL_MARGIN` (default 0.05, the measured band; 0 restores
+the old hair-trigger). After `BABBLE_TRAIN_PATIENCE` (default 3) such stalls
+the run stops. `train.stop` in `logs/babble.log` names the winning step, its
+val loss, and how many steps ran versus the ceiling. Best-checkpoint
+selection and the early stop are both no-ops without a held-out validation
+set (too little data to spare any) — see [Validation](#validation) below, in
+which case every checkpoint interval is simply written in turn, same as
+before.
 
 **Every run starts fresh.** There is no base and nothing to resume: each call
 to `babble train` builds a brand-new random-init model and trains it on
@@ -424,10 +434,35 @@ babble post-status          # pairs since the last post-train, whether the trigg
 **Set your expectations here too.** There are only a few dozen correction pairs
 against a ~3.3M-parameter model that just learned characters from a few
 thousand characters of corpus. It will *memorise* those pairs and generalise to
-approximately nothing. That is the expected result of this stage, not a bug —
-no data augmentation, synthetic pairs, or external data compensate for it here,
-on purpose. This proves the mechanism works; it does not, by itself, make
-babble good at answering.
+approximately nothing — and measured on the live corpus, the original settings
+did real damage on the way there: 38 pairs fine-tuned at the pretrain LR
+shipped a checkpoint whose held-out corpus loss was **+1.15 nats worse** than
+the pretrain it started from
+([the revamp report](PIPELINE_REVAMP_2026-08-20.md) has the numbers). Note
+also that the bot *serves* plain continuations, not the `<sep>` pair layout —
+so what post-train teaches is never directly exercised at inference, and the
+damage to the continuation ability is the whole effect the served bot sees.
+
+**Four guardrails now stand between a fine-tune and the served bot**, each
+config-flippable and each chosen from the measured grid in
+`experiments/post_grid.py`:
+
+1. **Its own learning rate** — `BABBLE_POST_LEARNING_RATE` (default `1e-4`).
+   The historical pretrain LR (1e-3) tore through the weights in a handful
+   of steps at this pair count.
+2. **Rehearsal** — `BABBLE_POST_REHEARSAL` (default `0.5`): that fraction of
+   every post-train batch is plain corpus text under the pretrain objective,
+   so the fine-tune cannot drift off the corpus distribution unopposed.
+3. **A pair floor** — `BABBLE_POST_MIN_PAIRS` (default `100`): below this
+   many trainable pairs the run refuses to start and says so; `--force`
+   overrides for an explicit experiment.
+4. **A promotion gate** — `BABBLE_POST_GATE_MARGIN` (default `0.05`, the
+   measured val-noise band): after training, the candidate is scored against
+   the pretrain snapshot on the held-out corpus split. Worse by more than the
+   margin → `latest.pt` is left untouched and the run reports itself
+   `gated`. Nothing writes `latest.pt` mid-run any more either, so a
+   half-finished fine-tune can never be what the bot serves. A negative
+   margin disables the gate.
 
 **The `rejected` side is captured, not trained on.** Every correction still
 stores what the bot got wrong alongside what it should have said, and both are
@@ -495,9 +530,21 @@ the whole trick: voice replication is "to a tee" by construction, because the
 response half is not synthesized at all — it is the same text a real person
 already wrote, byte for byte. Only the prompt in front of it is new.
 
+**Continuation cuts grow the response pool too.** Postulated prompts alone
+turned out to be a measured null: they only ever synthesize the *prompt*
+side, so the pool of response text — the half the loss is actually computed
+over — never grew. `synth-generate` therefore also cuts every corpus row of
+four words or more at word boundaries into `(prefix → rest)` pairs
+(method-tagged `continuation_cut`, up to `--cuts` per row, default 2). Both
+halves are byte-slices of the original row: nothing is invented, and the
+pair teaches exactly the mapping the pair layout exists for — "given this
+opening, produce the rest, in this voice". On the current corpus that is
+~500 pairs against 47 human corrections. `--no-continuations` /
+`--no-postulate` select either generator alone.
+
 ```bash
 babble synth-generate      # scan the corpus -> data/synthetic_pairs.jsonl
-babble synth-status        # synthetic vs human pair counts
+babble synth-status        # synthetic vs human data counts
 ```
 
 **Be honest about the method.** There is no LLM credential wired into this
@@ -539,6 +586,61 @@ pair built from it from being trained on, the same belt-and-braces promise
 ```bash
 babble post-train --force --include-synthetic   # human + synthetic pairs -> latest.pt
 ```
+
+## Synthetic corpus rows
+
+The pair generators above feed post-train. The pretrain side has its own
+corpus-internal expansion: `babble synth-corpus` recombines corpus phrasing
+into *new rows* via an order-2 word-level Markov chain built over the
+consented corpus (`babble/synthcorpus.py`).
+
+**Why this counts as corpus-internal by construction.** Every emitted word
+is a word somebody actually typed, spelled exactly as they typed it; every
+consecutive word pair follows a transition observed in the corpus (the chain
+only moves `(w1, w2) → w3` where `w1 w2 w3` appears verbatim in some row,
+with order-1 backoff only from dead-end contexts); row starts are real row
+openings and rows end where a real row ended. A generated row is a splice of
+real phrasing — lowercase Discord cadence, slang, typos and all — in a new
+but in-distribution order. Verbatim replays of real rows are rejected, so
+every stored row is genuinely *new* text.
+
+```bash
+babble synth-corpus --count 400        # -> data/synthetic_corpus.jsonl
+babble synth-corpus --rebuild          # regenerate from the current consented corpus
+babble synth-status                    # counts, synthetic vs human
+```
+
+**Same separation discipline as the pairs.** Rows land in their own file
+(`data/synthetic_corpus.jsonl`), each labelled `"synthetic": true` with the
+method that made it; nothing is ever appended to `corpus.jsonl`. The trainer
+mixes the file in by default (`BABBLE_TRAIN_SYNTHETIC=0` makes it ignore the
+file entirely), and only ever into the **train side** — validation stays 100% real held-out
+human rows, so the number a run is judged by can never be flattered by the
+generator trying to improve it.
+
+**The chain never sees held-out rows either.** Generation excludes the rows
+the trainer's deterministic split holds out for validation
+(`babble/valsplit.py`, the split's single torch-free definition), so a
+synthetic row cannot splice val phrasing into the train side and quietly
+deflate val loss. `--include-val-sources` restores the whole-corpus chain
+for experiments that need it.
+
+**And a stale file cannot re-open that leak.** The holdout is a slice of the
+whole id population, so appending corpus rows migrates some existing rows
+train → val — a file generated earlier could then contain splices of
+now-held-out phrasing. Each generation records the exact source-id set in a
+sidecar (`data/synthetic_corpus.meta.json`), and the trainer rebuilds the
+file from the current corpus before mixing whenever that recorded set no
+longer matches the current train side (a file with no sidecar, or one built
+with `--include-val-sources`, is treated as stale too).
+
+**Consent.** Rows are generated only from text passing the same consent +
+blocklist gate the trainer applies. A spliced row has no single source row
+to track a withdrawal against, so the supported way to honour one is
+`babble synth-corpus --rebuild`, which regenerates the whole file from the
+*current* consented corpus (withdrawal already purged the source rows by
+then). The trainer re-checks the blocklist on every synthetic row at
+training time.
 
 ## Why it babbled at loss 0.02
 
@@ -990,11 +1092,23 @@ The knobs that decide what the bot sounds like:
 | `BABBLE_MAX_NEW_TOKENS` | `256` | longest reply, in bytes |
 | `BABBLE_BLOCK_SIZE` | `512` | context window in bytes; changing it [invalidates checkpoints](#pretraining) (harmless -- every run starts from random init) |
 | `BABBLE_TRAIN_TRIGGER_ROWS` | `100` | new corpus rows that [re-fire training](#pretraining); `0` = manual only |
-| `BABBLE_TRAIN_STEPS` | `400` | training step [ceiling](#pretraining), not a target -- the best-val checkpoint may win earlier |
+| `BABBLE_TRAIN_STEPS` | `1600` | training step [ceiling](#pretraining), not a target -- the best-val checkpoint may win earlier; also the cosine schedule length |
+| `BABBLE_TRAIN_MIN_STEPS` | `600` | floor before the [early stop](#pretraining) may fire; sits inside the step ceiling by design |
+| `BABBLE_TRAIN_STALL_MARGIN` | `0.05` | val must exceed the best by more than this ([the measured noise band](#pretraining)) to burn patience; `0` restores the old hair-trigger |
 | `BABBLE_TRAIN_PATIENCE` | `3` | stop training after this many non-improving [checkpoint intervals](#pretraining); `0` = never |
+| `BABBLE_LEARNING_RATE` | `3e-4` | pretrain AdamW learning rate (sweep winner; the old `1e-3` lost by ~0.15 nats of held-out val across three seeds) |
+| `BABBLE_TRAIN_COSINE` | on | cosine-anneal the LR to a tenth of itself over the step budget; set `0` for a constant LR |
+| `BABBLE_DROPOUT` | `0.2` | dropout used during training (eval/generation always run with it off) |
+| `BABBLE_WEIGHT_DECAY` | `0.01` | AdamW weight decay |
+| `BABBLE_TRAIN_SYNTHETIC` | on | mix [labelled synthetic corpus rows](#synthetic-corpus-rows) into the train side (val stays 100% real); set `0` to train on human rows only |
 | `BABBLE_POST_TRIGGER_PAIRS` | `10` | new correction pairs that [re-fire post-train](#post-training-on-the-correction-pairs); `0` = manual only |
 | `BABBLE_POST_STEPS` | `200` | post-train step [ceiling](#post-training-on-the-correction-pairs), not a target -- the best-val checkpoint may win earlier |
 | `BABBLE_POST_PATIENCE` | `3` | stop post-train after this many non-improving [checkpoint intervals](#post-training-on-the-correction-pairs); `0` = never |
+| `BABBLE_POST_LEARNING_RATE` | `1e-4` | post-train LR — [no longer borrows the pretrain LR](#post-training-on-the-correction-pairs) |
+| `BABBLE_POST_REHEARSAL` | `0.5` | fraction of each post-train batch that is plain corpus text under the pretrain objective |
+| `BABBLE_POST_MIN_PAIRS` | `100` | below this many trainable pairs post-train refuses to run (`--force` overrides) |
+| `BABBLE_POST_GATE_MARGIN` | `0.05` | [promotion gate](#post-training-on-the-correction-pairs): a candidate worse than the pretrain snapshot by more than this on held-out corpus val is not written to `latest.pt`; negative disables |
+| `BABBLE_POST_LAYOUT` | `continuation` | what post-train teaches: `continuation` (the layout serving actually uses) or `pair` (the historical `<bos> prompt <sep> response` layout) |
 | `BABBLE_BEST_OF` | `4` | [candidates drawn per reply](#best-of-n); `1` turns it off |
 | `BABBLE_TRAIN_THREADS` | `2` | CPU threads for train + inference; stays polite on a shared box |
 | `BABBLE_TORCH_COMPILE` | off | set `1` to `torch.compile` the model for a long training run |

@@ -1,0 +1,22 @@
+{"meta": {"name": "c-small-drop0.1-s3", "steps": 1000, "lr": 0.001, "n_layer": 3, "n_head": 4, "n_embd": 128, "dropout": 0.1, "weight_decay": 0.05, "cosine": true, "batch_size": 8, "params": 690432, "train_rows": 326, "val_rows": 81, "train_examples": 328, "synthetic_examples": 0, "seed": 3}}
+{"step": 50, "train_window": 3.4573, "train_full": 2.9019, "val": 2.9512, "elapsed_s": 17.0, "best": true}
+{"step": 100, "train_window": 2.7945, "train_full": 2.6874, "val": 2.7988, "elapsed_s": 36.7, "best": true}
+{"step": 150, "train_window": 2.6431, "train_full": 2.5321, "val": 2.694, "elapsed_s": 60.7, "best": true}
+{"step": 200, "train_window": 2.5405, "train_full": 2.4591, "val": 2.6909, "elapsed_s": 79.6, "best": true}
+{"step": 250, "train_window": 2.4836, "train_full": 2.421, "val": 2.7047, "elapsed_s": 98.4}
+{"step": 300, "train_window": 2.4227, "train_full": 2.3566, "val": 2.7143, "elapsed_s": 119.4}
+{"step": 350, "train_window": 2.3437, "train_full": 2.2867, "val": 2.6944, "elapsed_s": 138.1}
+{"step": 400, "train_window": 2.3261, "train_full": 2.2324, "val": 2.6905, "elapsed_s": 155.1, "best": true}
+{"step": 450, "train_window": 2.2656, "train_full": 2.1827, "val": 2.6978, "elapsed_s": 173.7}
+{"step": 500, "train_window": 2.2016, "train_full": 2.1421, "val": 2.7615, "elapsed_s": 193.9}
+{"step": 550, "train_window": 2.1353, "train_full": 2.0842, "val": 2.7514, "elapsed_s": 215.8}
+{"step": 600, "train_window": 2.1739, "train_full": 2.0394, "val": 2.735, "elapsed_s": 235.9}
+{"step": 650, "train_window": 2.1211, "train_full": 1.9796, "val": 2.7759, "elapsed_s": 254.7}
+{"step": 700, "train_window": 2.0441, "train_full": 1.9258, "val": 2.8142, "elapsed_s": 274.6}
+{"step": 750, "train_window": 2.0439, "train_full": 1.8912, "val": 2.8112, "elapsed_s": 294.0}
+{"step": 800, "train_window": 2.0152, "train_full": 1.8609, "val": 2.8303, "elapsed_s": 313.4}
+{"step": 850, "train_window": 1.9826, "train_full": 1.827, "val": 2.8399, "elapsed_s": 337.6}
+{"step": 900, "train_window": 1.9189, "train_full": 1.7962, "val": 2.8711, "elapsed_s": 355.7}
+{"step": 950, "train_window": 1.9263, "train_full": 1.7735, "val": 2.8707, "elapsed_s": 374.2}
+{"step": 1000, "train_window": 1.8695, "train_full": 1.754, "val": 2.898, "elapsed_s": 396.2}
+{"summary": true, "final_step": 1000, "final_train_full": 1.754, "final_val": 2.898, "best_step": 400, "best_val": 2.6905, "best_train_full": 2.2324, "elapsed_s": 402.3, "samples": {"hello": " whe w", "the cat": " wou", "why is": " wore tor", "boop": " w thous goon in san bale al we was in me f anererexan w thomon "}}

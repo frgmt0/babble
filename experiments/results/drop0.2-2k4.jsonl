@@ -1,0 +1,14 @@
+{"meta": {"name": "drop0.2-2k4", "steps": 2400, "lr": 0.001, "n_layer": 4, "n_head": 4, "n_embd": 256, "dropout": 0.2, "weight_decay": 0.01, "cosine": false, "batch_size": 8, "params": 3347968, "train_rows": 326, "val_rows": 81, "train_examples": 328, "synthetic_examples": 0, "seed": 1}}
+{"step": 200, "train_window": 2.9137, "train_full": 2.5144, "val": 2.7306, "elapsed_s": 188.5, "best": true}
+{"step": 400, "train_window": 2.4496, "train_full": 2.2669, "val": 2.7962, "elapsed_s": 358.0}
+{"step": 600, "train_window": 2.2449, "train_full": 2.0339, "val": 2.8906, "elapsed_s": 535.8}
+{"step": 800, "train_window": 2.0203, "train_full": 1.7632, "val": 3.0788, "elapsed_s": 730.1}
+{"step": 1000, "train_window": 1.8671, "train_full": 1.5163, "val": 3.1721, "elapsed_s": 912.0}
+{"step": 1200, "train_window": 1.6616, "train_full": 1.2638, "val": 3.4077, "elapsed_s": 1081.3}
+{"step": 1400, "train_window": 1.4414, "train_full": 0.9995, "val": 3.6169, "elapsed_s": 1281.7}
+{"step": 1600, "train_window": 1.2551, "train_full": 0.8217, "val": 3.9027, "elapsed_s": 1442.7}
+{"step": 1800, "train_window": 1.1324, "train_full": 0.5863, "val": 4.0472, "elapsed_s": 1619.5}
+{"step": 2000, "train_window": 0.9707, "train_full": 0.5101, "val": 4.3854, "elapsed_s": 1778.3}
+{"step": 2200, "train_window": 0.8751, "train_full": 0.4046, "val": 4.5768, "elapsed_s": 1944.4}
+{"step": 2400, "train_window": 0.7937, "train_full": 0.341, "val": 4.6176, "elapsed_s": 2095.5}
+{"summary": true, "final_step": 2400, "final_train_full": 0.341, "final_val": 4.6176, "best_step": 200, "best_val": 2.7306, "best_train_full": 2.5144, "elapsed_s": 2107.1, "samples": {"hello": " t athe the that t toug thathe the thi the t the that hel t the ", "the cat": "h the thesthe ck sthouthinthe s sor tinthe t tor therke t thing ", "why is": " t angouthand ang the t t t soous t t the t t tousus thel t that", "boop": ""}}

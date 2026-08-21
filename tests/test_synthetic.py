@@ -145,7 +145,9 @@ def test_generate_synthetic_pairs_only_uses_reactive_consented_rows(settings, id
     _seed_corpus_row(settings, "well that was also *fine* again i guess", author)
     _seed_corpus_row(settings, "a completely standalone statement about the weather", author)
 
-    result = generate_synthetic_pairs(settings, ids=ids, blocklist=Blocklist.load())
+    result = generate_synthetic_pairs(
+        settings, ids=ids, blocklist=Blocklist.load(), continuations=False
+    )
 
     assert result.scanned == 2
     assert result.reactive == 1
@@ -172,10 +174,14 @@ def test_generate_synthetic_pairs_is_idempotent_on_rerun(settings, ids):
     author = ids.user("author-raw")
     _seed_corpus_row(settings, "well that was also *fine* again i guess", author)
 
-    first = generate_synthetic_pairs(settings, ids=ids, blocklist=Blocklist.load())
+    first = generate_synthetic_pairs(
+        settings, ids=ids, blocklist=Blocklist.load(), continuations=False
+    )
     assert first.generated == 1
 
-    second = generate_synthetic_pairs(settings, ids=ids, blocklist=Blocklist.load())
+    second = generate_synthetic_pairs(
+        settings, ids=ids, blocklist=Blocklist.load(), continuations=False
+    )
     assert second.generated == 0
     assert second.skipped_duplicate == 1
     assert synthetic_pair_count(settings) == 1  # not doubled
@@ -187,11 +193,13 @@ def test_generate_synthetic_pairs_adds_only_new_rows_as_corpus_grows(settings, i
     ConsentStore(settings.consent_path).grant("author-raw")
     author = ids.user("author-raw")
     _seed_corpus_row(settings, "well that was also *fine* again i guess", author)
-    generate_synthetic_pairs(settings, ids=ids, blocklist=Blocklist.load())
+    generate_synthetic_pairs(settings, ids=ids, blocklist=Blocklist.load(), continuations=False)
     assert synthetic_pair_count(settings) == 1
 
     _seed_corpus_row(settings, "yeah honestly same here again", author)
-    result = generate_synthetic_pairs(settings, ids=ids, blocklist=Blocklist.load())
+    result = generate_synthetic_pairs(
+        settings, ids=ids, blocklist=Blocklist.load(), continuations=False
+    )
 
     assert result.generated == 1
     assert synthetic_pair_count(settings) == 2
@@ -205,7 +213,7 @@ def test_trainable_synthetic_pairs_drops_pairs_whose_author_withdrew(settings, i
     consent.grant("author-raw")
     author = ids.user("author-raw")
     _seed_corpus_row(settings, "well that was also *fine* again i guess", author)
-    generate_synthetic_pairs(settings, ids=ids, blocklist=Blocklist.load())
+    generate_synthetic_pairs(settings, ids=ids, blocklist=Blocklist.load(), continuations=False)
     assert len(trainable_synthetic_pairs(settings, ids=ids, blocklist=Blocklist.load())) == 1
 
     # A withdrawal purges the corpus row (mirroring `!babble forget`); even if
@@ -232,7 +240,7 @@ def test_trainable_synthetic_pairs_sorted_deterministically(settings, ids):
 # --- CLI wiring --------------------------------------------------------------
 
 
-@pytest.mark.parametrize("command", ["synth-generate", "synth-status"])
+@pytest.mark.parametrize("command", ["synth-generate", "synth-status", "synth-corpus"])
 def test_synth_subcommands_are_registered(command):
     from babble.cli import build_parser
 
@@ -248,3 +256,42 @@ def test_post_train_subcommand_has_include_synthetic_flag():
 
     args = build_parser().parse_args(["post-train"])
     assert args.include_synthetic is False
+
+
+# --- the combined default: postulated + continuation pairs ------------------
+
+
+def test_default_generation_includes_continuation_cut_pairs(settings, ids):
+    ConsentStore(settings.consent_path).grant("author-raw")
+    author = ids.user("author-raw")
+    _seed_corpus_row(settings, "well that was also *fine* again i guess", author)
+
+    result = generate_synthetic_pairs(settings, ids=ids, blocklist=Blocklist.load())
+
+    # One postulated pair for the reactive row, plus its continuation cuts --
+    # counted separately so a null result on one method can be traced.
+    assert result.generated_postulated == 1
+    assert result.generated_continuation >= 1
+    assert result.generated == result.generated_postulated + result.generated_continuation
+
+    pairs = SyntheticPairStore(settings.synthetic_pairs_path).all()
+    continuation = [p for p in pairs if p.method == "continuation_cut"]
+    assert continuation
+    for pair in continuation:
+        # BOTH halves verbatim slices of the source row, nothing invented.
+        original = "well that was also *fine* again i guess"
+        assert original.startswith(pair.prompt)
+        assert original.endswith(pair.response)
+
+
+def test_continuation_pairs_die_with_their_source_rows_consent(settings, ids):
+    consent = ConsentStore(settings.consent_path)
+    consent.grant("author-raw")
+    author = ids.user("author-raw")
+    _seed_corpus_row(settings, "well that was also *fine* again i guess", author)
+    generate_synthetic_pairs(settings, ids=ids, blocklist=Blocklist.load())
+    assert trainable_synthetic_pairs(settings, ids=ids, blocklist=Blocklist.load())
+
+    consent.withdraw("author-raw")
+
+    assert trainable_synthetic_pairs(settings, ids=ids, blocklist=Blocklist.load()) == []
