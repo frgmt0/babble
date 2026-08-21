@@ -180,6 +180,16 @@ class _PostTrigger(Protocol):
     def maybe_run(self) -> None: ...
 
 
+class _AugmentTrigger(Protocol):
+    """The one method `core` calls after a fresh correction pair: paraphrase
+    THIS pair into extra post-train variants, out of band. Unlike
+    `_PostTrigger` this is not threshold-based -- every new correction fires
+    it (subject to its own on/off knob), so the pair set compounds as
+    corrections keep arriving rather than waiting for a batch."""
+
+    def on_new_pair(self, pair_id: str) -> None: ...
+
+
 @dataclass(frozen=True)
 class IncomingMessage:
     """A Discord message, reduced to what the logic actually needs."""
@@ -324,6 +334,7 @@ class Babble:
         publisher: _Publisher | None = None,
         train_trigger: _TrainTrigger | None = None,
         post_trigger: _PostTrigger | None = None,
+        augment_trigger: _AugmentTrigger | None = None,
     ) -> None:
         settings.ensure_dirs()
         self.settings = settings
@@ -343,6 +354,7 @@ class Babble:
         self.publisher = publisher
         self.train_trigger = train_trigger
         self.post_trigger = post_trigger
+        self.augment_trigger = augment_trigger
 
     # --- entry points ---------------------------------------------------
 
@@ -759,6 +771,13 @@ class Babble:
         # never grows `pair_count`, so it must never be allowed to fire this.
         if fresh and self.post_trigger is not None:
             self.post_trigger.maybe_run()
+        # ...and the pair-augmentation hook: paraphrase THIS correction into
+        # extra variants right now, out of band, so the pair set compounds as
+        # corrections keep arriving rather than waiting for a batch command.
+        # Off by default (`Settings.post_augment_pairs`) -- see `pairaugment.
+        # AutoAugmentTrigger`.
+        if fresh and self.augment_trigger is not None:
+            self.augment_trigger.on_new_pair(row.id)
         return [
             Reply(
                 f"-# got it — correction #{total} filed. i'll pick it up on the next training cycle.",

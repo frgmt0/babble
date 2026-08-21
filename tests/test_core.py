@@ -274,6 +274,56 @@ def test_a_duplicate_correction_does_not_poke_the_post_trigger(settings, generat
     assert post_trigger.calls == 1
 
 
+class _FakeAugmentTrigger:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def on_new_pair(self, pair_id: str) -> None:
+        self.calls.append(pair_id)
+
+
+def test_a_fresh_correction_pokes_the_augment_trigger_with_its_own_id(settings, generator, log):
+    """Unlike the post-train trigger, augmentation fires per-correction, not
+    on a threshold -- and it must be told exactly which pair to paraphrase."""
+    augment_trigger = _FakeAugmentTrigger()
+    brain = Babble(settings, generator=generator, log=log, augment_trigger=augment_trigger)
+    fake = FakeDiscord(brain)
+    fake.onboard(ALICE)
+    answer = fake.ping(ALICE, "hello")[0]
+
+    fake.correct(ALICE, "say hey", reply_to=answer.id)
+
+    assert len(augment_trigger.calls) == 1
+    assert augment_trigger.calls[0] == brain.store.all()[0].id
+
+
+def test_a_duplicate_correction_does_not_poke_the_augment_trigger(settings, generator, log):
+    augment_trigger = _FakeAugmentTrigger()
+    brain = Babble(settings, generator=generator, log=log, augment_trigger=augment_trigger)
+    fake = FakeDiscord(brain)
+    fake.onboard(ALICE)
+    answer = fake.ping(ALICE, "hello")[0]
+
+    fake.correct(ALICE, "say hey", reply_to=answer.id)
+    fake.correct(ALICE, "say hey", reply_to=answer.id)  # same pair -> not fresh
+
+    assert len(augment_trigger.calls) == 1
+
+
+def test_no_augment_trigger_is_a_silent_no_op(settings, generator, log):
+    """Same contract as `post_trigger=None`: a brain built without one (every
+    existing test, and any deployment that never wires it in) works exactly
+    as before."""
+    brain = Babble(settings, generator=generator, log=log)
+    fake = FakeDiscord(brain)
+    fake.onboard(ALICE)
+    answer = fake.ping(ALICE, "hello")[0]
+
+    fake.correct(ALICE, "say hey", reply_to=answer.id)  # must not raise
+
+    assert brain.store.count() == 1
+
+
 # --- the correction marker -----------------------------------------------
 #
 # Before this, every reply to one of the bot's messages was stored as the answer

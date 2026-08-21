@@ -22,6 +22,7 @@ from .discord_feed import CollectionFeed
 from .generate import CheckpointGenerator
 from .identity import Pseudonymiser
 from .logs import EventLog
+from .pairaugment import AutoAugmentTrigger
 from .posttrain import AutoPostTrigger
 from .publish import GrowthPublisher
 from .trainer import AutoTrainTrigger
@@ -66,6 +67,11 @@ class BabbleClient(discord.Client):
             # defers to `train_trigger` -- see `AutoPostTrigger` -- so it never
             # starts while a pretrain is still writing `latest.pt`.
             post_trigger = AutoPostTrigger(settings, log, train_trigger=train_trigger)
+            # The pair-augmentation hook: paraphrases a freshly-banked
+            # correction into extra post-train variants out of band. Off by
+            # default (`Settings.post_augment_pairs`) -- see
+            # `pairaugment.AutoAugmentTrigger`.
+            augment_trigger = AutoAugmentTrigger(settings, log)
             brain = Babble(
                 settings,
                 generator=CheckpointGenerator(settings, log),
@@ -74,6 +80,7 @@ class BabbleClient(discord.Client):
                 publisher=publisher,
                 train_trigger=train_trigger,
                 post_trigger=post_trigger,
+                augment_trigger=augment_trigger,
             )
             # Seed milestone markers from the corpus already on disk, so a
             # restart does not re-announce the last milestone on the next row.

@@ -8,6 +8,8 @@
     babble post-status        pairs since the last post-train, whether the trigger is due
     babble synth-generate     postulate prompts for reply-shaped corpus rows -> synthetic_pairs.jsonl
     babble synth-status       synthetic vs human correction-pair counts
+    babble augment-pairs      LLM-paraphrase train-side correction pairs -> augmented_pairs.jsonl
+    babble augment-check      re-run the train/val leakage check on augmented_pairs.jsonl
     babble sample -p hello    continue a prefix from the latest checkpoint
     babble curve              the loss curve, as a picture
     babble summary            one-shot state of the whole thing
@@ -74,6 +76,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="also fine-tune on data/synthetic_pairs.jsonl (see `babble synth-generate`), "
         "stored and counted separately from human corrections until this is passed",
     )
+    post.add_argument(
+        "--augment-pairs", action="store_true",
+        help="also fine-tune on data/augmented_pairs.jsonl (see `babble augment-pairs`), "
+        "LLM-paraphrased variants of TRAIN-SIDE correction pairs only "
+        "(default: BABBLE_POST_AUGMENT_PAIRS)",
+    )
 
     sub.add_parser("post-status", help="show the post-train trigger state (pairs since last post-train)")
 
@@ -108,6 +116,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     sub.add_parser("synth-status", help="show synthetic vs human data counts")
+
+    aug = sub.add_parser(
+        "augment-pairs",
+        help="LLM-paraphrase TRAIN-SIDE correction pairs into extra post-train variants "
+        "-> data/augmented_pairs.jsonl",
+    )
+    aug.add_argument(
+        "--n", type=int, default=None,
+        help="variants requested per source pair (default: BABBLE_AUGMENT_PAIRS_N)",
+    )
+    aug.add_argument(
+        "--pair-id", default=None,
+        help="only generate for this one source correction-pair id "
+        "(used by the auto-trigger on a fresh correction; omit to sweep every train-side pair)",
+    )
+    aug.add_argument(
+        "--workers", type=int, default=1, help="concurrent paraphrase calls (default 1, sequential)"
+    )
+    aug.add_argument("--quiet", action="store_true", help="no per-run printing")
+
+    sub.add_parser(
+        "augment-check",
+        help="re-run the train/val leakage check against stored augmented_pairs.jsonl",
+    )
 
     gen = sub.add_parser("sample", help="continue a prefix using the latest checkpoint")
     gen.add_argument("-p", "--prompt", default="hello", help="the prefix to continue from")
@@ -214,12 +246,14 @@ def main(argv: list[str] | None = None) -> int:
         from .logs import EventLog
         from .posttrain import post_train
 
+        augment_pairs = args.augment_pairs or settings.post_augment_pairs
         log = EventLog(settings, Pseudonymiser.load(settings), component="post", echo=not args.quiet)
         try:
             result = post_train(
                 settings, force=args.force, steps=args.steps, patience=args.patience,
                 seed=args.seed, echo=not args.quiet, log=log,
                 include_synthetic=args.include_synthetic,
+                include_pair_augmentation=augment_pairs,
             )
         finally:
             log.close()
@@ -227,8 +261,10 @@ def main(argv: list[str] | None = None) -> int:
             val_s = f"{result.val_loss:.4f}" if result.val_loss is not None else "n/a"
             early = " (stopped early)" if result.stopped_early else ""
             synth_part = f" + {result.synthetic_pairs_trained} synthetic pair(s)" if args.include_synthetic else ""
+            aug_part = f" + {result.augmented_pairs_trained} augmented pair(s)" if augment_pairs else ""
             print(
-                f"stage 2 (post-train): fine-tuned {result.pairs_trained} correction pair(s){synth_part}, "
+                f"stage 2 (post-train): fine-tuned {result.pairs_trained} correction pair(s)"
+                f"{synth_part}{aug_part}, "
                 f"best checkpoint at step {result.final_step} (loss {result.last_loss:.4f}, val {val_s}) "
                 f"after {result.checkpoints_written} checkpoint(s){early}",
                 flush=True,
@@ -367,6 +403,72 @@ def main(argv: list[str] | None = None) -> int:
             f"human correction pairs: {pair_count(settings)} · "
             f"(pairs train only with `babble post-train --include-synthetic`; "
             f"rows mix into pretrain unless BABBLE_TRAIN_SYNTHETIC=0)",
+            flush=True,
+        )
+        return 0
+
+    if args.command == "augment-pairs":
+        from .identity import Pseudonymiser
+        from .logs import EventLog
+        from .pairaugment import LeakageError, assert_no_leakage, generate_augmented_pairs
+
+        log = EventLog(settings, Pseudonymiser.load(settings), component="augment", echo=not args.quiet)
+        n = args.n or settings.augment_pairs_n
+        result = generate_augmented_pairs(
+            settings, n=n, max_workers=max(1, args.workers),
+            pair_ids=[args.pair_id] if args.pair_id else None,
+        )
+        log.event(
+            "augment.generate",
+            source_pairs=result.source_pairs,
+            train_side_pairs=result.train_side_pairs,
+            val_side_pairs=result.val_side_pairs,
+            requested_per_pair=result.requested_per_pair,
+            generated=result.generated,
+            skipped_duplicate=result.skipped_duplicate,
+            skipped_blocklist=result.skipped_blocklist,
+            skipped_already_covered=result.skipped_already_covered,
+            failed_pairs=result.failed_pairs,
+        )
+        if not args.quiet:
+            shown_failures = "; ".join(result.failures[:3]) + (" ..." if len(result.failures) > 3 else "")
+            print(
+                f"{result.train_side_pairs} train-side pair(s) eligible "
+                f"({result.val_side_pairs} val-side, never touched) -> "
+                f"{result.generated} new variant(s) -> {settings.augmented_pairs_path}\n"
+                f"  skipped {result.skipped_already_covered}: already had {n}+ variant(s)\n"
+                f"  skipped {result.skipped_duplicate}: identical text already stored\n"
+                f"  skipped {result.skipped_blocklist}: matched the content filter\n"
+                f"  failed {result.failed_pairs}"
+                + (f": {shown_failures}" if result.failures else ""),
+                flush=True,
+            )
+        try:
+            report = assert_no_leakage(settings)
+        except LeakageError as exc:
+            print(f"LEAKAGE CHECK FAILED: {exc}", file=sys.stderr, flush=True)
+            log.close()
+            return 1
+        if not args.quiet:
+            print(
+                f"leakage check: {report.checked} stored, {report.train_side} train-side, "
+                f"0 val-side, {report.orphaned} orphaned -- clean",
+                flush=True,
+            )
+        log.close()
+        return 0
+
+    if args.command == "augment-check":
+        from .pairaugment import LeakageError, assert_no_leakage
+
+        try:
+            report = assert_no_leakage(settings)
+        except LeakageError as exc:
+            print(f"LEAKAGE CHECK FAILED: {exc}", file=sys.stderr, flush=True)
+            return 1
+        print(
+            f"leakage check: {report.checked} stored, {report.train_side} train-side, "
+            f"0 val-side, {report.orphaned} orphaned (source pair no longer trainable) -- clean",
             flush=True,
         )
         return 0

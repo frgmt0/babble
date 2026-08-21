@@ -1,0 +1,72 @@
+[
+  {
+    "source_prompt": "whats the holdup",
+    "source_chosen": "waiting on approval still",
+    "variant_index": 1,
+    "variant_prompt": "where's it at",
+    "variant_chosen": "approval still pending"
+  },
+  {
+    "source_prompt": "whats up",
+    "source_chosen": "not much, you",
+    "variant_index": 0,
+    "variant_prompt": "sup",
+    "variant_chosen": "not much, you"
+  },
+  {
+    "source_prompt": "can you double check this",
+    "source_chosen": "looks fine to me",
+    "variant_index": 2,
+    "variant_prompt": "double check this?",
+    "variant_chosen": "seems fine to me"
+  },
+  {
+    "source_prompt": "whats your go-to order",
+    "source_chosen": "usual, extra sauce",
+    "variant_index": 0,
+    "variant_prompt": "what do you always order",
+    "variant_chosen": "usual, just extra sauce"
+  },
+  {
+    "source_prompt": "whats your favorite snack",
+    "source_chosen": "chips, always chips",
+    "variant_index": 3,
+    "variant_prompt": "best snack tbh",
+    "variant_chosen": "chips obviously"
+  },
+  {
+    "source_prompt": "how do i fix this error",
+    "source_chosen": "restart it first, usually works",
+    "variant_index": 4,
+    "variant_prompt": "got an error, how do i fix it",
+    "variant_chosen": "restart it first, works most of the time"
+  },
+  {
+    "source_prompt": "whats the fastest way there",
+    "source_chosen": "highway, avoid downtown",
+    "variant_index": 0,
+    "variant_prompt": "whats the fastest way there",
+    "variant_chosen": "take the highway, just skip downtown"
+  },
+  {
+    "source_prompt": "what time is it",
+    "source_chosen": "like 3ish",
+    "variant_index": 1,
+    "variant_prompt": "what's the time",
+    "variant_chosen": "like 3 or so"
+  },
+  {
+    "source_prompt": "whats your favorite song right now",
+    "source_chosen": "that one from the playlist you sent",
+    "variant_index": 4,
+    "variant_prompt": "song you listening to",
+    "variant_chosen": "that track from the playlist u sent me"
+  },
+  {
+    "source_prompt": "do you have the notes",
+    "source_chosen": "yeah i'll send them over",
+    "variant_index": 2,
+    "variant_prompt": "you got those notes",
+    "variant_chosen": "yeah i'll send them"
+  }
+]

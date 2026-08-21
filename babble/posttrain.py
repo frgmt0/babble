@@ -53,6 +53,16 @@ trains on the postulated-prompt pairs in `data/synthetic_pairs.jsonl` -- see
 `synthetic.py`. Off by default and never counted by the +N-pair trigger, so
 generating synthetic pairs never changes when a post-train fires; it only
 changes what an explicit `--include-synthetic` run trains on.
+
+`include_pair_augmentation=True` (`--augment-pairs` on the CLI, or
+`Settings.post_augment_pairs`) additionally trains on the LLM-paraphrased
+variants in `data/augmented_pairs.jsonl` -- see `pairaugment.py`. Same
+discipline: off by default, never counted by the trigger, re-checked for
+consent/blocklist/train-side membership at train time
+(`trainable_augmented_pairs`). The pair validation split
+(`pairsplit.pair_split`) is computed once, from the real pairs only, BEFORE
+any synthetic or augmented pairs are mixed in -- so val always stays 100%
+real, held-out pairs no matter which of the two optional pools are enabled.
 """
 
 from __future__ import annotations
@@ -74,6 +84,8 @@ from .cpu_runtime import force_cpu_device, maybe_compile, model_state_dict, unco
 from .identity import Pseudonymiser
 from .logs import EventLog, NullLog
 from .model import Babbler, ModelConfig, sequence_loss
+from .pairaugment import AugmentedPair, trainable_augmented_pairs
+from .pairsplit import pair_split
 from .post_state import (
     PostTrigger,
     file_hash,
@@ -113,18 +125,13 @@ __all__ = [
     "write_post_state",
 ]
 
-# How much of the pair set to hold out for a validation read. Capped low
-# because the whole set is a few dozen pairs to begin with.
-_VAL_FRACTION = 0.2
-_VAL_CAP = 512
-
-
 @dataclass
 class PostTrainResult:
     ran: bool
     reason: str
     pairs_trained: int = 0
     synthetic_pairs_trained: int = 0
+    augmented_pairs_trained: int = 0
     current_pairs: int = 0
     last_trained_pairs: int = 0
     final_step: int = 0
@@ -142,16 +149,6 @@ class PostTrainResult:
     gated: bool = False
     corpus_val_before: float | None = None
     corpus_val_after: float | None = None
-
-
-def _split_val(examples: list[Example]) -> tuple[list[Example], list[Example]]:
-    """Hold out a small, capped tail of examples for a validation read. Returns
-    `(train, val)`; val is empty when there are too few examples to spare any."""
-    if len(examples) < 4:
-        return examples, []
-    n_val = min(_VAL_CAP, max(1, int(len(examples) * _VAL_FRACTION)))
-    n_val = min(n_val, len(examples) - 1)
-    return examples[:-n_val], examples[-n_val:]
 
 
 def _ensure_pretrained_snapshot(settings: Settings) -> Path:
@@ -202,31 +199,22 @@ def _example_builder(settings: Settings):
     return build_continuation_example
 
 
-def _build_examples(
+def _pair_examples(
     pairs: list[Interaction], block_size: int, builder=build_continuation_example
 ) -> list[Example]:
     return [builder(p.prompt, p.chosen, block_size) for p in pairs]
 
 
-def _combined_examples(
-    pairs: list[Interaction],
-    synthetic: list[SyntheticPair],
-    block_size: int,
-    builder=build_continuation_example,
+def _synthetic_examples(
+    pairs: list[SyntheticPair], block_size: int, builder=build_continuation_example
 ) -> list[Example]:
-    """Human and synthetic pairs, interleaved by sorting on their (both
-    content-hash) ids rather than concatenating the two lists -- so the
-    train/val tail-slice in `_split_val` below draws from a mix of both kinds
-    instead of `val` landing entirely inside whichever pool was appended
-    last. Both input lists already come pre-sorted by id from
-    `trainable_pairs` / `trainable_synthetic_pairs`; re-sorting the merge is
-    what actually interleaves them.
-    """
-    items = [(p.id, p.prompt, p.chosen) for p in pairs] + [
-        (p.id, p.prompt, p.response) for p in synthetic
-    ]
-    items.sort(key=lambda item: item[0])
-    return [builder(prompt, response, block_size) for _, prompt, response in items]
+    return [builder(p.prompt, p.response, block_size) for p in pairs]
+
+
+def _augmented_examples(
+    pairs: list[AugmentedPair], block_size: int, builder=build_continuation_example
+) -> list[Example]:
+    return [builder(p.prompt, p.chosen, block_size) for p in pairs]
 
 
 def post_train(
@@ -241,6 +229,7 @@ def post_train(
     ids: Pseudonymiser | None = None,
     blocklist: Blocklist | None = None,
     include_synthetic: bool = False,
+    include_pair_augmentation: bool = False,
 ) -> PostTrainResult:
     """Fine-tune the pretrained checkpoint on the correction pairs and write
     the winning step to `latest.pt` -- the checkpoint the bot serves.
@@ -261,6 +250,12 @@ def post_train(
     a separate, inspectable step from training on them. The +N-pair trigger
     still counts human pairs only -- generating synthetic pairs never makes a
     post-train due on its own.
+
+    `include_pair_augmentation=True` (`--augment-pairs` on the CLI, or
+    `Settings.post_augment_pairs`) additionally trains on the LLM-paraphrased
+    variants in `data/augmented_pairs.jsonl` (`pairaugment.py`). Same
+    discipline as `include_synthetic`, and the two are independent: either,
+    neither, or both may be on.
     """
     settings.ensure_dirs()
     log = log or NullLog()
@@ -283,7 +278,10 @@ def post_train(
 
     pairs = trainable_pairs(settings, ids, blocklist)
     synthetic_pairs = trainable_synthetic_pairs(settings, ids, blocklist) if include_synthetic else []
-    if not pairs and not synthetic_pairs:
+    augmented_pairs = (
+        trainable_augmented_pairs(settings, ids, blocklist) if include_pair_augmentation else []
+    )
+    if not pairs and not synthetic_pairs and not augmented_pairs:
         log.event("post.skipped", reason="no_data")
         return PostTrainResult(
             False, "no_data",
@@ -295,7 +293,7 @@ def post_train(
     # drove pair-val from 3.59 to 5.56 while pair-train fell to 0.32. Below
     # this floor the run refuses to start; `--force` overrides for an explicit
     # experiment, and the promotion gate below still decides what ships.
-    total_pairs = len(pairs) + len(synthetic_pairs)
+    total_pairs = len(pairs) + len(synthetic_pairs) + len(augmented_pairs)
     if not force and total_pairs < settings.post_min_pairs:
         log.event(
             "post.skipped", reason="too_few_pairs",
@@ -324,13 +322,18 @@ def post_train(
     post_lr = settings.post_learning_rate if settings.post_learning_rate > 0 else None
     optimizer = _build_optimizer(model, settings, lr=post_lr)
 
+    # Val split happens on the REAL pairs only, before anything synthetic or
+    # augmented joins the pool -- so the held-out set stays 100% real
+    # correction pairs no matter which optional pools are enabled, the same
+    # discipline `trainer.py` gives corpus rows vs synthetic corpus rows.
     builder = _example_builder(settings)
-    examples = (
-        _combined_examples(pairs, synthetic_pairs, model.config.block_size, builder)
-        if include_synthetic
-        else _build_examples(pairs, model.config.block_size, builder)
-    )
-    train_examples, val_examples = _split_val(examples)
+    real_train_pairs, real_val_pairs = pair_split(pairs)
+    train_examples = _pair_examples(real_train_pairs, model.config.block_size, builder)
+    val_examples = _pair_examples(real_val_pairs, model.config.block_size, builder)
+    if synthetic_pairs:
+        train_examples += _synthetic_examples(synthetic_pairs, model.config.block_size, builder)
+    if augmented_pairs:
+        train_examples += _augmented_examples(augmented_pairs, model.config.block_size, builder)
     run_patience = patience if patience is not None else settings.post_patience
     rng = random.Random(seed)
     torch.manual_seed(seed)
@@ -351,7 +354,9 @@ def post_train(
         "post.start",
         pairs=len(pairs),
         synthetic_pairs=len(synthetic_pairs),
-        examples=len(examples),
+        augmented_pairs=len(augmented_pairs),
+        train_examples=len(train_examples),
+        val_examples=len(val_examples),
         rehearsal=rehearsal if rehearsal_examples else 0.0,
         rehearsal_examples=len(rehearsal_examples),
         lr=post_lr if post_lr is not None else settings.learning_rate,
@@ -398,7 +403,7 @@ def post_train(
             "post.checkpoint",
             step=step, loss=mean, val_loss=pair_val,
             corpus_val=round(corpus_val, 6) if corpus_val is not None else None,
-            examples=len(examples),
+            train_examples=len(train_examples),
         )
         if echo:
             val_s = f"{pair_val:.4f}" if pair_val is not None else "   n/a"
@@ -504,6 +509,7 @@ def post_train(
         promoted=promoted,
         pairs_trained=len(pairs),
         synthetic_pairs_trained=len(synthetic_pairs),
+        augmented_pairs_trained=len(augmented_pairs),
         last_trained_pairs=current,
         checkpoints=checkpoints,
         stopped_early=stop,
@@ -515,6 +521,7 @@ def post_train(
         "trained" if promoted else "gated",
         pairs_trained=len(pairs),
         synthetic_pairs_trained=len(synthetic_pairs),
+        augmented_pairs_trained=len(augmented_pairs),
         current_pairs=current,
         last_trained_pairs=current,
         final_step=final_step,

@@ -244,6 +244,24 @@ class Settings:
     # only). Small by default: there are only ~36 pairs to begin with.
     post_trigger_pairs: int = 10
 
+    # --- correction-pair augmentation (LLM paraphrase, babble/pairaugment.py) --
+    # Whether `babble post-train` also trains on `data/augmented_pairs.jsonl`
+    # -- LLM-paraphrased variants of TRAIN-SIDE real correction pairs only
+    # (`babble/pairsplit.py` decides the side; `babble/pairaugment.py`
+    # generates and leak-checks). Off by default, same discipline as
+    # `include_synthetic`: generating variants never changes what post-train
+    # trains on until this (or `--augment-pairs` on the CLI) is set.
+    post_augment_pairs: bool = False
+    # How many variants `babble augment-pairs` asks the model for per source
+    # pair. ro's original ask was 3.
+    augment_pairs_n: int = 3
+    # Which model backs the paraphrase call (`babble/llm.py`, `claude -p
+    # --model`). Haiku by default: cheapest tier that can reliably paraphrase
+    # a couple of short chat lines while holding a specified register.
+    paraphrase_model: str = "haiku"
+    paraphrase_timeout_seconds: float = 60.0
+    paraphrase_bin: str = "claude"
+
     @classmethod
     def from_env(cls, root: Path | None = None) -> "Settings":
         root = root or REPO_ROOT
@@ -291,6 +309,11 @@ class Settings:
             post_gate_margin=_env_float("BABBLE_POST_GATE_MARGIN", 0.05),
             post_rehearsal=_env_float("BABBLE_POST_REHEARSAL", 0.5),
             post_trigger_pairs=_env_int("BABBLE_POST_TRIGGER_PAIRS", 10),
+            post_augment_pairs=_env_bool("BABBLE_POST_AUGMENT_PAIRS", False),
+            augment_pairs_n=_env_int("BABBLE_AUGMENT_PAIRS_N", 3),
+            paraphrase_model=os.environ.get("BABBLE_PARAPHRASE_MODEL", "haiku"),
+            paraphrase_timeout_seconds=_env_float("BABBLE_PARAPHRASE_TIMEOUT", 60.0),
+            paraphrase_bin=os.environ.get("BABBLE_PARAPHRASE_BIN", "claude"),
         )
 
     @classmethod
@@ -328,6 +351,14 @@ class Settings:
         synthetic row can never be mistaken for something a human typed. See
         `babble/synthcorpus.py`."""
         return self.data_dir / "synthetic_corpus.jsonl"
+
+    @property
+    def augmented_pairs_path(self) -> Path:
+        """LLM-paraphrased variants of TRAIN-SIDE real correction pairs --
+        own file, never appended to `interactions.jsonl` and never mixed
+        with `synthetic_pairs.jsonl`'s postulated-prompt pairs. See
+        `babble/pairaugment.py`."""
+        return self.data_dir / "augmented_pairs.jsonl"
 
     @property
     def consent_path(self) -> Path:
