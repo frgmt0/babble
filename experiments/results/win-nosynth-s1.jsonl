@@ -1,0 +1,8 @@
+{"meta": {"name": "win-nosynth-s1", "steps": 1600, "lr": 0.0003, "n_layer": 4, "n_head": 4, "n_embd": 256, "dropout": 0.2, "weight_decay": 0.01, "cosine": true, "batch_size": 8, "params": 3347968, "train_rows": 326, "val_rows": 81, "train_examples": 328, "synthetic_examples": 0, "seed": 1}}
+{"step": 200, "train_window": 2.8272, "train_full": 2.4517, "val": 2.6548, "elapsed_s": 365.5, "best": true}
+{"step": 400, "train_window": 2.4146, "train_full": 2.2475, "val": 2.6763, "elapsed_s": 673.9}
+{"step": 600, "train_window": 2.2416, "train_full": 2.0441, "val": 2.7206, "elapsed_s": 939.6}
+{"step": 800, "train_window": 2.0423, "train_full": 1.8188, "val": 2.808, "elapsed_s": 1217.3}
+{"step": 1000, "train_window": 1.9082, "train_full": 1.605, "val": 2.9092, "elapsed_s": 1478.9}
+{"step": 1200, "train_window": 1.7539, "train_full": 1.435, "val": 3.0119, "elapsed_s": 1694.4}
+{"step": 1400, "train_window": 1.6227, "train_full": 1.3094, "val": 3.0623, "elapsed_s": 1886.5}

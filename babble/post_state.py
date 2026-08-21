@@ -28,6 +28,7 @@ class PostTrigger:
     last_trained_pairs: int
     threshold: int
     has_pretrained: bool
+    min_pairs: int = 0
 
     @property
     def new_pairs(self) -> int:
@@ -36,9 +37,17 @@ class PostTrigger:
     @property
     def due(self) -> bool:
         """Automatic firing: a pretrained checkpoint exists, the threshold is
-        on, and the correction pairs have grown by at least that many since
-        the last post-train."""
-        return self.has_pretrained and self.threshold > 0 and self.new_pairs >= self.threshold
+        on, the correction pairs have grown by at least that many since the
+        last post-train, AND the total is at or past the `post_min_pairs`
+        floor. Without the floor here, a below-floor pair count kept the
+        trigger armed and `AutoPostTrigger` spawned a subprocess after every
+        new correction only for `post_train` to refuse each one."""
+        return (
+            self.has_pretrained
+            and self.threshold > 0
+            and self.new_pairs >= self.threshold
+            and self.current_pairs >= self.min_pairs
+        )
 
 
 def trainable_pairs(
@@ -139,4 +148,5 @@ def post_trigger(settings: Settings) -> PostTrigger:
         last_trained_pairs=int(state.get("last_trained_pairs", 0)),
         threshold=settings.post_trigger_pairs,
         has_pretrained=settings.pretrained_checkpoint.exists() or settings.latest_checkpoint.exists(),
+        min_pairs=max(0, settings.post_min_pairs),
     )

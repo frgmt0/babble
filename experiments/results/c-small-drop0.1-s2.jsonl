@@ -1,0 +1,22 @@
+{"meta": {"name": "c-small-drop0.1-s2", "steps": 1000, "lr": 0.001, "n_layer": 3, "n_head": 4, "n_embd": 128, "dropout": 0.1, "weight_decay": 0.05, "cosine": true, "batch_size": 8, "params": 690432, "train_rows": 326, "val_rows": 81, "train_examples": 328, "synthetic_examples": 0, "seed": 2}}
+{"step": 50, "train_window": 3.4687, "train_full": 2.8361, "val": 2.8892, "elapsed_s": 20.9, "best": true}
+{"step": 100, "train_window": 2.7492, "train_full": 2.6463, "val": 2.7448, "elapsed_s": 39.5, "best": true}
+{"step": 150, "train_window": 2.6379, "train_full": 2.5379, "val": 2.7013, "elapsed_s": 57.6, "best": true}
+{"step": 200, "train_window": 2.5381, "train_full": 2.4764, "val": 2.6916, "elapsed_s": 74.3, "best": true}
+{"step": 250, "train_window": 2.4793, "train_full": 2.3915, "val": 2.6785, "elapsed_s": 94.4, "best": true}
+{"step": 300, "train_window": 2.4121, "train_full": 2.3675, "val": 2.6824, "elapsed_s": 116.3}
+{"step": 350, "train_window": 2.3598, "train_full": 2.3115, "val": 2.7032, "elapsed_s": 132.5}
+{"step": 400, "train_window": 2.3376, "train_full": 2.223, "val": 2.6863, "elapsed_s": 151.1}
+{"step": 450, "train_window": 2.2445, "train_full": 2.1813, "val": 2.7089, "elapsed_s": 170.3}
+{"step": 500, "train_window": 2.2446, "train_full": 2.127, "val": 2.6988, "elapsed_s": 189.5}
+{"step": 550, "train_window": 2.1969, "train_full": 2.0642, "val": 2.7365, "elapsed_s": 212.6}
+{"step": 600, "train_window": 2.1515, "train_full": 2.0242, "val": 2.748, "elapsed_s": 228.7}
+{"step": 650, "train_window": 2.069, "train_full": 1.9726, "val": 2.7778, "elapsed_s": 248.1}
+{"step": 700, "train_window": 2.0236, "train_full": 1.9223, "val": 2.8019, "elapsed_s": 269.5}
+{"step": 750, "train_window": 2.0518, "train_full": 1.8718, "val": 2.7983, "elapsed_s": 288.3}
+{"step": 800, "train_window": 2.0256, "train_full": 1.8446, "val": 2.8446, "elapsed_s": 304.4}
+{"step": 850, "train_window": 1.9627, "train_full": 1.8212, "val": 2.8519, "elapsed_s": 319.6}
+{"step": 900, "train_window": 1.9288, "train_full": 1.7912, "val": 2.8551, "elapsed_s": 338.5}
+{"step": 950, "train_window": 1.9247, "train_full": 1.7676, "val": 2.8683, "elapsed_s": 356.3}
+{"step": 1000, "train_window": 1.9214, "train_full": 1.7483, "val": 2.8672, "elapsed_s": 378.8}
+{"summary": true, "final_step": 1000, "final_train_full": 1.7483, "final_val": 2.8672, "best_step": 250, "best_val": 2.6785, "best_train_full": 2.3915, "elapsed_s": 385.4, "samples": {"hello": " tho the she thake cthe the the she m sere so the s the be the t", "the cat": " you the ate t touso me a se be inthe se siso wende the ithe sou", "why is": " thouth cke it", "boop": " you the athit"}}

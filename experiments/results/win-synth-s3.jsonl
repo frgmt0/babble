@@ -1,0 +1,10 @@
+{"meta": {"name": "win-synth-s3", "steps": 1600, "lr": 0.0003, "n_layer": 4, "n_head": 4, "n_embd": 256, "dropout": 0.2, "weight_decay": 0.01, "cosine": true, "batch_size": 8, "params": 3347968, "train_rows": 326, "val_rows": 81, "train_examples": 328, "synthetic_examples": 1200, "seed": 3}}
+{"step": 200, "train_window": 2.7937, "train_full": 2.5896, "val": 2.7006, "elapsed_s": 190.8, "best": true}
+{"step": 400, "train_window": 2.3835, "train_full": 2.4316, "val": 2.6154, "elapsed_s": 363.5, "best": true}
+{"step": 600, "train_window": 2.2611, "train_full": 2.3119, "val": 2.6082, "elapsed_s": 547.2, "best": true}
+{"step": 800, "train_window": 2.1527, "train_full": 2.2137, "val": 2.5731, "elapsed_s": 676.6, "best": true}
+{"step": 1000, "train_window": 2.0132, "train_full": 2.1164, "val": 2.6007, "elapsed_s": 808.1}
+{"step": 1200, "train_window": 1.9284, "train_full": 2.0509, "val": 2.5922, "elapsed_s": 938.2}
+{"step": 1400, "train_window": 1.8488, "train_full": 2.0061, "val": 2.616, "elapsed_s": 1060.2}
+{"step": 1600, "train_window": 1.8179, "train_full": 1.9713, "val": 2.6166, "elapsed_s": 1190.5}
+{"summary": true, "final_step": 1600, "final_train_full": 1.9713, "final_val": 2.6166, "best_step": 800, "best_val": 2.5731, "best_train_full": 2.2137, "elapsed_s": 1211.8, "samples": {"hello": " whing tre mat dore", "the cat": " so sorare mat d sacto cthathats s thang if s matre yo thas mon ", "why is": " the is rat do dorkere corathats athathing whe inte s thathath i", "boop": "er the at to the sthe ase sthathes that at wsthinge w ct the"}}

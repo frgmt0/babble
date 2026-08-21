@@ -1,0 +1,10 @@
+{"meta": {"name": "win-synth-s2", "steps": 1600, "lr": 0.0003, "n_layer": 4, "n_head": 4, "n_embd": 256, "dropout": 0.2, "weight_decay": 0.01, "cosine": true, "batch_size": 8, "params": 3347968, "train_rows": 326, "val_rows": 81, "train_examples": 328, "synthetic_examples": 1200, "seed": 2}}
+{"step": 200, "train_window": 2.7643, "train_full": 2.5861, "val": 2.7093, "elapsed_s": 277.0, "best": true}
+{"step": 400, "train_window": 2.3888, "train_full": 2.418, "val": 2.6232, "elapsed_s": 545.5, "best": true}
+{"step": 600, "train_window": 2.2529, "train_full": 2.2941, "val": 2.5996, "elapsed_s": 770.9, "best": true}
+{"step": 800, "train_window": 2.1171, "train_full": 2.1999, "val": 2.619, "elapsed_s": 975.2}
+{"step": 1000, "train_window": 2.0242, "train_full": 2.1019, "val": 2.6087, "elapsed_s": 1177.1}
+{"step": 1200, "train_window": 1.919, "train_full": 2.0245, "val": 2.6131, "elapsed_s": 1378.5}
+{"step": 1400, "train_window": 1.8541, "train_full": 1.9799, "val": 2.6189, "elapsed_s": 1583.6}
+{"step": 1600, "train_window": 1.8018, "train_full": 1.9403, "val": 2.6113, "elapsed_s": 1722.6}
+{"summary": true, "final_step": 1600, "final_train_full": 1.9403, "final_val": 2.6113, "best_step": 600, "best_val": 2.5996, "best_train_full": 2.2941, "elapsed_s": 1743.4, "samples": {"hello": " you  foca tar", "the cat": "s the to seer thics se so se merithiks th thes ithe the ithess a", "why is": " the the thesthak sthe sthathis it thes t thes ithe the ithess a", "boop": "e thit that it"}}

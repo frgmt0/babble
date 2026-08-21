@@ -1,0 +1,10 @@
+{"meta": {"name": "win-nosynth-s3", "steps": 1600, "lr": 0.0003, "n_layer": 4, "n_head": 4, "n_embd": 256, "dropout": 0.2, "weight_decay": 0.01, "cosine": true, "batch_size": 8, "params": 3347968, "train_rows": 326, "val_rows": 81, "train_examples": 328, "synthetic_examples": 0, "seed": 3}}
+{"step": 200, "train_window": 2.8523, "train_full": 2.4365, "val": 2.6474, "elapsed_s": 261.7, "best": true}
+{"step": 400, "train_window": 2.3953, "train_full": 2.2258, "val": 2.6484, "elapsed_s": 501.5}
+{"step": 600, "train_window": 2.2141, "train_full": 2.0215, "val": 2.6836, "elapsed_s": 702.7}
+{"step": 800, "train_window": 2.0697, "train_full": 1.7947, "val": 2.8097, "elapsed_s": 897.5}
+{"step": 1000, "train_window": 1.8765, "train_full": 1.5733, "val": 2.9416, "elapsed_s": 1099.4}
+{"step": 1200, "train_window": 1.7457, "train_full": 1.4178, "val": 3.0234, "elapsed_s": 1256.2}
+{"step": 1400, "train_window": 1.6173, "train_full": 1.3006, "val": 3.1067, "elapsed_s": 1363.6}
+{"step": 1600, "train_window": 1.5861, "train_full": 1.2234, "val": 3.1482, "elapsed_s": 1472.2}
+{"summary": true, "final_step": 1600, "final_train_full": 1.2234, "final_val": 3.1482, "best_step": 200, "best_val": 2.6474, "best_train_full": 2.4365, "elapsed_s": 1482.5, "samples": {"hello": " woo it tout t d ssore wore the wasthange fond fore wr whes men ", "the cat": " wous tore mat asss wo core thesthore ng s whe fores t whe conta", "why is": " wond t that t d suse as se thes asture pelondoonge s thethoreng", "boop": " wond t t at t a soous core the wasthan tofonde thes t wous mon "}}

@@ -48,6 +48,13 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw not in {"0", "false", "no", "off"}
+
+
 @dataclass
 class Settings:
     """Paths and knobs. Construct with `Settings.from_env()` in real runs."""
@@ -67,6 +74,13 @@ class Settings:
     n_layer: int = 4
     n_head: int = 4
     n_embd: int = 256
+    # Dropout was always a field on `ModelConfig` but never reachable from
+    # here -- `config_from_settings` silently pinned it to 0.0, so no dropout
+    # result could ever ship. Plumbed now (BABBLE_DROPOUT). Training-only:
+    # eval and generation run in eval mode where dropout is a no-op. Default
+    # 0.2 is the replicated sweep winner (with lr 3e-4 + cosine: best val
+    # 2.618/2.639/2.634 across seeds vs 2.794 for the old recipe).
+    dropout: float = 0.2
     # 512, not the old 256: ro asked for a considerably wider context window. A
     # bigger `block_size` grows the learned positional-embedding table, so it
     # invalidates every checkpoint trained at the old size -- which is why it
@@ -75,9 +89,17 @@ class Settings:
 
     # Optimisation.
     batch_size: int = 8
-    learning_rate: float = 1e-3
+    # 3e-4, not the old 1e-3: the long-budget LR sweep put 3e-4 ahead by
+    # ~0.14-0.18 nats of held-out corpus val, replicated across three seeds
+    # (spread 0.02) -- larger than the measured split-noise IQR of 0.074.
+    learning_rate: float = 3e-4
     weight_decay: float = 0.01
     grad_clip: float = 1.0
+    # Cosine-anneal the LR from `learning_rate` down to a tenth of it across
+    # the step budget (BABBLE_TRAIN_COSINE). A decaying LR settles the val
+    # curve near its minimum instead of bouncing across it at full stride.
+    # On by default: part of the winning sweep config (see PIPELINE_REVAMP).
+    train_cosine: bool = True
 
     # Sampling. `temperature` was 1.0 and that was the single biggest reason a
     # model with a good-looking loss still answered "hi" with noise: at 1.0 the
@@ -141,8 +163,39 @@ class Settings:
     # whichever checkpoint had the lowest val loss and stops early once
     # `train_patience` checkpoint intervals in a row fail to improve on it (0
     # turns early stopping off, always running the full step ceiling).
-    train_steps: int = 400
+    # 1600 matches the winning sweep lanes exactly (cosine schedule length is
+    # part of the recipe; best val landed at steps 600-800 of a 1600 budget).
+    train_steps: int = 1_600
     train_patience: int = 3
+
+    # Early stopping was firing on noise: on this corpus the val estimate has
+    # a measured spread of ~0.05 nats (std over thousands of resampled 81-row
+    # holdouts, checkpoint held fixed), and the run that shipped the last live
+    # checkpoint was killed at step 350 by a 0.075 val wobble while train loss
+    # was still falling fast. Two guards, both measured rather than guessed:
+    # `train_min_steps` is a floor before patience may fire at all, and a
+    # checkpoint only counts as a patience "stall" when val exceeds the best
+    # seen by more than `train_stall_margin` -- movement inside the noise band
+    # neither advances best nor burns patience. Margin 0 restores the old
+    # any-non-improvement behaviour.
+    # The floor must sit inside the step budget or patience is dead code --
+    # `train_steps` and this move together, never separately.
+    train_min_steps: int = 600
+    train_stall_margin: float = 0.05
+
+    # Mix the labelled synthetic corpus rows (`babble synth-corpus`,
+    # data/synthetic_corpus.jsonl) into the *train* side of the pretrain
+    # split. Validation always stays 100% real held-out human rows, so this
+    # flag can never flatter the val number it is judged by. On by default:
+    # the ±synthetic comparison on the winner config was 2.581 (three synth
+    # seeds) vs 2.647 (mean of the two clean baseline seeds) best val -- the
+    # largest single lever in the sweep. If data/synthetic_corpus.jsonl is
+    # absent the mix is silently empty; if it is stale (the corpus grew and
+    # the val holdout moved), the trainer rebuilds it before mixing
+    # (`synthcorpus.refresh_synthetic_corpus_if_stale`), so a file generated
+    # against an older corpus can never leak now-held-out phrasing into
+    # training.
+    train_synthetic: bool = True
 
     # Re-fires every this-many new corpus rows since the last run -- a trigger,
     # not a loop. The count is persisted so a restart does not re-fire. 0 turns
@@ -157,6 +210,34 @@ class Settings:
     # the mechanism, not to out-run the data.
     post_steps: int = 200  # step ceiling; the best-val checkpoint may win earlier
     post_patience: int = 3  # stop after this many non-improving checkpoints, 0 = never
+    # Which layout post-train teaches. The bot serves plain continuations
+    # (`<bos> text`, `generate.best_continuation`) and never emits `<sep>` at
+    # inference -- so the historical "pair" layout (`<bos> prompt <sep>
+    # response <eos>`) trained a format that was unreachable at serving time,
+    # and the only thing that transferred was the damage. "continuation" lays
+    # a pair out as `<bos> prompt response <eos>` with the prompt masked --
+    # byte-identical to the context the bot generates from. "pair" restores
+    # the old layout for experiments.
+    post_layout: str = "continuation"
+    # Fine-tuning a 3.3M-param model on a few dozen pairs at the pretrain LR
+    # (1e-3) tore straight through the pretrain: pair-val rose from its very
+    # first checkpoint while pair-train memorised. Post-train gets its own,
+    # far lower LR. 0 or negative falls back to `learning_rate`.
+    post_learning_rate: float = 1e-4
+    # Refuse to *run* below this many trainable pairs unless forced -- there
+    # is nothing a supervised pass can generalise from at a few dozen rows.
+    post_min_pairs: int = 100
+    # Promotion gate: after post-train, the candidate is scored against the
+    # pretrain snapshot on the real-corpus validation split (the layout the
+    # bot actually serves). If the candidate is worse by more than this
+    # margin, `latest.pt` is left alone and the run reports itself gated.
+    # The margin is the measured val noise band, same figure as
+    # `train_stall_margin`. Negative disables the gate.
+    post_gate_margin: float = 0.05
+    # Fraction of each post-train batch drawn from plain corpus rows
+    # (rehearsal) rather than pairs, so the fine-tune cannot drift the
+    # weights off the corpus distribution unopposed. 0 disables.
+    post_rehearsal: float = 0.5
     # Re-fires every this-many new correction pairs since the last post-train
     # -- a trigger, not a loop, same discipline as the voice pass. The count
     # is persisted so a restart does not re-fire. 0 turns it off (on-demand
@@ -178,9 +259,11 @@ class Settings:
             n_layer=_env_int("BABBLE_N_LAYER", 4),
             n_head=_env_int("BABBLE_N_HEAD", 4),
             n_embd=_env_int("BABBLE_N_EMBD", 256),
+            dropout=_env_float("BABBLE_DROPOUT", 0.2),
             block_size=_env_int("BABBLE_BLOCK_SIZE", 512),
             batch_size=_env_int("BABBLE_BATCH_SIZE", 8),
-            learning_rate=_env_float("BABBLE_LEARNING_RATE", 1e-3),
+            learning_rate=_env_float("BABBLE_LEARNING_RATE", 3e-4),
+            weight_decay=_env_float("BABBLE_WEIGHT_DECAY", 0.01),
             temperature=_env_float("BABBLE_TEMPERATURE", 0.5),
             top_k=_env_int("BABBLE_TOP_K", 40),
             max_new_tokens=_env_int("BABBLE_MAX_NEW_TOKENS", 256),
@@ -193,11 +276,20 @@ class Settings:
             hf_publish_every=_env_int("BABBLE_HF_PUBLISH_EVERY", 20),
             hf_publish_every_rows=_env_int("BABBLE_HF_PUBLISH_EVERY_ROWS", 10),
             hf_publish_every_chars=_env_int("BABBLE_HF_PUBLISH_EVERY_CHARS", 2_000),
-            train_steps=_env_int("BABBLE_TRAIN_STEPS", 400),
+            train_steps=_env_int("BABBLE_TRAIN_STEPS", 1_600),
             train_patience=_env_int("BABBLE_TRAIN_PATIENCE", 3),
+            train_min_steps=_env_int("BABBLE_TRAIN_MIN_STEPS", 600),
+            train_cosine=_env_bool("BABBLE_TRAIN_COSINE", True),
+            train_stall_margin=_env_float("BABBLE_TRAIN_STALL_MARGIN", 0.05),
+            train_synthetic=_env_bool("BABBLE_TRAIN_SYNTHETIC", True),
             train_trigger_rows=_env_int("BABBLE_TRAIN_TRIGGER_ROWS", 100),
             post_steps=_env_int("BABBLE_POST_STEPS", 200),
             post_patience=_env_int("BABBLE_POST_PATIENCE", 3),
+            post_layout=os.environ.get("BABBLE_POST_LAYOUT", "continuation"),
+            post_learning_rate=_env_float("BABBLE_POST_LEARNING_RATE", 1e-4),
+            post_min_pairs=_env_int("BABBLE_POST_MIN_PAIRS", 100),
+            post_gate_margin=_env_float("BABBLE_POST_GATE_MARGIN", 0.05),
+            post_rehearsal=_env_float("BABBLE_POST_REHEARSAL", 0.5),
             post_trigger_pairs=_env_int("BABBLE_POST_TRIGGER_PAIRS", 10),
         )
 
@@ -228,6 +320,14 @@ class Settings:
         appended to `interactions.jsonl`, so a synthetic pair can never be
         mistaken for a human correction. See `babble/synthetic.py`."""
         return self.data_dir / "synthetic_pairs.jsonl"
+
+    @property
+    def synthetic_corpus_path(self) -> Path:
+        """Synthetic corpus-style rows recombined from the corpus itself --
+        kept in their own file, never appended to `corpus.jsonl`, so a
+        synthetic row can never be mistaken for something a human typed. See
+        `babble/synthcorpus.py`."""
+        return self.data_dir / "synthetic_corpus.jsonl"
 
     @property
     def consent_path(self) -> Path:

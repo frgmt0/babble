@@ -1,0 +1,22 @@
+{"meta": {"name": "b-drop0.2-lr3e-4-s3", "steps": 1000, "lr": 0.0003, "n_layer": 4, "n_head": 4, "n_embd": 256, "dropout": 0.2, "weight_decay": 0.01, "cosine": true, "batch_size": 8, "params": 3347968, "train_rows": 326, "val_rows": 81, "train_examples": 328, "synthetic_examples": 0, "seed": 3}}
+{"step": 50, "train_window": 3.471, "train_full": 2.8235, "val": 2.8821, "elapsed_s": 58.3, "best": true}
+{"step": 100, "train_window": 2.7759, "train_full": 2.6394, "val": 2.757, "elapsed_s": 116.4, "best": true}
+{"step": 150, "train_window": 2.6272, "train_full": 2.4979, "val": 2.6633, "elapsed_s": 188.6, "best": true}
+{"step": 200, "train_window": 2.5354, "train_full": 2.4366, "val": 2.6476, "elapsed_s": 252.1, "best": true}
+{"step": 250, "train_window": 2.4789, "train_full": 2.4182, "val": 2.6651, "elapsed_s": 310.1}
+{"step": 300, "train_window": 2.4284, "train_full": 2.3307, "val": 2.6492, "elapsed_s": 373.9}
+{"step": 350, "train_window": 2.3429, "train_full": 2.2776, "val": 2.634, "elapsed_s": 433.7, "best": true}
+{"step": 400, "train_window": 2.331, "train_full": 2.231, "val": 2.6489, "elapsed_s": 496.8}
+{"step": 450, "train_window": 2.2873, "train_full": 2.1941, "val": 2.6603, "elapsed_s": 557.4}
+{"step": 500, "train_window": 2.2212, "train_full": 2.1451, "val": 2.6886, "elapsed_s": 616.8}
+{"step": 550, "train_window": 2.1711, "train_full": 2.0826, "val": 2.6849, "elapsed_s": 682.0}
+{"step": 600, "train_window": 2.2124, "train_full": 2.0538, "val": 2.6623, "elapsed_s": 745.5}
+{"step": 650, "train_window": 2.1678, "train_full": 2.002, "val": 2.6999, "elapsed_s": 810.6}
+{"step": 700, "train_window": 2.1009, "train_full": 1.9432, "val": 2.714, "elapsed_s": 878.6}
+{"step": 750, "train_window": 2.0932, "train_full": 1.9218, "val": 2.7081, "elapsed_s": 937.6}
+{"step": 800, "train_window": 2.0746, "train_full": 1.8956, "val": 2.7196, "elapsed_s": 998.3}
+{"step": 850, "train_window": 2.0437, "train_full": 1.8592, "val": 2.7377, "elapsed_s": 1067.3}
+{"step": 900, "train_window": 1.9889, "train_full": 1.8358, "val": 2.7561, "elapsed_s": 1128.5}
+{"step": 950, "train_window": 1.9955, "train_full": 1.8174, "val": 2.7542, "elapsed_s": 1189.4}
+{"step": 1000, "train_window": 1.9613, "train_full": 1.7965, "val": 2.7639, "elapsed_s": 1258.0}
+{"summary": true, "final_step": 1000, "final_train_full": 1.7965, "final_val": 2.7639, "best_step": 350, "best_val": 2.634, "best_train_full": 2.2776, "elapsed_s": 1279.3, "samples": {"hello": " whe it that the sskere mas the waske nge fonderererere wis mend", "the cat": " wou", "why is": " wou that the thas the cere thestsst athe fond fore s cthe coune", "boop": " whe that t ther sthere mast mesthere t the sthoreere the s mon "}}

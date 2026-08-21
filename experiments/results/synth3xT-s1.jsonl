@@ -1,0 +1,17 @@
+{"meta": {"name": "synth3xT-s1", "steps": 3000, "lr": 0.001, "n_layer": 4, "n_head": 4, "n_embd": 256, "dropout": 0.0, "weight_decay": 0.01, "cosine": false, "batch_size": 8, "params": 3347968, "train_rows": 326, "val_rows": 81, "train_examples": 328, "synthetic_examples": 1200, "seed": 1}}
+{"step": 200, "train_window": 2.7468, "train_full": 2.6014, "val": 2.748, "elapsed_s": 117.5, "best": true}
+{"step": 400, "train_window": 2.3103, "train_full": 2.4308, "val": 2.7218, "elapsed_s": 223.1, "best": true}
+{"step": 600, "train_window": 2.0935, "train_full": 2.2861, "val": 2.7047, "elapsed_s": 326.1, "best": true}
+{"step": 800, "train_window": 1.9523, "train_full": 2.1466, "val": 2.7409, "elapsed_s": 455.1}
+{"step": 1000, "train_window": 1.818, "train_full": 2.0616, "val": 2.7861, "elapsed_s": 580.7}
+{"step": 1200, "train_window": 1.7384, "train_full": 1.9674, "val": 2.7697, "elapsed_s": 699.3}
+{"step": 1400, "train_window": 1.6369, "train_full": 1.9127, "val": 2.8262, "elapsed_s": 818.0}
+{"step": 1600, "train_window": 1.5607, "train_full": 1.8176, "val": 2.9078, "elapsed_s": 933.7}
+{"step": 1800, "train_window": 1.4698, "train_full": 1.7751, "val": 3.0048, "elapsed_s": 1036.0}
+{"step": 2000, "train_window": 1.4439, "train_full": 1.7, "val": 3.0113, "elapsed_s": 1152.2}
+{"step": 2200, "train_window": 1.3505, "train_full": 1.6622, "val": 3.0573, "elapsed_s": 1261.2}
+{"step": 2400, "train_window": 1.3342, "train_full": 1.5758, "val": 3.0131, "elapsed_s": 1419.3}
+{"step": 2600, "train_window": 1.2663, "train_full": 1.5368, "val": 3.0766, "elapsed_s": 1601.9}
+{"step": 2800, "train_window": 1.2288, "train_full": 1.4871, "val": 3.0532, "elapsed_s": 1777.8}
+{"step": 3000, "train_window": 1.1745, "train_full": 1.4134, "val": 3.2396, "elapsed_s": 1949.5}
+{"summary": true, "final_step": 3000, "final_train_full": 1.4134, "final_val": 3.2396, "best_step": 600, "best_val": 2.7047, "best_train_full": 2.2861, "elapsed_s": 1978.4, "samples": {"hello": " that what like s sore. the so rack is wour can it so her if in ", "the cat": "sly bery cante justso the norkshere is we. and song wacour tilik", "why is": " thats that that fugou thetin so cant be jus to be se fer it re ", "boop": " that you the and thee."}}

@@ -1,0 +1,22 @@
+{"meta": {"name": "b-drop0.2-lr3e-4-s1", "steps": 1000, "lr": 0.0003, "n_layer": 4, "n_head": 4, "n_embd": 256, "dropout": 0.2, "weight_decay": 0.01, "cosine": true, "batch_size": 8, "params": 3347968, "train_rows": 326, "val_rows": 81, "train_examples": 328, "synthetic_examples": 0, "seed": 1}}
+{"step": 50, "train_window": 3.3928, "train_full": 2.8279, "val": 2.9007, "elapsed_s": 108.0, "best": true}
+{"step": 100, "train_window": 2.7058, "train_full": 2.658, "val": 2.7659, "elapsed_s": 194.0, "best": true}
+{"step": 150, "train_window": 2.6683, "train_full": 2.53, "val": 2.6698, "elapsed_s": 294.5, "best": true}
+{"step": 200, "train_window": 2.5423, "train_full": 2.4519, "val": 2.6538, "elapsed_s": 380.4, "best": true}
+{"step": 250, "train_window": 2.4893, "train_full": 2.4038, "val": 2.6595, "elapsed_s": 461.0}
+{"step": 300, "train_window": 2.4472, "train_full": 2.3508, "val": 2.618, "elapsed_s": 547.4, "best": true}
+{"step": 350, "train_window": 2.3874, "train_full": 2.2919, "val": 2.6462, "elapsed_s": 631.2}
+{"step": 400, "train_window": 2.3375, "train_full": 2.2435, "val": 2.6587, "elapsed_s": 674.9}
+{"step": 450, "train_window": 2.3407, "train_full": 2.2089, "val": 2.6435, "elapsed_s": 739.1}
+{"step": 500, "train_window": 2.2638, "train_full": 2.1594, "val": 2.6576, "elapsed_s": 807.6}
+{"step": 550, "train_window": 2.2371, "train_full": 2.0896, "val": 2.6568, "elapsed_s": 887.5}
+{"step": 600, "train_window": 2.1586, "train_full": 2.0589, "val": 2.681, "elapsed_s": 956.7}
+{"step": 650, "train_window": 2.1644, "train_full": 2.0052, "val": 2.6585, "elapsed_s": 1034.6}
+{"step": 700, "train_window": 2.1133, "train_full": 1.9627, "val": 2.6764, "elapsed_s": 1110.4}
+{"step": 750, "train_window": 2.0384, "train_full": 1.9328, "val": 2.7149, "elapsed_s": 1180.0}
+{"step": 800, "train_window": 2.0347, "train_full": 1.8958, "val": 2.709, "elapsed_s": 1244.3}
+{"step": 850, "train_window": 2.0796, "train_full": 1.8737, "val": 2.7155, "elapsed_s": 1314.9}
+{"step": 900, "train_window": 2.0279, "train_full": 1.8483, "val": 2.7387, "elapsed_s": 1380.9}
+{"step": 950, "train_window": 1.9854, "train_full": 1.8256, "val": 2.7467, "elapsed_s": 1452.9}
+{"step": 1000, "train_window": 2.0277, "train_full": 1.8128, "val": 2.7472, "elapsed_s": 1520.0}
+{"summary": true, "final_step": 1000, "final_train_full": 1.8128, "final_val": 2.7472, "best_step": 300, "best_val": 2.618, "best_train_full": 2.3508, "elapsed_s": 1541.7, "samples": {"hello": " that wher y icoly goulo and wous t is wha t athe the he s allo ", "the cat": " you", "why is": " tha it ous thas pus it that tore thas s je clorestorke it the i", "boop": ""}}

@@ -1,0 +1,17 @@
+{"meta": {"name": "synth3xT-s2", "steps": 3000, "lr": 0.001, "n_layer": 4, "n_head": 4, "n_embd": 256, "dropout": 0.0, "weight_decay": 0.01, "cosine": false, "batch_size": 8, "params": 3347968, "train_rows": 326, "val_rows": 81, "train_examples": 328, "synthetic_examples": 1200, "seed": 2}}
+{"step": 200, "train_window": 2.732, "train_full": 2.5926, "val": 2.7584, "elapsed_s": 120.4, "best": true}
+{"step": 400, "train_window": 2.2999, "train_full": 2.3978, "val": 2.7104, "elapsed_s": 230.5, "best": true}
+{"step": 600, "train_window": 2.1211, "train_full": 2.2617, "val": 2.7392, "elapsed_s": 343.7}
+{"step": 800, "train_window": 1.9798, "train_full": 2.1513, "val": 2.7792, "elapsed_s": 473.9}
+{"step": 1000, "train_window": 1.8593, "train_full": 2.0812, "val": 2.8327, "elapsed_s": 602.5}
+{"step": 1200, "train_window": 1.7209, "train_full": 1.9697, "val": 2.9164, "elapsed_s": 727.9}
+{"step": 1400, "train_window": 1.6771, "train_full": 1.9006, "val": 2.8492, "elapsed_s": 840.8}
+{"step": 1600, "train_window": 1.5708, "train_full": 1.8326, "val": 2.9368, "elapsed_s": 945.6}
+{"step": 1800, "train_window": 1.5281, "train_full": 1.7432, "val": 2.9634, "elapsed_s": 1055.3}
+{"step": 2000, "train_window": 1.4584, "train_full": 1.6932, "val": 3.0084, "elapsed_s": 1167.6}
+{"step": 2200, "train_window": 1.3711, "train_full": 1.6863, "val": 3.1055, "elapsed_s": 1265.6}
+{"step": 2400, "train_window": 1.3528, "train_full": 1.628, "val": 3.0719, "elapsed_s": 1445.3}
+{"step": 2600, "train_window": 1.2877, "train_full": 1.5121, "val": 3.0967, "elapsed_s": 1646.1}
+{"step": 2800, "train_window": 1.2229, "train_full": 1.4455, "val": 3.2089, "elapsed_s": 1806.7}
+{"step": 3000, "train_window": 1.1724, "train_full": 1.4243, "val": 3.2589, "elapsed_s": 1977.9}
+{"summary": true, "final_step": 3000, "final_train_full": 1.4243, "final_val": 3.2589, "best_step": 400, "best_val": 2.7104, "best_train_full": 2.3978, "elapsed_s": 1999.8, "samples": {"hello": " you we ca to noulse whin it ie it t ma thasou inde t whit ses w", "the cat": " that forede to shat wh i ing iur momat t tho wende thathin sond", "why is": " thoughacke it", "boop": "erlly it we it"}}

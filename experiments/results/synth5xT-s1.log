@@ -1,0 +1,10 @@
+/home/beckett/Projects/babble/.beckett/worktrees/run-20260820-revamp-the-training-pipeline-corpus-inte/.venv/lib/python3.12/site-packages/torch/_subclasses/functional_tensor.py:368: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+[synth5xT-s1] {"name": "synth5xT-s1", "steps": 3000, "lr": 0.001, "n_layer": 4, "n_head": 4, "n_embd": 256, "dropout": 0.0, "weight_decay": 0.01, "cosine": false, "batch_size": 8, "params": 3347968, "train_rows": 326, "val_rows": 81, "train_examples": 328, "synthetic_examples": 2000, "seed": 1}
+[synth5xT-s1] step 200 train 2.5425 val 2.6872
+[synth5xT-s1] step 400 train 2.3673 val 2.7022
+[synth5xT-s1] step 600 train 2.2604 val 2.7261
+[synth5xT-s1] step 800 train 2.1278 val 2.7858
+[synth5xT-s1] step 1000 train 2.0007 val 2.8013
+[synth5xT-s1] step 1200 train 1.8554 val 2.8091
+[synth5xT-s1] step 1400 train 1.8195 val 2.8719

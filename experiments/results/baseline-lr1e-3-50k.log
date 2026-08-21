@@ -1,0 +1,31 @@
+/home/beckett/Projects/babble/.beckett/worktrees/run-20260820-revamp-the-training-pipeline-corpus-inte/.venv/lib/python3.12/site-packages/torch/_subclasses/functional_tensor.py:368: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+[baseline-lr1e-3-50k] {"name": "baseline-lr1e-3-50k", "steps": 50000, "lr": 0.001, "n_layer": 4, "n_head": 4, "n_embd": 256, "dropout": 0.0, "weight_decay": 0.01, "batch_size": 8, "params": 3347968, "train_rows": 326, "val_rows": 81, "train_examples": 328, "synthetic_examples": 0, "seed": 1}
+[baseline-lr1e-3-50k] step 250 train 2.3836 val 2.7977
+[baseline-lr1e-3-50k] step 500 train 1.9710 val 3.0357
+[baseline-lr1e-3-50k] step 750 train 1.6008 val 3.4811
+[baseline-lr1e-3-50k] step 1000 train 1.2872 val 3.6590
+[baseline-lr1e-3-50k] step 1250 train 1.0449 val 4.2415
+[baseline-lr1e-3-50k] step 1500 train 0.8080 val 4.4761
+[baseline-lr1e-3-50k] step 1750 train 0.5826 val 4.8717
+/home/beckett/Projects/babble/.beckett/worktrees/run-20260820-revamp-the-training-pipeline-corpus-inte/.venv/lib/python3.12/site-packages/torch/_subclasses/functional_tensor.py:368: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+[baseline-lr1e-3-50k] {"name": "baseline-lr1e-3-50k", "steps": 50000, "lr": 0.001, "n_layer": 4, "n_head": 4, "n_embd": 256, "dropout": 0.0, "weight_decay": 0.01, "cosine": false, "batch_size": 8, "params": 3347968, "train_rows": 326, "val_rows": 81, "train_examples": 328, "synthetic_examples": 0, "seed": 1}
+[baseline-lr1e-3-50k] step 250 train 2.3819 val 2.7938
+[baseline-lr1e-3-50k] step 500 train 1.9869 val 3.0441
+/home/beckett/Projects/babble/.beckett/worktrees/run-20260820-revamp-the-training-pipeline-corpus-inte/.venv/lib/python3.12/site-packages/torch/_subclasses/functional_tensor.py:368: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+[baseline-lr1e-3-50k] {"name": "baseline-lr1e-3-50k", "steps": 50000, "lr": 0.001, "n_layer": 4, "n_head": 4, "n_embd": 256, "dropout": 0.0, "weight_decay": 0.01, "cosine": false, "batch_size": 8, "params": 3347968, "train_rows": 326, "val_rows": 81, "train_examples": 328, "synthetic_examples": 0, "seed": 1}
+[baseline-lr1e-3-50k] step 250 train 2.3819 val 2.7938
+[baseline-lr1e-3-50k] step 500 train 1.9869 val 3.0441
+[baseline-lr1e-3-50k] step 750 train 1.5814 val 3.5166
+[baseline-lr1e-3-50k] step 1000 train 1.2939 val 3.7695
+[baseline-lr1e-3-50k] step 1250 train 1.0491 val 4.1702
+[baseline-lr1e-3-50k] step 1500 train 0.8159 val 4.4508
+[baseline-lr1e-3-50k] step 1750 train 0.6180 val 4.8637
+[baseline-lr1e-3-50k] step 2000 train 0.4902 val 5.2696
+[baseline-lr1e-3-50k] step 2250 train 0.3638 val 5.4958
+[baseline-lr1e-3-50k] step 2500 train 0.3419 val 5.8155
+[baseline-lr1e-3-50k] step 2750 train 0.3606 val 5.9696
+[baseline-lr1e-3-50k] step 3000 train 0.2863 val 6.1615
+[baseline-lr1e-3-50k] step 3250 train 0.2630 val 6.3607

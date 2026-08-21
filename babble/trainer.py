@@ -23,8 +23,13 @@ Three properties matter more than speed here:
 Every run starts from random init and keeps the *best-validation* checkpoint,
 not the last one -- on a small corpus the model overfits long before the step
 budget is spent, so `train()` tracks val loss at every checkpoint interval and
-writes whichever step had the lowest val loss, and stops early once
-`train_patience` intervals in a row fail to improve on it. It fires on a
+writes whichever step had the lowest val loss. Early stopping is noise-aware:
+on a corpus this size the val estimate itself has a measured spread of ~0.05
+nats (recompute val over thousands of resampled holdouts with the checkpoint
+held fixed and look at the std -- `experiments/val_noise.py`), so a patience
+"stall" only counts once the `train_min_steps` floor has passed AND val sits
+more than `train_stall_margin` above the best seen; wobble inside the band is
+neutral. The run stops early after `train_patience` such stalls. It fires on a
 **trigger, not a loop**: every `train_trigger_rows` new corpus rows since the
 last run, or on demand with `--force`. The last-trained row count is persisted
 (`checkpoints/train_state.json`) so a restart never re-fires, and training is
@@ -79,6 +84,8 @@ from .model import (
 )
 from .tokenizer import PAD_ID, Example, text_examples
 from .util import atomic_write_text, truncate, utcnow_iso
+
+from . import valsplit
 
 #: Used only when the corpus is empty and there is nothing real to seed with.
 SAMPLE_PREFIXES = ("hello", "how are you")
@@ -158,30 +165,12 @@ def count_tokens(examples: list[Example]) -> int:
 
 
 # --- held-out validation --------------------------------------------------
+# The split identity lives in `valsplit.py` (torch-free, shared with the
+# synthetic-corpus generator so it can exclude val-side rows); these are the
+# same functions under their historical names.
 
-_VAL_SALT = "babble-val-split"
-
-
-def _val_bucket(row_id: str) -> float:
-    """A stable float in [0, 1) derived from the row id.
-
-    Hashing the id -- not the row's position in the file, not a shuffle -- is
-    what makes the same row land on the same side of the split every time the
-    trainer restarts and as more rows are appended around it.
-    """
-    digest = hashlib.sha256(f"{_VAL_SALT}\x1f{row_id}".encode("utf-8")).hexdigest()
-    return int(digest[:8], 16) / 0x1_0000_0000
-
-
-def val_holdout_size(total: int, fraction: float) -> int:
-    """How many rows to hold out of `total`, never all of them and never none.
-
-    Both clamps matter at this corpus size: a 20% split of 21 rows is 4, and
-    rounding or a mis-set fraction must not be allowed to leave zero rows on
-    either side of the split.
-    """
-    holdout = round(max(0.0, min(1.0, fraction)) * total)
-    return max(1, min(holdout, total - 1))
+_val_bucket = valsplit.val_bucket
+val_holdout_size = valsplit.val_holdout_size
 
 
 @dataclass
@@ -486,9 +475,16 @@ def make_batch(
     return tokens, mask, weights
 
 
-def _build_optimizer(model: Babbler, settings: Settings) -> torch.optim.Optimizer:
-    """AdamW tuned for CPU: `foreach` batches the small-param updates."""
-    kwargs = dict(lr=settings.learning_rate, weight_decay=settings.weight_decay)
+def _build_optimizer(
+    model: Babbler, settings: Settings, lr: float | None = None
+) -> torch.optim.Optimizer:
+    """AdamW tuned for CPU: `foreach` batches the small-param updates.
+
+    `lr` overrides `settings.learning_rate` -- post-train runs at its own,
+    far lower rate (`post_learning_rate`) than the pretrain."""
+    kwargs = dict(
+        lr=settings.learning_rate if lr is None else lr, weight_decay=settings.weight_decay
+    )
     try:
         return torch.optim.AdamW(model.parameters(), foreach=True, **kwargs)
     except (TypeError, ValueError, RuntimeError):
@@ -840,6 +836,16 @@ def train(
     if seed is not None:
         torch.manual_seed(seed)
     rng = random.Random(seed if seed is not None else 0)
+    budget_for_schedule = steps if steps is not None else settings.train_steps
+    scheduler = (
+        torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=max(1, budget_for_schedule),
+            eta_min=settings.learning_rate * 0.1,
+        )
+        if settings.train_cosine
+        else None
+    )
 
     split = split_rows(rows, settings)
     # Same call on both sides of the split: with no weighting and no masking
@@ -847,6 +853,31 @@ def train(
     # what makes val loss comparable to train loss at all.
     examples = to_examples(split.train, model.config.block_size)
     val_examples = to_examples(split.val, model.config.block_size)
+
+    # Labelled synthetic rows join the batch pool only when the flag says so,
+    # and only ever on the train side -- validation stays 100% real held-out
+    # human text, so the number that judges a run cannot be flattered by the
+    # generator that is trying to improve it.
+    synthetic_examples: list[Example] = []
+    if settings.train_synthetic:
+        from .synthcorpus import refresh_synthetic_corpus_if_stale, trainable_synthetic_rows
+
+        # The val holdout moves as the corpus grows, so a synthetic file
+        # generated against an older corpus can contain splices of rows that
+        # are val NOW. Rebuild it first or the leak comes back silently.
+        refreshed = refresh_synthetic_corpus_if_stale(settings, ids=ids, blocklist=blocklist)
+        if refreshed is not None:
+            log.event(
+                "train.synthetic.rebuilt",
+                generated=refreshed.generated,
+                source_rows=refreshed.source_rows,
+                excluded_val_rows=refreshed.excluded_val_rows,
+            )
+        synth_rows = trainable_synthetic_rows(settings, blocklist)
+        synthetic_examples = [
+            ex for r in synth_rows for ex in text_examples(r.text, model.config.block_size)
+        ]
+    batch_pool = examples + synthetic_examples
     budget = steps if steps is not None else settings.train_steps
     run_patience = patience if patience is not None else settings.train_patience
     train_tokens = count_tokens(examples)
@@ -869,6 +900,7 @@ def train(
         step=0,
         rows=len(rows),
         examples=len(examples),
+        synthetic_examples=len(synthetic_examples) or None,
         tokens=train_tokens,
         val_tokens=count_tokens(val_examples),
         planned_steps=budget,
@@ -938,7 +970,15 @@ def train(
                 "optim": copy.deepcopy(optimizer.state_dict()),
             }
             stalls = 0
-        else:
+            return
+        # The val estimate on a corpus this size has a measured noise band of
+        # ~0.05 nats (see `train_stall_margin`), so "failed to improve" is not
+        # evidence of anything. A checkpoint burns patience only once the
+        # `train_min_steps` floor has passed AND val sits above the best seen
+        # by more than the margin; movement inside the band is neutral --
+        # neither a new best nor a stall.
+        margin = max(0.0, settings.train_stall_margin)
+        if step >= settings.train_min_steps and val > best["val"] + margin:
             stalls += 1
             if run_patience and stalls >= run_patience:
                 stopped_early = True
@@ -947,12 +987,14 @@ def train(
         if interrupt.requested:
             interrupted = True
             break
-        tokens, mask, weights = make_batch(examples, settings.batch_size, rng)
+        tokens, mask, weights = make_batch(batch_pool, settings.batch_size, rng)
         loss = sequence_loss(model, tokens, mask, weights)
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), settings.grad_clip)
         optimizer.step()
+        if scheduler is not None:
+            scheduler.step()
 
         step += 1
         value = float(loss.detach())

@@ -8,6 +8,15 @@ logs/
 external/
 .scratch/
 
+# Corpus-derived artifacts fall under the same rule as data/: model weights
+# at this scale memorize rows outright, and a recombined synthetic row is a
+# verbatim splice of real corpus phrasing. Neither is ever committed. The
+# loss curves and logs under experiments/ (numbers only) carry the evidence;
+# experiments/gen_synth_corpora.py regenerates the experiment corpora on
+# demand from the local data/.
+*.pt
+experiments/synthetic_corpus_*.jsonl
+
 .env
 .venv/
 venv/

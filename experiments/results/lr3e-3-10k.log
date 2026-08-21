@@ -1,0 +1,16 @@
+/home/beckett/Projects/babble/.beckett/worktrees/run-20260820-revamp-the-training-pipeline-corpus-inte/.venv/lib/python3.12/site-packages/torch/_subclasses/functional_tensor.py:368: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+[lr3e-3-10k] {"name": "lr3e-3-10k", "steps": 10000, "lr": 0.003, "n_layer": 4, "n_head": 4, "n_embd": 256, "dropout": 0.0, "weight_decay": 0.01, "batch_size": 8, "params": 3347968, "train_rows": 326, "val_rows": 81, "train_examples": 328, "synthetic_examples": 0, "seed": 1}
+[lr3e-3-10k] step 250 train 2.9205 val 2.9681
+[lr3e-3-10k] step 500 train 2.8315 val 2.8956
+[lr3e-3-10k] step 750 train 2.8171 val 2.8974
+[lr3e-3-10k] step 1000 train 2.7551 val 2.8418
+[lr3e-3-10k] step 1250 train 2.7308 val 2.8426
+[lr3e-3-10k] step 1500 train 2.7163 val 2.8181
+[lr3e-3-10k] step 1750 train 2.7381 val 2.8420
+[lr3e-3-10k] step 2000 train 2.7246 val 2.8213
+/home/beckett/Projects/babble/.beckett/worktrees/run-20260820-revamp-the-training-pipeline-corpus-inte/.venv/lib/python3.12/site-packages/torch/_subclasses/functional_tensor.py:368: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+[lr3e-3-10k] {"name": "lr3e-3-10k", "steps": 10000, "lr": 0.003, "n_layer": 4, "n_head": 4, "n_embd": 256, "dropout": 0.0, "weight_decay": 0.01, "cosine": false, "batch_size": 8, "params": 3347968, "train_rows": 326, "val_rows": 81, "train_examples": 328, "synthetic_examples": 0, "seed": 1}
+[lr3e-3-10k] step 250 train 2.9709 val 3.0373
+[lr3e-3-10k] step 500 train 2.8195 val 2.8836

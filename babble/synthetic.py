@@ -67,10 +67,15 @@ __all__ = [
     "is_reactive",
     "reactivity_score",
     "synthesize_prompt",
+    "continuation_cuts",
     "generate_synthetic_pairs",
     "trainable_synthetic_pairs",
     "synthetic_pair_count",
 ]
+
+#: Method tag for pairs cut out of a single real row: prompt is the row's
+#: opening, response is the rest, both verbatim. See `continuation_cuts`.
+METHOD_CONTINUATION = "continuation_cut"
 
 
 @dataclass(frozen=True)
@@ -278,6 +283,46 @@ def synthesize_prompt(text: str) -> tuple[str, str]:
     return f"what about {topic}", "generic"
 
 
+# --- continuation cuts: pairs where BOTH sides are verbatim corpus text ----
+
+#: Rows shorter than this many words are not cut: a two-word row yields a
+#: one-word prompt and a one-word response, which teaches nothing.
+_MIN_CUT_WORDS = 4
+
+
+def continuation_cuts(text: str, cuts: int = 2) -> list[tuple[str, str]]:
+    """Cut `text` at up to `cuts` word boundaries into (prefix, rest) pairs.
+
+    Both halves are byte-slices of the original row -- nothing is rejoined or
+    re-spaced, so each half is text somebody actually typed, exactly as they
+    typed it. The postulated-prompt pairs above only ever synthesize the
+    prompt side; these grow the *response* pool too, which is the half the
+    loss is actually computed over (`build_example` masks the prompt out).
+
+    Cut points are evenly spaced through the row's words, deterministically,
+    so a rerun on the same corpus regenerates the same pairs. A row shorter
+    than `_MIN_CUT_WORDS` words yields nothing.
+    """
+    stripped = text.strip()
+    words = list(re.finditer(r"\S+", stripped))
+    if len(words) < _MIN_CUT_WORDS:
+        return []
+    cuts = max(1, cuts)
+    # Word indices to cut before, spread across the row's interior. With
+    # cuts=2 on a 9-word row that is before words 3 and 6.
+    positions = sorted(
+        {max(1, min(len(words) - 1, round(len(words) * (i + 1) / (cuts + 1)))) for i in range(cuts)}
+    )
+    out: list[tuple[str, str]] = []
+    for pos in positions:
+        boundary = words[pos].start()
+        prompt = stripped[:boundary].rstrip()
+        response = stripped[boundary:]
+        if prompt and response:
+            out.append((prompt, response))
+    return out
+
+
 # --- consent-gated corpus reads, kept torch-free ---------------------------
 
 
@@ -296,6 +341,8 @@ class SynthGenerateResult:
     scanned: int = 0
     reactive: int = 0
     generated: int = 0
+    generated_postulated: int = 0
+    generated_continuation: int = 0
     skipped_duplicate: int = 0
     skipped_blocklist: int = 0
 
@@ -305,11 +352,17 @@ def generate_synthetic_pairs(
     *,
     ids: Pseudonymiser | None = None,
     blocklist: Blocklist | None = None,
+    postulate: bool = True,
+    continuations: bool = True,
+    cuts: int = 2,
 ) -> SynthGenerateResult:
-    """Scan the current consented corpus for reply-shaped rows, postulate the
-    prompt each one plausibly answers, and append any pair not already stored
-    to `settings.synthetic_pairs_path`. Safe to rerun as the corpus grows --
-    see the module docstring.
+    """Scan the current consented corpus and append any pair not already
+    stored to `settings.synthetic_pairs_path`. Two generators, both corpus-
+    internal: `postulate` invents a plausible prompt for a reply-shaped row
+    (response verbatim); `continuations` cuts a row into (prefix, rest) with
+    *both* halves verbatim -- see `continuation_cuts` for why that is the half
+    that actually grows the training signal. Safe to rerun as the corpus
+    grows -- see the module docstring.
     """
     ids = ids or Pseudonymiser.load(settings)
     blocklist = blocklist if blocklist is not None else Blocklist.load()
@@ -320,24 +373,34 @@ def generate_synthetic_pairs(
 
     result = SynthGenerateResult(scanned=len(rows))
     fresh: list[SyntheticPair] = []
-    for row in rows:
-        if not is_reactive(row.text):
-            continue
-        result.reactive += 1
-        prompt, method = synthesize_prompt(row.text)
-        if blocklist.matches(prompt, row.text):
+
+    def add(row: CorpusRow, prompt: str, response: str, method: str, kind: str) -> None:
+        if blocklist.matches(prompt, response):
             result.skipped_blocklist += 1
-            continue
+            return
         pair_id = make_synthetic_id(row.id, prompt, method)
         if pair_id in existing:
             result.skipped_duplicate += 1
-            continue
+            return
         existing.add(pair_id)
         fresh.append(
             SyntheticPair(
-                id=pair_id, prompt=prompt, response=row.text, source_row_id=row.id, method=method
+                id=pair_id, prompt=prompt, response=response, source_row_id=row.id, method=method
             )
         )
+        if kind == "postulated":
+            result.generated_postulated += 1
+        else:
+            result.generated_continuation += 1
+
+    for row in rows:
+        if postulate and is_reactive(row.text):
+            result.reactive += 1
+            prompt, method = synthesize_prompt(row.text)
+            add(row, prompt, row.text, method, "postulated")
+        if continuations:
+            for prompt, response in continuation_cuts(row.text, cuts=cuts):
+                add(row, prompt, response, METHOD_CONTINUATION, "continuation")
 
     result.generated = store.extend(fresh)
     return result

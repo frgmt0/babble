@@ -1,0 +1,22 @@
+{"meta": {"name": "c-small-drop0.1-s1", "steps": 1000, "lr": 0.001, "n_layer": 3, "n_head": 4, "n_embd": 128, "dropout": 0.1, "weight_decay": 0.05, "cosine": true, "batch_size": 8, "params": 690432, "train_rows": 326, "val_rows": 81, "train_examples": 328, "synthetic_examples": 0, "seed": 1}}
+{"step": 50, "train_window": 3.4156, "train_full": 2.8388, "val": 2.9102, "elapsed_s": 25.1, "best": true}
+{"step": 100, "train_window": 2.7122, "train_full": 2.655, "val": 2.7688, "elapsed_s": 45.9, "best": true}
+{"step": 150, "train_window": 2.6805, "train_full": 2.5606, "val": 2.7237, "elapsed_s": 70.8, "best": true}
+{"step": 200, "train_window": 2.5433, "train_full": 2.4584, "val": 2.6759, "elapsed_s": 91.3, "best": true}
+{"step": 250, "train_window": 2.4892, "train_full": 2.4183, "val": 2.6997, "elapsed_s": 114.6}
+{"step": 300, "train_window": 2.4317, "train_full": 2.3639, "val": 2.6707, "elapsed_s": 135.7, "best": true}
+{"step": 350, "train_window": 2.3708, "train_full": 2.2902, "val": 2.6854, "elapsed_s": 158.3}
+{"step": 400, "train_window": 2.322, "train_full": 2.2529, "val": 2.7076, "elapsed_s": 178.2}
+{"step": 450, "train_window": 2.3199, "train_full": 2.2119, "val": 2.7127, "elapsed_s": 196.5}
+{"step": 500, "train_window": 2.2348, "train_full": 2.1735, "val": 2.7414, "elapsed_s": 216.1}
+{"step": 550, "train_window": 2.2132, "train_full": 2.0934, "val": 2.718, "elapsed_s": 237.7}
+{"step": 600, "train_window": 2.1102, "train_full": 2.0593, "val": 2.7602, "elapsed_s": 256.6}
+{"step": 650, "train_window": 2.1188, "train_full": 1.9909, "val": 2.7582, "elapsed_s": 279.0}
+{"step": 700, "train_window": 2.0733, "train_full": 1.9492, "val": 2.7898, "elapsed_s": 301.2}
+{"step": 750, "train_window": 1.9858, "train_full": 1.911, "val": 2.8265, "elapsed_s": 321.3}
+{"step": 800, "train_window": 1.994, "train_full": 1.884, "val": 2.8124, "elapsed_s": 337.8}
+{"step": 850, "train_window": 2.0135, "train_full": 1.8476, "val": 2.8497, "elapsed_s": 358.2}
+{"step": 900, "train_window": 1.9681, "train_full": 1.8174, "val": 2.8475, "elapsed_s": 375.0}
+{"step": 950, "train_window": 1.9241, "train_full": 1.801, "val": 2.8625, "elapsed_s": 395.8}
+{"step": 1000, "train_window": 1.964, "train_full": 1.7832, "val": 2.8738, "elapsed_s": 414.9}
+{"summary": true, "final_step": 1000, "final_train_full": 1.7832, "final_val": 2.8738, "best_step": 300, "best_val": 2.6707, "best_train_full": 2.3639, "elapsed_s": 421.2, "samples": {"hello": " that who", "the cat": " t ahat or yolat plavelorend tor cat isend at t ing wouel in ind", "why is": " thathe or selathathe t t t soor cathalllas cat iskeske it olr i", "boop": ""}}

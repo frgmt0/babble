@@ -77,11 +77,37 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("post-status", help="show the post-train trigger state (pairs since last post-train)")
 
-    sub.add_parser(
+    synth = sub.add_parser(
         "synth-generate",
-        help="scan the corpus for reply-shaped rows, postulate their prompts -> data/synthetic_pairs.jsonl",
+        help="postulated-prompt + continuation-cut pairs from the corpus -> data/synthetic_pairs.jsonl",
     )
-    sub.add_parser("synth-status", help="show synthetic vs human correction-pair counts")
+    synth.add_argument(
+        "--no-postulate", action="store_true", help="skip the postulated-prompt pairs"
+    )
+    synth.add_argument(
+        "--no-continuations", action="store_true", help="skip the continuation-cut pairs"
+    )
+    synth.add_argument(
+        "--cuts", type=int, default=2, help="continuation cut points per corpus row (default 2)"
+    )
+
+    synthc = sub.add_parser(
+        "synth-corpus",
+        help="recombine corpus phrasing into labelled synthetic rows -> data/synthetic_corpus.jsonl",
+    )
+    synthc.add_argument("--count", type=int, default=400, help="how many rows to sample (default 400)")
+    synthc.add_argument("--seed", type=int, default=0, help="deterministic generation")
+    synthc.add_argument(
+        "--rebuild", action="store_true",
+        help="replace the file from the current consented corpus instead of appending",
+    )
+    synthc.add_argument(
+        "--include-val-sources", action="store_true",
+        help="also build the chain from val-side rows (leaks held-out phrasing "
+        "into training-side synthetic text; experiments only)",
+    )
+
+    sub.add_parser("synth-status", help="show synthetic vs human data counts")
 
     gen = sub.add_parser("sample", help="continue a prefix using the latest checkpoint")
     gen.add_argument("-p", "--prompt", default="hello", help="the prefix to continue from")
@@ -204,7 +230,29 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 f"stage 2 (post-train): fine-tuned {result.pairs_trained} correction pair(s){synth_part}, "
                 f"best checkpoint at step {result.final_step} (loss {result.last_loss:.4f}, val {val_s}) "
-                f"after {result.checkpoints_written} checkpoint(s){early} -> {result.path}",
+                f"after {result.checkpoints_written} checkpoint(s){early}",
+                flush=True,
+            )
+            if result.gated:
+                print(
+                    f"NOT promoted: corpus val {result.corpus_val_after:.4f} vs pretrain "
+                    f"{result.corpus_val_before:.4f} (margin {settings.post_gate_margin}) — "
+                    f"latest.pt left untouched",
+                    flush=True,
+                )
+            else:
+                gate_part = ""
+                if result.corpus_val_after is not None and result.corpus_val_before is not None:
+                    gate_part = (
+                        f" (corpus val {result.corpus_val_after:.4f} vs pretrain "
+                        f"{result.corpus_val_before:.4f})"
+                    )
+                print(f"promoted{gate_part} -> {result.path}", flush=True)
+        elif result.reason == "too_few_pairs":
+            print(
+                f"Post-train refused: only {result.current_pairs} correction pair(s), "
+                f"needs {settings.post_min_pairs} (BABBLE_POST_MIN_PAIRS). Use --force to run anyway "
+                f"— the promotion gate still decides what ships.",
                 flush=True,
             )
         elif result.reason == "no_pretrain":
@@ -239,12 +287,19 @@ def main(argv: list[str] | None = None) -> int:
         from .synthetic import generate_synthetic_pairs
 
         log = EventLog(settings, Pseudonymiser.load(settings), component="synth")
-        result = generate_synthetic_pairs(settings)
+        result = generate_synthetic_pairs(
+            settings,
+            postulate=not args.no_postulate,
+            continuations=not args.no_continuations,
+            cuts=args.cuts,
+        )
         log.event(
             "synth.generate",
             scanned=result.scanned,
             reactive=result.reactive,
             generated=result.generated,
+            generated_postulated=result.generated_postulated,
+            generated_continuation=result.generated_continuation,
             skipped_duplicate=result.skipped_duplicate,
             skipped_blocklist=result.skipped_blocklist,
         )
@@ -252,6 +307,8 @@ def main(argv: list[str] | None = None) -> int:
             f"scanned {result.scanned} consented corpus row(s), "
             f"{result.reactive} read as a reply/interjection\n"
             f"generated {result.generated} new synthetic pair(s) -> {settings.synthetic_pairs_path}\n"
+            f"  {result.generated_postulated} postulated-prompt, "
+            f"{result.generated_continuation} continuation-cut\n"
             f"  skipped {result.skipped_duplicate}: already generated\n"
             f"  skipped {result.skipped_blocklist}: matched the content filter\n"
             f"(not trained on until `babble post-train --include-synthetic`)",
@@ -260,14 +317,56 @@ def main(argv: list[str] | None = None) -> int:
         log.close()
         return 0
 
+    if args.command == "synth-corpus":
+        from .identity import Pseudonymiser
+        from .logs import EventLog
+        from .synthcorpus import generate_synthetic_corpus
+
+        log = EventLog(settings, Pseudonymiser.load(settings), component="synth")
+        result = generate_synthetic_corpus(
+            settings,
+            count=args.count,
+            seed=args.seed,
+            rebuild=args.rebuild,
+            exclude_val=not args.include_val_sources,
+        )
+        log.event(
+            "synth.corpus",
+            source_rows=result.source_rows,
+            excluded_val_rows=result.excluded_val_rows,
+            requested=result.requested,
+            generated=result.generated,
+            stored_total=result.stored_total,
+            skipped_real_duplicate=result.skipped_real_duplicate,
+            skipped_blocklist=result.skipped_blocklist,
+            rebuild=args.rebuild,
+        )
+        print(
+            f"recombined {result.source_rows} consented corpus row(s) "
+            f"({result.excluded_val_rows} val-side row(s) excluded) -> "
+            f"{result.generated} synthetic row(s) "
+            f"({'rebuilt' if args.rebuild else 'appended'}, {result.stored_total} stored) "
+            f"-> {settings.synthetic_corpus_path}\n"
+            f"  skipped {result.skipped_real_duplicate}: replayed a real row verbatim\n"
+            f"  skipped {result.skipped_blocklist}: matched the content filter\n"
+            f"(mixed into the pretrain train side by default; "
+            f"BABBLE_TRAIN_SYNTHETIC=0 disables)",
+            flush=True,
+        )
+        log.close()
+        return 0
+
     if args.command == "synth-status":
         from .post_state import pair_count
+        from .synthcorpus import synthetic_row_count
         from .synthetic import synthetic_pair_count
 
         print(
             f"synthetic pairs: {synthetic_pair_count(settings)} · "
+            f"synthetic corpus rows: {synthetic_row_count(settings)} · "
             f"human correction pairs: {pair_count(settings)} · "
-            f"(synthetic pairs train only with `babble post-train --include-synthetic`)",
+            f"(pairs train only with `babble post-train --include-synthetic`; "
+            f"rows mix into pretrain unless BABBLE_TRAIN_SYNTHETIC=0)",
             flush=True,
         )
         return 0

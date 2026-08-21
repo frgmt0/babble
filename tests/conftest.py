@@ -32,6 +32,9 @@ def settings(tmp_path: Path) -> Settings:
     s.batch_size = 2
     s.checkpoint_every = 2
     s.max_new_tokens = 16
+    # Tests seed a handful of pairs; the live floor would veto every one of
+    # them. The tests that exercise the floor itself set it back explicitly.
+    s.post_min_pairs = 0
     s.ensure_dirs()
     return s
 

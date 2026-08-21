@@ -1,0 +1,5 @@
+/home/beckett/Projects/babble/.beckett/worktrees/run-20260820-revamp-the-training-pipeline-corpus-inte/.venv/lib/python3.12/site-packages/torch/_subclasses/functional_tensor.py:368: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+{"name": "old-lr1e-3", "lr": 0.001, "rehearsal": 0.0, "include_synthetic": false, "steps": 200, "pairs": 47, "synthetic_pairs": 0, "final_step": 50, "pair_val": 3.5971, "corpus_val_before": 2.7613, "corpus_val_after": 3.9091, "promoted": false}
+{"name": "lr1e-4", "lr": 0.0001, "rehearsal": 0.0, "include_synthetic": false, "steps": 200, "pairs": 47, "synthetic_pairs": 0, "final_step": 50, "pair_val": 2.8652, "corpus_val_before": 2.7613, "corpus_val_after": 2.8753, "promoted": false}
+{"name": "lr1e-5", "lr": 1e-05, "rehearsal": 0.0, "include_synthetic": false, "steps": 200, "pairs": 47, "synthetic_pairs": 0, "final_step": 150, "pair_val": 2.8211, "corpus_val_before": 2.7613, "corpus_val_after": 2.7605, "promoted": true}
