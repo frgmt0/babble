@@ -1,0 +1,41 @@
+{
+  "seeded_pairs": 50,
+  "train_side_pairs": 40,
+  "val_side_pairs": 10,
+  "generate": {
+    "source_pairs": 50,
+    "train_side_pairs": 40,
+    "val_side_pairs": 10,
+    "requested_per_pair": 5,
+    "generated": 188,
+    "skipped_duplicate": 0,
+    "skipped_blocklist": 0,
+    "skipped_already_covered": 0,
+    "failed_pairs": 0,
+    "failures": []
+  },
+  "leakage": {
+    "checked": 188,
+    "train_side": 188,
+    "val_side": 0,
+    "leaked": 0,
+    "leaked_ids": [],
+    "orphaned": 0,
+    "orphaned_ids": []
+  },
+  "register": {
+    "real_count": 50,
+    "variant_count": 188,
+    "real_mean_chars": 20.9,
+    "variant_mean_chars": 21.05851063829787,
+    "real_mean_words": 3.96,
+    "variant_mean_words": 4.1063829787234045,
+    "real_lowercase_rate": 1.0,
+    "variant_lowercase_rate": 1.0,
+    "real_punct_rate": 0.020095693779904306,
+    "variant_punct_rate": 0.01566052033341753,
+    "real_vocab_size": 139,
+    "variant_vocab_size": 250,
+    "vocab_overlap": 0.48
+  }
+}

@@ -1,0 +1,15 @@
+{"cell": "baseline-0x", "seed": 1, "augmented_pairs": 0, "pairs_trained": 50, "final_step": 150, "pair_val": 3.0644}
+{"cell": "baseline-0x", "seed": 2, "augmented_pairs": 0, "pairs_trained": 50, "final_step": 150, "pair_val": 3.0861}
+{"cell": "baseline-0x", "seed": 3, "augmented_pairs": 0, "pairs_trained": 50, "final_step": 150, "pair_val": 3.0722}
+{"cell": "aug-1x", "seed": 1, "augmented_pairs": 40, "pairs_trained": 50, "final_step": 150, "pair_val": 3.0662}
+{"cell": "aug-1x", "seed": 2, "augmented_pairs": 40, "pairs_trained": 50, "final_step": 150, "pair_val": 3.0627}
+{"cell": "aug-1x", "seed": 3, "augmented_pairs": 40, "pairs_trained": 50, "final_step": 150, "pair_val": 3.0741}
+{"cell": "aug-3x", "seed": 1, "augmented_pairs": 120, "pairs_trained": 50, "final_step": 150, "pair_val": 3.0706}
+{"cell": "aug-3x", "seed": 2, "augmented_pairs": 120, "pairs_trained": 50, "final_step": 150, "pair_val": 3.0783}
+{"cell": "aug-3x", "seed": 3, "augmented_pairs": 120, "pairs_trained": 50, "final_step": 150, "pair_val": 3.0914}
+{"cell": "aug-5x", "seed": 1, "augmented_pairs": 188, "pairs_trained": 50, "final_step": 150, "pair_val": 3.0744}
+{"cell": "aug-5x", "seed": 2, "augmented_pairs": 188, "pairs_trained": 50, "final_step": 150, "pair_val": 3.0767}
+{"cell": "aug-5x", "seed": 3, "augmented_pairs": 188, "pairs_trained": 50, "final_step": 150, "pair_val": 3.0954}
+{"cell": "aug-3x-shuffled", "seed": 1, "augmented_pairs": 120, "pairs_trained": 50, "final_step": 150, "pair_val": 3.0737}
+{"cell": "aug-3x-shuffled", "seed": 2, "augmented_pairs": 120, "pairs_trained": 50, "final_step": 150, "pair_val": 3.0843}
+{"cell": "aug-3x-shuffled", "seed": 3, "augmented_pairs": 120, "pairs_trained": 50, "final_step": 150, "pair_val": 3.1059}

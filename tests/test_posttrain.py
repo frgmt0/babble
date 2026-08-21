@@ -411,10 +411,155 @@ def test_post_train_synthetic_inclusion_does_not_affect_the_pair_trigger(setting
     assert post_trigger(settings).due is False
 
 
+# --- correction-pair augmentation (opt-in, train-side-only) -----------------
+
+
+def _seed_augmented(settings, ids, n=3):
+    """Real correction pairs must already be seeded (`_seed_pairs`). Appends
+    `n` augmented variants for every TRAIN-side pair directly to the store,
+    bypassing the LLM call -- these tests exercise `post_train`'s
+    integration with the augmented pool, not the generator itself (see
+    `test_pairaugment.py` for that)."""
+    from babble.pairaugment import AugmentedPair, AugmentedPairStore, make_augmented_id
+    from babble.pairsplit import pair_split
+    from babble.post_state import trainable_pairs as _trainable_pairs
+
+    pairs = _trainable_pairs(settings, ids)
+    train_pairs, _ = pair_split(pairs)
+    store = AugmentedPairStore(settings.augmented_pairs_path)
+    added = 0
+    for p in train_pairs:
+        for i in range(n):
+            vp, vc = f"variant {p.id} {i} prompt", f"variant {p.id} {i} response"
+            store.append(
+                AugmentedPair(
+                    id=make_augmented_id(p.id, i, vp, vc),
+                    prompt=vp, chosen=vc, source_pair_id=p.id, variant_index=i,
+                )
+            )
+            added += 1
+    return added, train_pairs
+
+
+def test_post_train_ignores_augmented_pairs_by_default(settings, ids):
+    """`include_pair_augmentation` defaults to False: an augmented pair
+    sitting in `augmented_pairs.jsonl` must never silently get trained on."""
+    _seed_pretrain(settings)
+    _seed_pairs(settings, ids, PAIRS)
+    _seed_augmented(settings, ids, n=3)
+
+    result = post_train(settings, force=True, steps=4, seed=1, echo=False, ids=ids)
+
+    assert result.ran
+    assert result.pairs_trained == len(PAIRS)
+    assert result.augmented_pairs_trained == 0
+
+
+def test_post_train_with_augment_pairs_trains_on_both(settings, ids):
+    _seed_pretrain(settings)
+    _seed_pairs(settings, ids, PAIRS)
+    added, _ = _seed_augmented(settings, ids, n=3)
+    assert added > 0
+
+    result = post_train(
+        settings, force=True, steps=4, seed=1, echo=False, ids=ids, include_pair_augmentation=True
+    )
+
+    assert result.ran
+    assert result.pairs_trained == len(PAIRS)
+    assert result.augmented_pairs_trained == added
+
+
+def test_augment_pairs_and_include_synthetic_are_independent(settings, ids):
+    _seed_pretrain(settings)
+    _seed_pairs(settings, ids, PAIRS)
+    added, _ = _seed_augmented(settings, ids, n=2)
+    _seed_synthetic(settings, ids, [("synthetic prompt", "synthetic response")])
+
+    result = post_train(
+        settings, force=True, steps=2, echo=False, ids=ids,
+        include_synthetic=True, include_pair_augmentation=True,
+    )
+
+    assert result.ran
+    assert result.synthetic_pairs_trained == 1
+    assert result.augmented_pairs_trained == added
+
+
+def test_augmented_pairs_never_enter_the_validation_set(settings, ids, monkeypatch):
+    """The whole safety property of augmentation rests on val staying 100%
+    real, held-out pairs -- this pins that `eval_loss` is only ever called
+    with exactly the real val-side example count, never inflated by the
+    augmented pool, even while training on it."""
+    _seed_pretrain(settings)
+    _seed_pairs(settings, ids, PAIRS)
+    added, _ = _seed_augmented(settings, ids, n=3)
+    assert added > 0
+
+    from babble.pairsplit import pair_split
+    from babble.post_state import trainable_pairs as _trainable_pairs
+
+    expected_val = len(pair_split(_trainable_pairs(settings, ids))[1])
+    assert expected_val > 0
+
+    import babble.posttrain as posttrain_module
+
+    real_eval_loss = posttrain_module.eval_loss
+    lengths = []
+
+    def spy(model, examples):
+        lengths.append(len(examples))
+        return real_eval_loss(model, examples)
+
+    monkeypatch.setattr(posttrain_module, "eval_loss", spy)
+
+    result = post_train(
+        settings, force=True, steps=2, seed=1, echo=False, ids=ids,
+        include_pair_augmentation=True,
+    )
+
+    assert result.ran
+    assert lengths  # eval_loss was actually exercised
+    assert set(lengths) == {expected_val}
+
+
+def test_post_train_with_an_orphaned_augmented_pair_and_no_real_pairs_is_no_data(settings, ids):
+    """An augmented pair whose source pair does not resolve to anything
+    trainable (no real pairs exist at all here) is orphaned --
+    `trainable_augmented_pairs` drops it, so this must behave exactly like
+    there being no data at all, not silently train on an unmoored pair."""
+    from babble.pairaugment import AugmentedPair, AugmentedPairStore, make_augmented_id
+
+    _seed_pretrain(settings)
+    AugmentedPairStore(settings.augmented_pairs_path).append(
+        AugmentedPair(
+            id=make_augmented_id("no-such-pair", 0, "p", "c"),
+            prompt="p", chosen="c", source_pair_id="no-such-pair", variant_index=0,
+        )
+    )
+
+    result = post_train(
+        settings, force=True, steps=2, echo=False, ids=ids, include_pair_augmentation=True
+    )
+
+    assert not result.ran and result.reason == "no_data"
+
+
+def test_post_train_augment_inclusion_does_not_affect_the_pair_trigger(settings, ids):
+    """The +N-pair trigger counts human corrections only -- including
+    augmented pairs must never make a post-train due on its own."""
+    _seed_pretrain(settings)
+    _seed_pairs(settings, ids, PAIRS)
+    settings.post_trigger_pairs = 1000
+    _seed_augmented(settings, ids, n=5)
+
+    assert post_trigger(settings).due is False
+
+
 # --- CLI wiring --------------------------------------------------------------
 
 
-@pytest.mark.parametrize("command", ["post-train", "post-status"])
+@pytest.mark.parametrize("command", ["post-train", "post-status", "augment-pairs", "augment-check"])
 def test_new_subcommands_are_registered(command):
     args = build_parser().parse_args([command])
     assert args.command == command
