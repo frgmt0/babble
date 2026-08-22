@@ -377,6 +377,18 @@ class Settings:
         return self.checkpoint_dir / "latest.pt"
 
     @property
+    def tokenizer_path(self) -> Path:
+        """Tokenizer that shipped with the served checkpoint, if any.
+
+        Byte-level checkpoints have none -- vocab is the 260 UTF-8 ids in
+        `babble.tokenizer`. A BPE (or other learned) checkpoint is unusable
+        without the `tokenizer.json` that was trained with it; serving looks
+        here, next to `latest.pt`, so swapping the pair is how a promotion
+        (or a rollback) changes which tokenizer is live.
+        """
+        return self.checkpoint_dir / "tokenizer.json"
+
+    @property
     def loss_curve_path(self) -> Path:
         return self.checkpoint_dir / "loss.jsonl"
 

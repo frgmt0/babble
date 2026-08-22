@@ -20,6 +20,7 @@ between a multi-second `best_of` reply and a snappy one on this 3.3M model.
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
 import torch
 import torch.nn.functional as F
@@ -29,17 +30,17 @@ from .core import Generation
 from .cpu_runtime import configure_cpu, force_cpu_device
 from .logs import EventLog, NullLog
 from .model import Babbler, KVCache, ModelConfig, config_from_settings, per_token_loss
+from .subword import BPETokenizer, ByteTokenizer, Tokenizer
+from .subword import build_continuation_example as tok_continuation_example
+from .subword import text_context as tok_text_context
 from .tokenizer import (
     BOS_ID,
-    EOS_ID,
     PAD_ID,
     SEP_ID,
+    VOCAB_SIZE,
     Example,
-    build_continuation_example,
     build_example,
-    decode,
     prompt_context,
-    text_context,
 )
 
 # The structural tokens are inputs, not outputs. Banning them from sampling means
@@ -47,22 +48,65 @@ from .tokenizer import (
 _BANNED = [PAD_ID, BOS_ID, SEP_ID]
 
 
+def tokenizer_for_checkpoint(checkpoint_path, vocab_size: int) -> Tokenizer:
+    """The tokenizer that belongs with this checkpoint file.
+
+    Looks for `tokenizer.json` beside the `.pt`. Present → load that BPE
+    (and refuse if its vocab_size disagrees with the weights). Absent →
+    the historical byte tokenizer, but only when the checkpoint itself is
+    a 260-id byte model. A larger vocab with no json is a broken promotion,
+    not a silent fallback to bytes.
+    """
+    path = Path(checkpoint_path)
+    json_path = path.parent / "tokenizer.json"
+    if json_path.is_file():
+        tok = BPETokenizer.from_json(json_path)
+        if tok.vocab_size != vocab_size:
+            raise ValueError(
+                f"checkpoint vocab_size {vocab_size} does not match tokenizer "
+                f"vocab_size {tok.vocab_size} ({json_path}) -- wrong tokenizer.json "
+                f"for this checkpoint"
+            )
+        return tok
+    if vocab_size == VOCAB_SIZE:
+        return ByteTokenizer()
+    raise ValueError(
+        f"checkpoint at {path} has vocab_size {vocab_size} but no tokenizer.json "
+        f"beside it -- cannot serve a non-byte checkpoint without the tokenizer "
+        f"that shipped with it"
+    )
+
+
+def _serving_tokenizer(model: Babbler, tok: Tokenizer | None = None) -> Tokenizer:
+    if tok is not None:
+        return tok
+    attached = getattr(model, "tokenizer", None)
+    if attached is not None:
+        return attached
+    return ByteTokenizer()
+
+
+def _banned_ids(tok: Tokenizer) -> list[int]:
+    return [tok.specials.pad, tok.specials.bos, tok.specials.sep]
+
+
 def _next_token(
     logits: torch.Tensor,
     temperature: float,
     top_k: int,
     generator: torch.Generator | None,
+    banned: list[int] | None = None,
 ) -> torch.Tensor:
     """One sampling step over a `(batch, vocab)` block of logits.
 
     Shared by the single and batched samplers so there is exactly one place
     where temperature, top_k and the banned structural tokens are applied.
-    Vocab is only 260, so a full-softmax over the top-k-masked row stays cheap;
-    keeping the classic mask-then-softmax path preserves the RNG behaviour the
-    tests (and the live bot) already depend on.
+    Vocab is only 260 on the byte path, so a full-softmax over the top-k-masked
+    row stays cheap; keeping the classic mask-then-softmax path preserves the
+    RNG behaviour the tests (and the live bot) already depend on.
     """
     logits = logits.clone()
-    logits[:, _BANNED] = float("-inf")
+    logits[:, banned if banned is not None else _BANNED] = float("-inf")
     if temperature <= 0:
         return logits.argmax(dim=-1)
     logits = logits / temperature
@@ -90,8 +134,9 @@ def _decode_from(
     temperature: float,
     top_k: int,
     generator: torch.Generator | None,
+    tok: Tokenizer | None = None,
 ) -> str:
-    """Continue `context` one byte at a time until <eos>.
+    """Continue `context` one token at a time until <eos>.
 
     An untrained model almost never emits <eos>, so `max_new_tokens` is what
     actually ends most early generations. That is expected.
@@ -100,6 +145,9 @@ def _decode_from(
     step. Falls back to the old windowed full-forward path only when the reply
     would overflow `block_size` (rare for Discord prompts).
     """
+    tok = _serving_tokenizer(model, tok)
+    banned = _banned_ids(tok)
+    eos_id = tok.specials.eos
     was_training = model.training
     model.eval()
     try:
@@ -115,25 +163,25 @@ def _decode_from(
             prompt = torch.tensor([context], dtype=torch.long)
             logits = model(prompt, cache=cache)[:, -1]
             for _ in range(max_new_tokens):
-                nxt = int(_next_token(logits, temperature, top_k, generator)[0])
-                if nxt == EOS_ID:
+                nxt = int(_next_token(logits, temperature, top_k, generator, banned)[0])
+                if nxt == eos_id:
                     break
                 produced.append(nxt)
                 context.append(nxt)
                 logits = model(
                     torch.tensor([[nxt]], dtype=torch.long), cache=cache
                 )[:, -1]
-            return decode(produced)
+            return tok.decode(produced)
 
         for _ in range(max_new_tokens):
             window = context[-model.config.block_size :]
             logits = model(torch.tensor([window], dtype=torch.long))[:, -1]
-            nxt = int(_next_token(logits, temperature, top_k, generator)[0])
-            if nxt == EOS_ID:
+            nxt = int(_next_token(logits, temperature, top_k, generator, banned)[0])
+            if nxt == eos_id:
                 break
             produced.append(nxt)
             context.append(nxt)
-        return decode(produced)
+        return tok.decode(produced)
     finally:
         model.train(was_training)
 
@@ -148,6 +196,7 @@ def _decode_many_from(
     temperature: float,
     top_k: int,
     generator: torch.Generator | None,
+    tok: Tokenizer | None = None,
 ) -> list[str]:
     """`n` independent continuations of the same context, in one batched pass.
 
@@ -161,6 +210,9 @@ def _decode_many_from(
     never emits <eos> and so always runs the full `max_new_tokens`. A trained
     model stops early and is considerably faster.
     """
+    tok = _serving_tokenizer(model, tok)
+    banned = _banned_ids(tok)
+    eos_id = tok.specials.eos
     was_training = model.training
     model.eval()
     try:
@@ -177,38 +229,40 @@ def _decode_many_from(
             prompt = torch.tensor([list(context)], dtype=torch.long).repeat(n, 1)
             logits = model(prompt, cache=cache)[:, -1]
             for _ in range(max_new_tokens):
-                nxt = _next_token(logits, temperature, top_k, generator)
+                nxt = _next_token(logits, temperature, top_k, generator, banned)
                 for i in range(n):
-                    if not finished[i] and int(nxt[i]) != EOS_ID:
+                    if not finished[i] and int(nxt[i]) != eos_id:
                         produced[i].append(int(nxt[i]))
-                finished |= nxt == EOS_ID
+                finished |= nxt == eos_id
                 if bool(finished.all()):
                     break
                 logits = model(nxt[:, None], cache=cache)[:, -1]
-            return [decode(row) for row in produced]
+            return [tok.decode(row) for row in produced]
 
         tokens = torch.tensor([list(context)], dtype=torch.long).repeat(n, 1)
         for _ in range(max_new_tokens):
             window = tokens[:, -model.config.block_size :]
-            nxt = _next_token(model(window)[:, -1], temperature, top_k, generator)
+            nxt = _next_token(model(window)[:, -1], temperature, top_k, generator, banned)
             # A row that has already emitted <eos> keeps being fed -- rows are
             # independent inside the batch, so its continuation is ignored
             # rather than removed.
             for i in range(n):
-                if not finished[i] and int(nxt[i]) != EOS_ID:
+                if not finished[i] and int(nxt[i]) != eos_id:
                     produced[i].append(int(nxt[i]))
-            finished |= nxt == EOS_ID
+            finished |= nxt == eos_id
             if bool(finished.all()):
                 break
             tokens = torch.cat([tokens, nxt[:, None]], dim=1)
-        return [decode(row) for row in produced]
+        return [tok.decode(row) for row in produced]
     finally:
         model.train(was_training)
 
 
 @torch.inference_mode()
-def _score_examples(model: Babbler, examples: list[Example]) -> list[float]:
-    """Mean per-byte loss over each example's masked tokens. Lower is better.
+def _score_examples(
+    model: Babbler, examples: list[Example], *, pad_id: int = PAD_ID
+) -> list[float]:
+    """Mean per-token loss over each example's masked tokens. Lower is better.
 
     Right-padded to the longest, with the pad excluded from the mean exactly the
     way the trainer excludes it -- a candidate must not be rewarded or punished
@@ -220,7 +274,7 @@ def _score_examples(model: Babbler, examples: list[Example]) -> list[float]:
     model.eval()
     try:
         width = max(len(e) for e in examples)
-        tokens = torch.full((len(examples), width), PAD_ID, dtype=torch.long)
+        tokens = torch.full((len(examples), width), pad_id, dtype=torch.long)
         mask = torch.zeros((len(examples), width), dtype=torch.float32)
         for i, example in enumerate(examples):
             tokens[i, : len(example)] = torch.as_tensor(example.tokens, dtype=torch.long)
@@ -251,13 +305,15 @@ def continue_text(
     generator: torch.Generator | None = None,
 ) -> str:
     """Keep writing after `prefix`, in the layout the corpus objective trains."""
+    tok = _serving_tokenizer(model)
     return _decode_from(
         model,
-        text_context(prefix, model.config.block_size),
+        tok_text_context(tok, prefix, model.config.block_size),
         max_new_tokens=max_new_tokens,
         temperature=temperature,
         top_k=top_k,
         generator=generator,
+        tok=tok,
     )
 
 
@@ -272,22 +328,26 @@ def continue_many(
     generator: torch.Generator | None = None,
 ) -> list[str]:
     """`n` independent continuations of `prefix`, in one batched pass."""
+    tok = _serving_tokenizer(model)
     return _decode_many_from(
         model,
-        text_context(prefix, model.config.block_size),
+        tok_text_context(tok, prefix, model.config.block_size),
         n,
         max_new_tokens=max_new_tokens,
         temperature=temperature,
         top_k=top_k,
         generator=generator,
+        tok=tok,
     )
 
 
 def score_continuations(model: Babbler, prefix: str, continuations: list[str]) -> list[float]:
-    """Mean per-byte loss of each continuation after `prefix`. Lower is better."""
+    """Mean per-token loss of each continuation after `prefix`. Lower is better."""
+    tok = _serving_tokenizer(model)
     return _score_examples(
         model,
-        [build_continuation_example(prefix, c, model.config.block_size) for c in continuations],
+        [tok_continuation_example(tok, prefix, c, model.config.block_size) for c in continuations],
+        pad_id=tok.specials.pad,
     )
 
 
@@ -334,6 +394,27 @@ def best_continuation(
 # --- the pair layout: score an answer against a prompt -------------------
 
 
+def _pair_context(tok: Tokenizer, prompt: str, block_size: int) -> list[int]:
+    if isinstance(tok, ByteTokenizer):
+        return prompt_context(prompt, block_size)
+    reserved = max(1, block_size // 4)
+    budget = max(1, block_size - 3 - reserved)
+    return [tok.specials.bos, *tok.encode(prompt)[-budget:], tok.specials.sep]
+
+
+def _pair_example(tok: Tokenizer, prompt: str, response: str, block_size: int) -> Example:
+    if isinstance(tok, ByteTokenizer):
+        return build_example(prompt, response, block_size)
+    reserved = max(1, block_size // 4)
+    pbudget = max(1, block_size - 3 - reserved)
+    budget = block_size - 3
+    prompt_ids = tok.encode(prompt)[-pbudget:]
+    response_ids = tok.encode(response)[: budget - len(prompt_ids)]
+    tokens = [tok.specials.bos, *prompt_ids, tok.specials.sep, *response_ids, tok.specials.eos]
+    mask = [0] * (len(prompt_ids) + 2) + [1] * (len(response_ids) + 1)
+    return Example(tokens=tokens, mask=mask)
+
+
 def sample(
     model: Babbler,
     prompt: str,
@@ -343,14 +424,16 @@ def sample(
     top_k: int = 40,
     generator: torch.Generator | None = None,
 ) -> str:
-    """Continue `<bos> prompt <sep>` one byte at a time until <eos>."""
+    """Continue `<bos> prompt <sep>` one token at a time until <eos>."""
+    tok = _serving_tokenizer(model)
     return _decode_from(
         model,
-        prompt_context(prompt, model.config.block_size),
+        _pair_context(tok, prompt, model.config.block_size),
         max_new_tokens=max_new_tokens,
         temperature=temperature,
         top_k=top_k,
         generator=generator,
+        tok=tok,
     )
 
 
@@ -365,14 +448,16 @@ def sample_many(
     generator: torch.Generator | None = None,
 ) -> list[str]:
     """`n` independent responses to the same prompt, in one batched pass."""
+    tok = _serving_tokenizer(model)
     return _decode_many_from(
         model,
-        prompt_context(prompt, model.config.block_size),
+        _pair_context(tok, prompt, model.config.block_size),
         n,
         max_new_tokens=max_new_tokens,
         temperature=temperature,
         top_k=top_k,
         generator=generator,
+        tok=tok,
     )
 
 
@@ -383,8 +468,11 @@ def score_many(model: Babbler, prompt: str, responses: list[str]) -> list[float]
     correction pair is stored in, so "the answer the model likes best" means
     exactly what it sounds like.
     """
+    tok = _serving_tokenizer(model)
     return _score_examples(
-        model, [build_example(prompt, r, model.config.block_size) for r in responses]
+        model,
+        [_pair_example(tok, prompt, r, model.config.block_size) for r in responses],
+        pad_id=tok.specials.pad,
     )
 
 
@@ -447,11 +535,15 @@ def load_model(settings: Settings) -> tuple[Babbler, int]:
     path = settings.latest_checkpoint
     if not path.exists():
         model = Babbler(config_from_settings(settings)).to(device)
+        model.tokenizer = ByteTokenizer()
         model.eval()
         return model, 0
     payload = torch.load(path, map_location=device, weights_only=True)
-    model = Babbler(ModelConfig.from_dict(payload["config"]))
+    cfg = ModelConfig.from_dict(payload["config"])
+    tok = tokenizer_for_checkpoint(path, cfg.vocab_size)
+    model = Babbler(cfg)
     model.load_state_dict(payload["model"])
+    model.tokenizer = tok
     model.to(device)
     model.eval()
     return model, int(payload.get("step", 0))
@@ -475,7 +567,7 @@ class CheckpointGenerator:
         self.log = log or NullLog()
         self._model: Babbler | None = None
         self._step = 0
-        self._mtime: float | None = None
+        self._mtime: tuple[float | None, float | None] | None = None
         # Bot replies share the machine with everything else; keep inference on
         # the same capped thread count the trainer uses so we never stampede.
         configure_cpu(settings.train_threads)
@@ -487,13 +579,16 @@ class CheckpointGenerator:
 
     def _ensure_current(self) -> None:
         path = self.settings.latest_checkpoint
+        tok_path = self.settings.tokenizer_path
         mtime = path.stat().st_mtime if path.exists() else None
-        if self._model is not None and mtime == self._mtime:
+        tok_mtime = tok_path.stat().st_mtime if tok_path.exists() else None
+        signature = (mtime, tok_mtime)
+        if self._model is not None and signature == self._mtime:
             return
 
         previous = self._step
         self._model, self._step = load_model(self.settings)
-        self._mtime = mtime
+        self._mtime = signature
         self.log.event(
             "model.load",
             source="checkpoint" if mtime else "random_init",
