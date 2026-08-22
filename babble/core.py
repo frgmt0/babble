@@ -244,6 +244,8 @@ class Generation:
     step: int = 0
     temperature: float = 1.0
     top_k: int = 0
+    top_p: float = 1.0
+    repetition_penalty: float = 1.0
     max_new_tokens: int = 0
     ms: float = 0.0
 
@@ -624,6 +626,8 @@ class Babble:
             step=generation.step,
             temperature=generation.temperature,
             top_k=generation.top_k,
+            top_p=generation.top_p,
+            repetition_penalty=generation.repetition_penalty,
             max_new_tokens=generation.max_new_tokens,
             ms=round(generation.ms, 1),
             prompt_chars=preview["chars"],

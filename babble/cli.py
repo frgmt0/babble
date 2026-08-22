@@ -167,6 +167,8 @@ def build_parser() -> argparse.ArgumentParser:
     gen.add_argument("-n", "--tokens", type=int, default=None)
     gen.add_argument("--temperature", type=float, default=None)
     gen.add_argument("--top-k", type=int, default=None)
+    gen.add_argument("--top-p", type=float, default=None)
+    gen.add_argument("--repetition-penalty", type=float, default=None)
     gen.add_argument("-c", "--count", type=int, default=1, help="how many samples")
 
     sub.add_parser("curve", help="print the loss curve")
@@ -558,6 +560,12 @@ def main(argv: list[str] | None = None) -> int:
                 max_new_tokens=args.tokens or settings.max_new_tokens,
                 temperature=settings.temperature if args.temperature is None else args.temperature,
                 top_k=settings.top_k if args.top_k is None else args.top_k,
+                top_p=settings.top_p if args.top_p is None else args.top_p,
+                repetition_penalty=(
+                    settings.repetition_penalty
+                    if args.repetition_penalty is None
+                    else args.repetition_penalty
+                ),
             )
             print(f"{args.prompt!r} -> {text!r}", flush=True)
         return 0

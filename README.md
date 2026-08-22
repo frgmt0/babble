@@ -1110,7 +1110,9 @@ The knobs that decide what the bot sounds like:
 | variable | default | what it does |
 | --- | --- | --- |
 | `BABBLE_TEMPERATURE` | `0.5` | sampling temperature — [`1.0` was the babble](#why-it-babbled-at-loss-002) |
-| `BABBLE_TOP_K` | `40` | truncate sampling to the top k bytes |
+| `BABBLE_TOP_K` | `40` | truncate sampling to the top k tokens |
+| `BABBLE_TOP_P` | `0.9` | nucleus sampling; `1.0` disables it (top-k still applies) |
+| `BABBLE_REPETITION_PENALTY` | `1.15` | HF-style penalty on prompt + generated tokens; `1.0` disables it |
 | `BABBLE_MAX_NEW_TOKENS` | `256` | longest reply, in bytes |
 | `BABBLE_BLOCK_SIZE` | `512` | context window in bytes; changing it [invalidates checkpoints](#pretraining) (harmless -- every run starts from random init) |
 | `BABBLE_TRAIN_TRIGGER_ROWS` | `100` | new corpus rows that [re-fire training](#pretraining); `0` = manual only |
