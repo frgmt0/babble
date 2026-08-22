@@ -24,8 +24,12 @@ frequency (word). The four specials sit above that, at
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
+
+import torch
 
 from . import tokenizer as bytetok
 from .tokenizer import Example
@@ -150,6 +154,23 @@ class BPETokenizer:
             if piece is not None:
                 raw.extend(piece)
         return bytes(raw).decode("utf-8", errors="replace")
+
+    def to_json(self, path: Path) -> None:
+        """Just the ordered merge list -- `vocab` is fully determined by
+        replaying `merges` over the 256 raw bytes (see `__post_init__`), so
+        nothing else needs to round-trip. Same schema `pretrain_hf.py` writes,
+        on purpose: a checkpoint that script produces and the `tokenizer.json`
+        next to it load back in here with no translation step."""
+        path.write_text(json.dumps({"merges": [list(m) for m in self.merges]}))
+
+    @classmethod
+    def from_json(cls, path: Path) -> "BPETokenizer":
+        raw = json.loads(Path(path).read_text())
+        merges = [tuple(m) for m in raw["merges"]]
+        vocab = {i: bytes([i]) for i in range(256)}
+        for a, b, new_id in merges:
+            vocab[new_id] = vocab[a] + vocab[b]
+        return cls(merges=merges, vocab=vocab)
 
 
 # --- word-level tokenization -----------------------------------------------
@@ -286,3 +307,44 @@ def text_context(tok: Tokenizer, prefix: str, block_size: int) -> list[int]:
     `text_examples` truncates a training example, keeping the tail."""
     ids = tok.encode(prefix)[-text_prefix_budget(block_size) :]
     return [tok.specials.bos, *ids]
+
+
+def build_continuation_example(
+    tok: Tokenizer, prefix: str, continuation: str, block_size: int
+) -> Example:
+    """`<bos> prefix continuation <eos>`, with only the continuation trained.
+
+    Generalises `babble.tokenizer.build_continuation_example` over any
+    `Tokenizer` (byte, BPE, or word) instead of the fixed byte ids, so a
+    post-train stage can teach prompt/response pairs on top of a checkpoint
+    that was pretrained with a different tokenizer than `babble.tokenizer`'s
+    raw bytes -- same layout, same truncation rule, just parameterised.
+    """
+    prefix_ids = tok.encode(prefix)[-text_prefix_budget(block_size) :]
+    cont_ids = tok.encode(continuation)[: text_budget(block_size) - len(prefix_ids)]
+    tokens = [tok.specials.bos, *prefix_ids, *cont_ids, tok.specials.eos]
+    mask = [0] * (len(prefix_ids) + 1) + [1] * (len(cont_ids) + 1)
+    assert len(tokens) == len(mask)
+    return Example(tokens=tokens, mask=mask)
+
+
+def stack_examples(
+    examples: list[Example], pad_id: int
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Right-pad `examples` to the batch's longest, using `pad_id`.
+
+    `babble.trainer._stack_examples` hardcodes byte-tokenizer `PAD_ID` (256),
+    which is actively wrong for a learned tokenizer: BPE merge ids start at
+    256 too, so padding with a bare 256 would pad with the first learned
+    merge rather than a pad token. This takes the tokenizer's own pad id
+    instead, so it works for any `Tokenizer`.
+    """
+    width = max(len(e.tokens) for e in examples)
+    tokens = torch.full((len(examples), width), pad_id, dtype=torch.long)
+    mask = torch.zeros((len(examples), width), dtype=torch.long)
+    for i, example in enumerate(examples):
+        length = len(example.tokens)
+        tokens[i, :length] = torch.as_tensor(example.tokens, dtype=torch.long)
+        mask[i, :length] = torch.as_tensor(example.mask, dtype=torch.long)
+    weights = torch.as_tensor([e.weight for e in examples], dtype=torch.float32)
+    return tokens, mask, weights

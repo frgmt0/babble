@@ -6,6 +6,8 @@
     babble train-status       rows since the last run, whether the trigger is due
     babble post-train --force STAGE 2: fine-tune the pretrained checkpoint on correction pairs
     babble post-status        pairs since the last post-train, whether the trigger is due
+    babble post-train-from-checkpoint --checkpoint ckpt.pt --tokenizer tokenizer.json
+                               STAGE 2 against an externally supplied pretrain (see pretrain_hf.py)
     babble synth-generate     postulate prompts for reply-shaped corpus rows -> synthetic_pairs.jsonl
     babble synth-status       synthetic vs human correction-pair counts
     babble augment-pairs      LLM-paraphrase train-side correction pairs -> augmented_pairs.jsonl
@@ -84,6 +86,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     sub.add_parser("post-status", help="show the post-train trigger state (pairs since last post-train)")
+
+    post_ckpt = sub.add_parser(
+        "post-train-from-checkpoint",
+        help="STAGE 2 against an externally supplied pretrain checkpoint (e.g. from "
+        "pretrain_hf.py) instead of the local checkpoints/pretrained.pt -> latest.pt",
+    )
+    post_ckpt.add_argument("--checkpoint", type=Path, required=True, help="pretrain checkpoint .pt (e.g. latest.pt from pretrain_hf.py)")
+    post_ckpt.add_argument("--tokenizer", type=Path, required=True, help="tokenizer.json that shipped alongside --checkpoint")
+    post_ckpt.add_argument("--force", action="store_true", help="run even below the BABBLE_POST_MIN_PAIRS floor")
+    post_ckpt.add_argument(
+        "--steps", type=int, default=None,
+        help="step CEILING, not a target -- the best-val checkpoint may win earlier (default: BABBLE_POST_STEPS)",
+    )
+    post_ckpt.add_argument(
+        "--patience", type=int, default=None,
+        help="stop after N non-improving checkpoint intervals, 0 = never (default: BABBLE_POST_PATIENCE)",
+    )
+    post_ckpt.add_argument("--seed", type=int, default=1, help="deterministic run")
+    post_ckpt.add_argument("--quiet", action="store_true", help="no per-checkpoint printing")
 
     synth = sub.add_parser(
         "synth-generate",
@@ -302,6 +323,55 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif result.reason == "no_data":
             print("Nothing to post-train on: no consented correction pairs.", flush=True)
+        return 0
+
+    if args.command == "post-train-from-checkpoint":
+        from .identity import Pseudonymiser
+        from .logs import EventLog
+        from .posttrain import post_train_from_checkpoint
+
+        log = EventLog(settings, Pseudonymiser.load(settings), component="post", echo=not args.quiet)
+        try:
+            result = post_train_from_checkpoint(
+                settings, args.checkpoint, args.tokenizer, force=args.force,
+                steps=args.steps, patience=args.patience, seed=args.seed, echo=not args.quiet, log=log,
+            )
+        finally:
+            log.close()
+        if result.ran:
+            val_s = f"{result.val_loss:.4f}" if result.val_loss is not None else "n/a"
+            early = " (stopped early)" if result.stopped_early else ""
+            print(
+                f"stage 2 (post-train-from-checkpoint): fine-tuned {result.pairs_trained} correction pair(s) "
+                f"from {args.checkpoint}, best checkpoint at step {result.final_step} "
+                f"(loss {result.last_loss:.4f}, val {val_s}) after {result.checkpoints_written} checkpoint(s){early}",
+                flush=True,
+            )
+            if result.gated:
+                print(
+                    f"NOT promoted: corpus val {result.corpus_val_after:.4f} vs the supplied checkpoint's "
+                    f"{result.corpus_val_before:.4f} (margin {settings.post_gate_margin}) — "
+                    f"latest.pt left untouched",
+                    flush=True,
+                )
+            else:
+                gate_part = ""
+                if result.corpus_val_after is not None and result.corpus_val_before is not None:
+                    gate_part = (
+                        f" (corpus val {result.corpus_val_after:.4f} vs supplied checkpoint "
+                        f"{result.corpus_val_before:.4f})"
+                    )
+                print(f"promoted{gate_part} -> {result.path}", flush=True)
+        elif result.reason == "too_few_pairs":
+            print(
+                f"Refused: only {result.current_pairs} correction pair(s), needs "
+                f"{settings.post_min_pairs} (BABBLE_POST_MIN_PAIRS).",
+                flush=True,
+            )
+        elif result.reason == "no_data":
+            print("Nothing to post-train on: no consented correction pairs.", flush=True)
+        elif result.reason == "no_steps":
+            print("Refused: --steps resolved to 0.", flush=True)
         return 0
 
     if args.command == "post-status":

@@ -97,6 +97,10 @@ from .post_state import (
     write_post_state,
 )
 from .store import Interaction
+from .subword import BPETokenizer
+from .subword import build_continuation_example as _bpe_continuation_example
+from .subword import stack_examples as _bpe_stack_examples
+from .subword import text_examples as _bpe_text_examples
 from .synthetic import SyntheticPair, trainable_synthetic_pairs
 from .tokenizer import Example, build_continuation_example, build_example
 from .trainer import (
@@ -119,6 +123,7 @@ __all__ = [
     "AutoPostTrigger",
     "pair_count",
     "post_train",
+    "post_train_from_checkpoint",
     "post_trigger",
     "read_post_state",
     "trainable_pairs",
@@ -536,6 +541,281 @@ def post_train(
         corpus_val_before=corpus_val_before,
         corpus_val_after=corpus_val_after,
     )
+
+
+def post_train_from_checkpoint(
+    settings: Settings,
+    checkpoint_path: Path,
+    tokenizer_path: Path,
+    *,
+    force: bool = False,
+    steps: int | None = None,
+    patience: int | None = None,
+    seed: int = 1,
+    echo: bool = True,
+    log: EventLog | None = None,
+    ids: Pseudonymiser | None = None,
+    blocklist: Blocklist | None = None,
+) -> PostTrainResult:
+    """Stage 2 against an EXTERNALLY supplied pretrain checkpoint -- e.g. one
+    `pretrain_hf.py` produced on a GPU we don't have (see
+    `HF_PRETRAIN_PIPELINE.md`), rather than the checkpoint `babble train`
+    wrote locally.
+
+    Same guardrails as `post_train()`: post-train's own (lower) learning
+    rate, corpus rehearsal, a pair floor, best-val checkpoint selection, and
+    a promotion gate that refuses to touch `latest.pt` if the candidate is
+    worse than the checkpoint it started from on held-out corpus text. It
+    exists as a separate function, not a branch inside `post_train()`,
+    because `post_train()` hardcodes `babble.tokenizer`'s raw-byte layout
+    (`build_example`/`build_continuation_example`/`_stack_examples`'s fixed
+    `PAD_ID=256`) -- fine for a checkpoint `babble train` produced, actively
+    wrong for one pretrained with a different tokenizer, because a learned
+    BPE vocab's own merge ids can collide with byte-tokenizer's hardcoded
+    specials. `tokenizer_path` must be the `tokenizer.json` that shipped
+    alongside `checkpoint_path`; passing the wrong one silently reinterprets
+    every id as a different byte/merge without ever raising.
+
+    Unlike `post_train()`, this never checks or advances the +N-pair trigger
+    (`post_state.json`) -- it is an on-demand run against a checkpoint the
+    normal trigger has no way to know about, always acts as if `--force` was
+    passed, and never fires the `has_pretrained`/pair-floor trigger gate.
+    A promoted run does still overwrite `checkpoints/latest.pt`, so a
+    subsequent ordinary `babble post-train` snapshots from it as usual.
+    """
+    settings.ensure_dirs()
+    log = log or NullLog()
+    tok = BPETokenizer.from_json(tokenizer_path)
+
+    pairs = trainable_pairs(settings, ids, blocklist)
+    if not pairs:
+        log.event("post_from_ckpt.skipped", reason="no_data")
+        return PostTrainResult(False, "no_data", current_pairs=pair_count(settings))
+
+    total_pairs = len(pairs)
+    if not force and total_pairs < settings.post_min_pairs:
+        log.event(
+            "post_from_ckpt.skipped", reason="too_few_pairs",
+            pairs=total_pairs, threshold=settings.post_min_pairs,
+        )
+        return PostTrainResult(False, "too_few_pairs", current_pairs=pair_count(settings))
+
+    budget = steps if steps is not None else settings.post_steps
+    if budget <= 0:
+        log.event("post_from_ckpt.skipped", reason="no_steps", steps=budget)
+        return PostTrainResult(False, "no_steps", current_pairs=pair_count(settings))
+
+    be_polite(settings, log)
+    sweep_scratch(settings)
+
+    device = force_cpu_device()
+    payload = torch.load(checkpoint_path, map_location=device, weights_only=True)
+    model_cfg = ModelConfig.from_dict(payload["config"])
+    if model_cfg.vocab_size != tok.vocab_size:
+        raise ValueError(
+            f"checkpoint vocab_size {model_cfg.vocab_size} does not match tokenizer "
+            f"vocab_size {tok.vocab_size} ({tokenizer_path}) -- wrong tokenizer.json "
+            f"for this checkpoint"
+        )
+    model = Babbler(model_cfg).to(device)
+    model.load_state_dict(payload["model"])
+    model = maybe_compile(model)
+
+    post_lr = settings.post_learning_rate if settings.post_learning_rate > 0 else None
+    optimizer = _build_optimizer(model, settings, lr=post_lr)
+
+    block_size = model.config.block_size
+    real_train_pairs, real_val_pairs = pair_split(pairs)
+    train_examples = [_bpe_continuation_example(tok, p.prompt, p.chosen, block_size) for p in real_train_pairs]
+    val_examples = [_bpe_continuation_example(tok, p.prompt, p.chosen, block_size) for p in real_val_pairs]
+
+    run_patience = patience if patience is not None else settings.post_patience
+    rng = random.Random(seed)
+    torch.manual_seed(seed)
+
+    rehearsal = min(1.0, max(0.0, settings.post_rehearsal))
+    corpus_split = split_rows(corpus_rows(settings, ids, blocklist), settings)
+    rehearsal_examples = (
+        [ex for row in corpus_split.train for ex in _bpe_text_examples(tok, row.text, block_size)]
+        if rehearsal > 0
+        else []
+    )
+    corpus_val_examples = [
+        ex for row in corpus_split.val for ex in _bpe_text_examples(tok, row.text, block_size)
+    ]
+
+    log.event(
+        "post_from_ckpt.start",
+        pairs=len(pairs),
+        train_examples=len(train_examples),
+        val_examples=len(val_examples),
+        rehearsal=rehearsal if rehearsal_examples else 0.0,
+        rehearsal_examples=len(rehearsal_examples),
+        lr=post_lr if post_lr is not None else settings.learning_rate,
+        block_size=block_size,
+        steps=budget,
+        patience=run_patience,
+        from_checkpoint=str(checkpoint_path),
+        tokenizer=str(tokenizer_path),
+    )
+
+    def eval_examples(examples: list[Example]) -> float | None:
+        if not examples:
+            return None
+        was_training = model.training
+        model.eval()
+        try:
+            tokens, mask, weights = _bpe_stack_examples(examples, tok.specials.pad)
+            with torch.inference_mode():
+                return float(sequence_loss(model, tokens, mask, weights))
+        finally:
+            model.train(was_training)
+
+    window: list[float] = []
+    checkpoints = 0
+    step = 0
+    last_loss = float("nan")
+    best: dict | None = None
+    stalls = 0
+    stop = False
+
+    def checkpoint() -> None:
+        nonlocal checkpoints, best, stalls, stop, window
+        mean = sum(window) / len(window) if window else last_loss
+        pair_val = eval_examples(val_examples)
+        corpus_val = eval_examples(corpus_val_examples)
+        metric = corpus_val if corpus_val is not None else pair_val
+        checkpoints += 1
+        append_curve(
+            settings, step, mean, "",
+            stored_rows=pair_count(settings), train_rows=len(train_examples),
+            val_rows=len(val_examples), val_loss=pair_val,
+        )
+        log.event(
+            "post_from_ckpt.checkpoint", step=step, loss=mean, val_loss=pair_val,
+            corpus_val=round(corpus_val, 6) if corpus_val is not None else None,
+        )
+        if echo:
+            val_s = f"{pair_val:.4f}" if pair_val is not None else "   n/a"
+            cval_s = f"{corpus_val:.4f}" if corpus_val is not None else "   n/a"
+            print(
+                f"[post-ckpt] step {step:7d} | loss {mean:8.4f} | pair val {val_s} | corpus val {cval_s}",
+                flush=True,
+            )
+        if metric is not None:
+            if best is None or metric < best["metric"]:
+                best = {
+                    "step": step, "loss": mean, "val": pair_val, "corpus_val": corpus_val,
+                    "metric": metric,
+                    "model": copy.deepcopy(model_state_dict(model)),
+                    "optim": copy.deepcopy(optimizer.state_dict()),
+                }
+                stalls = 0
+            else:
+                stalls += 1
+                if run_patience and stalls >= run_patience:
+                    stop = True
+        window = []
+
+    def make_mixed_batch() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        chosen: list[Example] = []
+        for _ in range(settings.batch_size):
+            if rehearsal_examples and rng.random() < rehearsal:
+                chosen.append(rng.choice(rehearsal_examples))
+            else:
+                chosen.append(rng.choice(train_examples))
+        return _bpe_stack_examples(chosen, tok.specials.pad)
+
+    model.train()
+    for _ in range(budget):
+        tokens, mask, weights = make_mixed_batch()
+        loss = sequence_loss(model, tokens, mask, weights)
+        optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), settings.grad_clip)
+        optimizer.step()
+        step += 1
+        last_loss = float(loss.item())
+        window.append(last_loss)
+        if step % settings.checkpoint_every == 0:
+            checkpoint()
+            if stop:
+                break
+    if window and not stop:
+        checkpoint()
+
+    final_step, final_loss, final_val = step, last_loss, None
+    candidate_corpus_val: float | None = None
+    if best is not None:
+        uncompiled(model).load_state_dict(best["model"])
+        optimizer.load_state_dict(best["optim"])
+        final_step, final_loss, final_val = best["step"], best["loss"], best["val"]
+        candidate_corpus_val = best.get("corpus_val")
+
+    corpus_val_before: float | None = None
+    corpus_val_after: float | None = None
+    promoted = True
+    if corpus_val_examples and settings.post_gate_margin >= 0:
+        corpus_val_after = (
+            candidate_corpus_val if candidate_corpus_val is not None else eval_examples(corpus_val_examples)
+        )
+        pretrain_model = Babbler(model_cfg).to(device)
+        pretrain_model.load_state_dict(payload["model"])
+        corpus_val_before = eval_examples_with_model(pretrain_model, corpus_val_examples, tok.specials.pad)
+        del pretrain_model
+        promoted = corpus_val_after <= corpus_val_before + settings.post_gate_margin
+
+    if promoted:
+        save_checkpoint(settings, model, optimizer, final_step, final_loss)
+
+    log.event(
+        "post_from_ckpt.done",
+        step=final_step,
+        loss=round(final_loss, 6) if final_loss is not None else None,
+        val_loss=round(final_val, 6) if final_val is not None else None,
+        corpus_val_before=round(corpus_val_before, 6) if corpus_val_before is not None else None,
+        corpus_val_after=round(corpus_val_after, 6) if corpus_val_after is not None else None,
+        promoted=promoted,
+        pairs_trained=len(pairs),
+        checkpoints=checkpoints,
+        stopped_early=stop,
+        budget=budget,
+    )
+
+    return PostTrainResult(
+        True,
+        "trained" if promoted else "gated",
+        pairs_trained=len(pairs),
+        current_pairs=pair_count(settings),
+        last_trained_pairs=pair_count(settings),
+        final_step=final_step,
+        last_loss=final_loss,
+        val_loss=final_val,
+        checkpoints_written=checkpoints,
+        budget=budget,
+        stopped_early=stop,
+        path=settings.latest_checkpoint if promoted else None,
+        promoted=promoted,
+        gated=not promoted,
+        corpus_val_before=corpus_val_before,
+        corpus_val_after=corpus_val_after,
+    )
+
+
+def eval_examples_with_model(model: Babbler, examples: list[Example], pad_id: int) -> float | None:
+    """`eval_examples` for a model that is not the one `post_train_from_checkpoint`
+    is actively training -- used once, to score the frozen pretrain snapshot
+    for the promotion gate, without needing a second closure over `model`."""
+    if not examples:
+        return None
+    was_training = model.training
+    model.eval()
+    try:
+        tokens, mask, weights = _bpe_stack_examples(examples, pad_id)
+        with torch.inference_mode():
+            return float(sequence_loss(model, tokens, mask, weights))
+    finally:
+        model.train(was_training)
 
 
 class AutoPostTrigger:
