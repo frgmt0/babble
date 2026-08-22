@@ -165,6 +165,21 @@ class Settings:
     # under a couple of seconds.
     best_of: int = 4
 
+    # Which decode layout `CheckpointGenerator` serves with:
+    # "continuation" -- `<bos> text`, keep going (`generate.best_continuation`).
+    # What every checkpoint trained on plain corpus text understands, and the
+    # default so an ordinary pretrain/post-train("continuation" layout)
+    # checkpoint keeps behaving exactly as before.
+    # "pair" -- `<bos> prompt <sep>`, generate to `<eos>` (`generate.best_of`).
+    # What a checkpoint trained on prompt/response pairs (e.g. SSH's
+    # booper-chat, SFT'd on mookiezi/Discord-Dialogues in the pair layout --
+    # see its model card) actually understands; feeding it a bare
+    # continuation prompt would ask it to keep writing the user's message
+    # instead of answering it. Set BABBLE_SERVE_LAYOUT=pair alongside a
+    # checkpoint trained that way -- the checkpoint itself carries no flag
+    # for this, so it is not auto-detected.
+    serve_layout: str = "continuation"
+
     # How much each kind of feedback is worth. These no longer touch training:
     # the objective is plain next-token prediction over unlabelled corpus text,
     # where there is no "chosen" answer to weight and every row counts the same.
@@ -340,6 +355,7 @@ class Settings:
             no_repeat_ngram_size=_env_int("BABBLE_NO_REPEAT_NGRAM_SIZE", 0),
             max_new_tokens=_env_int("BABBLE_MAX_NEW_TOKENS", 256),
             best_of=_env_int("BABBLE_BEST_OF", 4),
+            serve_layout=os.environ.get("BABBLE_SERVE_LAYOUT", "continuation"),
             correction_boost=_env_float("BABBLE_CORRECTION_BOOST", 3.0),
             val_fraction=_env_float("BABBLE_VAL_FRACTION", 0.2),
             val_min_rows=_env_int("BABBLE_VAL_MIN_ROWS", 20),
