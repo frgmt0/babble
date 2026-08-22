@@ -50,6 +50,20 @@ class VocabMismatch(RuntimeError):
     """Checkpoint write refused: model vocab ≠ tokenizer it was trained with."""
 
 
+class ResumeError(RuntimeError):
+    """Existing latest.pt cannot be loaded; refuse to fall back to random init."""
+
+
+RESUME_REQUIRED_KEYS = (
+    "step",
+    "tokens_consumed",
+    "docs_consumed",
+    "config",
+    "model",
+    "optim",
+)
+
+
 def row_to_text(row: dict) -> str:
     """Flatten one Discord-Dialogues record to a single training string."""
     for key in ("text", "content", "conversation", "conversations", "messages"):
@@ -125,6 +139,12 @@ def save_checkpoint(
 
 
 def open_stream(dataset_id: str, docs_to_skip: int = 0):
+    """Stream the HF dataset, skipping `docs_to_skip` already-consumed records.
+
+    Resume uses the checkpoint's `docs_consumed` so continued training does
+    not replay the first 600M tokens. `IterableDataset.skip` is sequential
+    (no shuffle), matching pretrain_hf.py.
+    """
     from datasets import load_dataset
 
     ds = load_dataset(dataset_id, split="train", streaming=True)
@@ -139,9 +159,29 @@ def log_jsonl(path: Path, entry: dict) -> None:
         fh.write(json.dumps(entry) + "\n")
 
 
+class _Tee:
+    """Mirror stdout/stderr to train.out while still reaching systemd's journal."""
+
+    def __init__(self, stream, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._stream = stream
+        self._fh = path.open("a", buffering=1)
+
+    def write(self, data: str) -> int:
+        n = self._stream.write(data)
+        self._fh.write(data)
+        return n
+
+    def flush(self) -> None:
+        self._stream.flush()
+        self._fh.flush()
+
+
 def train(args: argparse.Namespace) -> None:
     output_dir: Path = args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
+    sys.stdout = _Tee(sys.stdout, output_dir / "train.out")  # type: ignore[assignment]
+    sys.stderr = _Tee(sys.stderr, output_dir / "train.out")  # type: ignore[assignment]
     ckpt_dir = output_dir / "checkpoints"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     loss_path = output_dir / "loss.jsonl"
@@ -181,6 +221,16 @@ def train(args: argparse.Namespace) -> None:
     latest = ckpt_dir / "latest.pt"
     if latest.exists() and not args.fresh:
         payload = torch.load(latest, map_location=device, weights_only=False)
+        if not isinstance(payload, dict):
+            raise ResumeError(
+                f"{latest} is {type(payload).__name__}, expected a dict payload"
+            )
+        missing = [k for k in RESUME_REQUIRED_KEYS if k not in payload]
+        if missing:
+            raise ResumeError(
+                f"{latest} missing keys {missing}; have {sorted(payload)}. "
+                "Refusing to start from random weights."
+            )
         model_cfg = ModelConfig.from_dict(payload["config"])
         model = Babbler(model_cfg)
         model.load_state_dict(payload["model"])
@@ -189,14 +239,20 @@ def train(args: argparse.Namespace) -> None:
         )
         optimizer.load_state_dict(payload["optim"])
         step = int(payload["step"])
-        tokens_consumed = int(payload.get("tokens_consumed", 0))
-        docs_consumed = int(payload.get("docs_consumed", 0))
+        tokens_consumed = int(payload["tokens_consumed"])
+        docs_consumed = int(payload["docs_consumed"])
         if "torch_rng" in payload:
             torch.set_rng_state(payload["torch_rng"].cpu())
         print(
             f"[resume] step {step}, tokens {tokens_consumed:,}, docs {docs_consumed:,}",
             flush=True,
         )
+        if tokens_consumed >= args.token_budget:
+            raise ResumeError(
+                f"tokens_consumed={tokens_consumed:,} already meets "
+                f"--token-budget={args.token_budget:,}; raise the budget "
+                "(it is compared as a total, not as remaining tokens)"
+            )
     else:
         model_cfg = ModelConfig(
             vocab_size=tok.vocab_size,
@@ -358,7 +414,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--output-dir", type=Path, required=True)
     p.add_argument("--tokenizer", type=Path, default=SERVED_TOKENIZER)
     p.add_argument("--dataset", default=DATASET_ID)
-    p.add_argument("--token-budget", type=int, default=80_000_000)
+    # Total tokens_consumed to reach, not remaining tokens. A 600M-token
+    # resume with 80M here would exit immediately. Default is 680M so a
+    # served 600M checkpoint still has ~80M of continued training (~3 days
+    # at ~314 tok/s on 6 throttled threads).
+    p.add_argument("--token-budget", type=int, default=680_000_000)
     p.add_argument("--batch-size", type=int, default=8)
     p.add_argument("--block-size", type=int, default=SERVED_SHAPE["block_size"])
     p.add_argument("--n-layer", type=int, default=SERVED_SHAPE["n_layer"])
@@ -382,7 +442,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
-    train(args)
+    try:
+        train(args)
+    except ResumeError as exc:
+        print(f"[resume] FAILED: {exc}", file=sys.stderr, flush=True)
+        raise SystemExit(2) from exc
 
 
 if __name__ == "__main__":
