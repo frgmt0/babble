@@ -1,0 +1,10 @@
+{"messages": [{"role": "user", "content": "hey, you around?"}, {"role": "assistant", "content": "yeah, what's up"}]}
+{"messages": [{"role": "user", "content": "what's the weather like"}, {"role": "assistant", "content": "no idea, look outside"}]}
+{"text": "user: can you explain transformers\nassistant: attention over a sequence, that's the whole trick"}
+{"content": "this is a tiny smoke document so training can start without the full parquet download"}
+{"messages": [{"role": "user", "content": "ping"}, {"role": "assistant", "content": "pong"}]}
+{"messages": [{"role": "user", "content": "repeat after me: the quick brown fox jumps over the lazy dog"}, {"role": "assistant", "content": "the quick brown fox jumps over the lazy dog"}]}
+{"text": "once upon a time a small language model learned english from chat logs"}
+{"content": "another filler paragraph about discord, gifs, typos, and :3 faces so the tokenizer has something to chew"}
+{"messages": [{"role": "user", "content": "ok one more"}, {"role": "assistant", "content": "sure, keep going"}]}
+{"text": "smoke slice document ten, still fake, still short, still enough for twenty steps"}
