@@ -260,7 +260,14 @@ class Babbler(nn.Module):
         return self.lm_head(self.ln_f(x))
 
     def num_params(self) -> int:
-        """Tied weights are counted once, which is what you want to report."""
+        """Tied weights are counted once, which is what you want to report.
+
+        After dynamic quantization, `parameters()` no longer sees packed
+        int8 Linears, so we keep the pre-quant count when present.
+        """
+        prior = getattr(self, "_params_before_quant", None)
+        if prior is not None:
+            return int(prior)
         seen = {id(p): p.numel() for p in self.parameters()}
         return sum(seen.values())
 

@@ -788,8 +788,14 @@ cannot afford the decode cost.
   at `max_new_tokens=64`, 9.4× at 128, 15.1× at the shipped default of 256 —
   the longer the reply, the more the cache is worth.
 - **oneDNN / MKL-DNN**, denormal flushing, and a capped thread count from
-  `be_polite` / `CheckpointGenerator` (this model is too small to feed eight
-  threads — the cap is itself a speedup).
+  `be_polite` / `CheckpointGenerator`. Inference defaults to 4 threads
+  (`BABBLE_INFER_THREADS`); training stays at 2. Eight threads is a regression
+  on this box (see `CPU_INFERENCE.md`).
+- **Dynamic int8 Linears** at load, opt-in via `BABBLE_QUANTIZE=1`. On the
+  34.1M live checkpoint that is ~1.5× tok/s at +0.002 bits/char — off by
+  default so serving quality never regresses without asking for it; see
+  `CPU_INFERENCE.md` for the measured tradeoff. `torch.compile` stays off
+  too: ~35 s to first forward.
 - **tanh-approx GELU**, `Identity` instead of `Dropout(0)`, tied embeddings,
   bias-free projections — fewer ops for the same 3.3M-param shape. The GELU
   form is a decode-shape win and a train-shape loss on this box: at `T=1` it
@@ -1137,8 +1143,10 @@ The knobs that decide what the bot sounds like:
 | `BABBLE_POST_GATE_MARGIN` | `0.05` | [promotion gate](#post-training-on-the-correction-pairs): a candidate worse than the pretrain snapshot by more than this on held-out corpus val is not written to `latest.pt`; negative disables |
 | `BABBLE_POST_LAYOUT` | `continuation` | what post-train teaches: `continuation` (the layout serving actually uses) or `pair` (the historical `<bos> prompt <sep> response` layout) |
 | `BABBLE_BEST_OF` | `4` | [candidates drawn per reply](#best-of-n); `1` turns it off |
-| `BABBLE_TRAIN_THREADS` | `2` | CPU threads for train + inference; stays polite on a shared box |
-| `BABBLE_TORCH_COMPILE` | off | set `1` to `torch.compile` the model for a long training run |
+| `BABBLE_TRAIN_THREADS` | `2` | CPU threads for **training** |
+| `BABBLE_INFER_THREADS` | `4` | CPU threads for decode (8 is slower; see `CPU_INFERENCE.md`) |
+| `BABBLE_QUANTIZE` | off | `1` turns on dynamic int8 on Linear layers at load (faster, small bits/char cost) |
+| `BABBLE_TORCH_COMPILE` | off | set `1` to `torch.compile` the model (slow first forward) |
 | `BABBLE_VAL_FRACTION` | `0.2` | [share of corpus rows held out](#validation) |
 | `BABBLE_VAL_MIN_ROWS` | `20` | corpus size below which validation is skipped |
 
