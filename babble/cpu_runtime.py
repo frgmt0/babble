@@ -12,6 +12,7 @@ import os
 from typing import Any
 
 import torch
+import torch.nn as nn
 
 
 _CONFIGURED = False
@@ -116,3 +117,74 @@ def maybe_compile(model: torch.nn.Module, *, enabled: bool | None = None) -> tor
     if not enabled:
         return model
     return torch.compile(model, backend="inductor", mode="reduce-overhead")  # type: ignore[return-value]
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.environ.get(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw not in {"0", "false", "no", "off"}
+
+
+def quantize_dynamic_linears(model: nn.Module) -> nn.Module:
+    """Dynamic int8 on every `nn.Linear`. Embeddings stay fp32.
+
+    On a bandwidth-bound CPU decode, this cuts Linear weight traffic ~4x.
+    The output head is a Linear too (even when its weight was tied to the
+    token embedding at construction): `quantize_dynamic` needs a real
+    `nn.Linear` with its own Parameter, so a tied `lm_head.weight` is cloned
+    first. That clone is decode-only and is never written back to a
+    checkpoint.
+
+    Requires a CPU torch build with a quantized engine (fbgemm / qnnpack).
+    """
+    prior = None
+    if hasattr(model, "num_params"):
+        try:
+            prior = int(model.num_params())
+        except Exception:
+            prior = None
+    lm_head = getattr(model, "lm_head", None)
+    tok_emb = getattr(model, "tok_emb", None)
+    if (
+        isinstance(lm_head, nn.Linear)
+        and tok_emb is not None
+        and lm_head.weight.data_ptr() == tok_emb.weight.data_ptr()
+    ):
+        lm_head.weight = nn.Parameter(tok_emb.weight.detach().clone())
+    model = torch.ao.quantization.quantize_dynamic(
+        model, {nn.Linear}, dtype=torch.qint8
+    )
+    if prior is not None:
+        model._params_before_quant = prior
+    return model
+
+
+def prepare_for_cpu_infer(
+    model: nn.Module,
+    *,
+    quantize: bool | None = None,
+    compile_model: bool | None = None,
+) -> nn.Module:
+    """Serving-time transforms. Never used on the training path.
+
+    Dynamic int8 is off by default (`BABBLE_QUANTIZE=1` turns it on): it is a
+    real ~1.4-2x decode speedup, but it is not free — measured bits/char on
+    the Discord val split moves from the fp32 number by a few thousandths,
+    and this project's bar (set by the #26 repetition-quality work landing
+    alongside this) is that serving quality must not regress by default.
+    Opt in with `BABBLE_QUANTIZE=1` if the speed is worth that tradeoff for
+    your deployment. `torch.compile` stays off: the inductor tax on first
+    forward is tens of seconds for a chatbot that must answer immediately
+    after load.
+    """
+    if quantize is None:
+        quantize = _env_flag("BABBLE_QUANTIZE", False)
+    if compile_model is None:
+        compile_model = _env_flag("BABBLE_TORCH_COMPILE", False)
+    model.eval()
+    if quantize:
+        model = quantize_dynamic_linears(model)
+    if compile_model:
+        model = maybe_compile(model, enabled=True)
+    return model

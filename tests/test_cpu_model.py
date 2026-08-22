@@ -104,6 +104,25 @@ def test_overflow_path_is_deterministic():
     assert overflow == overflow2
 
 
+def test_batched_overflow_matches_uncached_and_is_not_truncated(monkeypatch):
+    """best_of's batched path must keep generating after the KV window fills.
+
+    The live bot uses continue_many (best_of=4). Truncating when
+    context+max_new > block_size was a silent quality/length regression.
+    """
+    torch.manual_seed(3)
+    model = Babbler(TINY)
+    model.eval()
+    long_prefix = "x" * 50
+    kwargs = dict(max_new_tokens=32, temperature=0.0, top_k=40)
+    single = continue_text(model, long_prefix, **kwargs)
+    batched = continue_many(model, long_prefix, 2, **kwargs)
+    monkeypatch.setattr(generate, "_can_cache", lambda *a, **k: False)
+    uncached = continue_many(model, long_prefix, 2, **kwargs)
+    monkeypatch.undo()
+    assert batched[0] == batched[1] == single == uncached[0]
+
+
 def test_batched_cache_decode_runs_and_returns_n():
     torch.manual_seed(1)
     model = Babbler(TINY)
@@ -150,3 +169,23 @@ def test_model_state_dict_unwraps_compiled_prefix():
 def test_pair_sample_still_works_on_cpu_path():
     text = sample(Babbler(TINY), "hi", max_new_tokens=4, temperature=0.0)
     assert isinstance(text, str)
+
+
+def test_dynamic_int8_still_decodes():
+    from babble.cpu_runtime import quantize_dynamic_linears
+
+    torch.manual_seed(0)
+    model = Babbler(TINY)
+    model.eval()
+    q = quantize_dynamic_linears(model)
+    text = continue_text(q, "hi", max_new_tokens=8, temperature=0.0)
+    assert isinstance(text, str)
+    assert len(text) > 0
+
+
+def test_can_cache_when_new_tokens_would_overflow_block():
+    """A long max_new_tokens must not disable the cache for a short prompt."""
+    model = Babbler(TINY)
+    assert generate._can_cache(model, context_len=8, max_new_tokens=10_000)
+    assert not generate._can_cache(model, context_len=TINY.block_size, max_new_tokens=1)
+

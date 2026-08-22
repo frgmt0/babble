@@ -27,7 +27,7 @@ import torch.nn.functional as F
 
 from .config import Settings
 from .core import Generation
-from .cpu_runtime import configure_cpu, force_cpu_device
+from .cpu_runtime import configure_cpu, force_cpu_device, prepare_for_cpu_infer
 from .logs import EventLog, NullLog
 from .model import Babbler, KVCache, ModelConfig, config_from_settings, per_token_loss
 from .subword import BPETokenizer, ByteTokenizer, Tokenizer
@@ -229,8 +229,16 @@ def _next_token(
 
 
 def _can_cache(model: Babbler, context_len: int, max_new_tokens: int) -> bool:
-    """KV cache fits when the whole reply stays inside `block_size`."""
-    return context_len + max_new_tokens <= model.config.block_size
+    """Use the KV cache whenever the prompt itself still fits in `block_size`.
+
+    Older logic required `context + max_new_tokens <= block_size`, which
+    silently fell back to full-prefix attention for any long Discord prompt
+    even when hundreds of cached slots were still free. Decode now caches
+    up to `block_size`, then continues on the sliding-window path if the
+    window fills so `max_new_tokens` is not silently truncated.
+    """
+    del max_new_tokens
+    return context_len < model.config.block_size and hasattr(model, "new_cache")
 
 
 # --- the decoder ---------------------------------------------------------
@@ -269,17 +277,16 @@ def _decode_from(
     try:
         context = list(context)
         produced: list[int] = []
-        use_cache = _can_cache(model, len(context), max_new_tokens) and hasattr(
-            model, "new_cache"
-        )
+        seen = torch.tensor([context], dtype=torch.long)
+        use_cache = _can_cache(model, len(context), max_new_tokens)
+        remaining = max_new_tokens
         if use_cache:
             cache: KVCache | None = model.new_cache(
-                1, max_len=len(context) + max_new_tokens
+                1, max_len=min(model.config.block_size, len(context) + max_new_tokens)
             )
-            prompt = torch.tensor([context], dtype=torch.long)
-            logits = model(prompt, cache=cache)[:, -1]
-            seen = prompt
-            for _ in range(max_new_tokens):
+            logits = model(seen, cache=cache)[:, -1]
+            step = torch.empty((1, 1), dtype=torch.long)
+            for _ in range(remaining):
                 nxt = int(
                     _next_token(
                         logits,
@@ -295,22 +302,25 @@ def _decode_from(
                         no_repeat_ngram_size=no_repeat_ngram_size,
                     )[0]
                 )
+                remaining -= 1
                 if nxt == eos_id:
-                    break
+                    return tok.decode(produced)
                 produced.append(nxt)
                 context.append(nxt)
-                seen = torch.cat(
-                    [seen, torch.tensor([[nxt]], dtype=torch.long)], dim=1
-                )
-                logits = model(
-                    torch.tensor([[nxt]], dtype=torch.long), cache=cache
-                )[:, -1]
-            return tok.decode(produced)
+                seen = torch.cat([seen, torch.tensor([[nxt]], dtype=torch.long)], dim=1)
+                if cache.length >= cache.max_len:
+                    break
+                step[0, 0] = nxt
+                logits = model(step, cache=cache)[:, -1]
+            else:
+                return tok.decode(produced)
 
-        seen = torch.tensor([context], dtype=torch.long)
-        for _ in range(max_new_tokens):
+        window_t = torch.empty((1, model.config.block_size), dtype=torch.long)
+        while remaining > 0:
             window = context[-model.config.block_size :]
-            logits = model(torch.tensor([window], dtype=torch.long))[:, -1]
+            nwin = len(window)
+            window_t[0, :nwin].copy_(torch.as_tensor(window, dtype=torch.long))
+            logits = model(window_t[:, :nwin])[:, -1]
             nxt = int(
                 _next_token(
                     logits,
@@ -326,6 +336,7 @@ def _decode_from(
                     no_repeat_ngram_size=no_repeat_ngram_size,
                 )[0]
             )
+            remaining -= 1
             if nxt == eos_id:
                 break
             produced.append(nxt)
@@ -373,43 +384,47 @@ def _decode_many_from(
     try:
         produced: list[list[int]] = [[] for _ in range(n)]
         finished = torch.zeros(n, dtype=torch.bool)
-        use_cache = _can_cache(model, len(context), max_new_tokens) and hasattr(
-            model, "new_cache"
-        )
+        tokens = torch.tensor([list(context)], dtype=torch.long).repeat(n, 1)
+        use_cache = _can_cache(model, len(context), max_new_tokens)
+        remaining = max_new_tokens
 
         if use_cache:
             cache: KVCache | None = model.new_cache(
-                n, max_len=len(context) + max_new_tokens
+                n, max_len=min(model.config.block_size, len(context) + max_new_tokens)
             )
-            prompt = torch.tensor([list(context)], dtype=torch.long).repeat(n, 1)
-            logits = model(prompt, cache=cache)[:, -1]
-            seen = prompt
-            for _ in range(max_new_tokens):
+            logits = model(tokens, cache=cache)[:, -1]
+            step = torch.empty((n, 1), dtype=torch.long)
+            for _ in range(remaining):
                 nxt = _next_token(
                     logits,
                     temperature,
                     top_k,
                     generator,
                     banned,
-                    seen=seen,
+                    seen=tokens,
                     repetition_penalty=repetition_penalty,
                     top_p=top_p,
                     frequency_penalty=frequency_penalty,
                     presence_penalty=presence_penalty,
                     no_repeat_ngram_size=no_repeat_ngram_size,
                 )
-                for i in range(n):
-                    if not finished[i] and int(nxt[i]) != eos_id:
-                        produced[i].append(int(nxt[i]))
+                remaining -= 1
+                ids = nxt.tolist()
+                for i, nid in enumerate(ids):
+                    if not finished[i] and nid != eos_id:
+                        produced[i].append(nid)
                 finished |= nxt == eos_id
+                tokens = torch.cat([tokens, nxt[:, None]], dim=1)
                 if bool(finished.all()):
+                    return [tok.decode(row) for row in produced]
+                if cache.length >= cache.max_len:
                     break
-                seen = torch.cat([seen, nxt[:, None]], dim=1)
-                logits = model(nxt[:, None], cache=cache)[:, -1]
-            return [tok.decode(row) for row in produced]
+                step[:, 0] = nxt
+                logits = model(step, cache=cache)[:, -1]
+            else:
+                return [tok.decode(row) for row in produced]
 
-        tokens = torch.tensor([list(context)], dtype=torch.long).repeat(n, 1)
-        for _ in range(max_new_tokens):
+        for _ in range(remaining):
             window = tokens[:, -model.config.block_size :]
             nxt = _next_token(
                 model(window)[:, -1],
@@ -498,13 +513,13 @@ def continue_text(
         max_new_tokens=max_new_tokens,
         temperature=temperature,
         top_k=top_k,
-        top_p=top_p,
-        repetition_penalty=repetition_penalty,
         frequency_penalty=frequency_penalty,
         presence_penalty=presence_penalty,
         no_repeat_ngram_size=no_repeat_ngram_size,
         generator=generator,
         tok=tok,
+        top_p=top_p,
+        repetition_penalty=repetition_penalty,
     )
 
 
@@ -532,13 +547,13 @@ def continue_many(
         max_new_tokens=max_new_tokens,
         temperature=temperature,
         top_k=top_k,
-        top_p=top_p,
-        repetition_penalty=repetition_penalty,
         frequency_penalty=frequency_penalty,
         presence_penalty=presence_penalty,
         no_repeat_ngram_size=no_repeat_ngram_size,
         generator=generator,
         tok=tok,
+        top_p=top_p,
+        repetition_penalty=repetition_penalty,
     )
 
 
@@ -653,13 +668,13 @@ def sample(
         max_new_tokens=max_new_tokens,
         temperature=temperature,
         top_k=top_k,
-        top_p=top_p,
-        repetition_penalty=repetition_penalty,
         frequency_penalty=frequency_penalty,
         presence_penalty=presence_penalty,
         no_repeat_ngram_size=no_repeat_ngram_size,
         generator=generator,
         tok=tok,
+        top_p=top_p,
+        repetition_penalty=repetition_penalty,
     )
 
 
@@ -687,13 +702,13 @@ def sample_many(
         max_new_tokens=max_new_tokens,
         temperature=temperature,
         top_k=top_k,
-        top_p=top_p,
-        repetition_penalty=repetition_penalty,
         frequency_penalty=frequency_penalty,
         presence_penalty=presence_penalty,
         no_repeat_ngram_size=no_repeat_ngram_size,
         generator=generator,
         tok=tok,
+        top_p=top_p,
+        repetition_penalty=repetition_penalty,
     )
 
 
@@ -781,13 +796,14 @@ def load_model(settings: Settings) -> tuple[Babbler, int]:
     pure noise, which is the honest state of a model that has learned nothing.
     Always lands on CPU — babble never offloads inference to a GPU.
     """
-    configure_cpu(getattr(settings, "train_threads", None))
+    configure_cpu(getattr(settings, "infer_threads", None) or getattr(settings, "train_threads", None))
     device = force_cpu_device()
     path = settings.latest_checkpoint
     if not path.exists():
         model = Babbler(config_from_settings(settings)).to(device)
         model.tokenizer = ByteTokenizer()
         model.eval()
+        model = prepare_for_cpu_infer(model)
         return model, 0
     payload = torch.load(path, map_location=device, weights_only=True)
     cfg = ModelConfig.from_dict(payload["config"])
@@ -797,6 +813,7 @@ def load_model(settings: Settings) -> tuple[Babbler, int]:
     model.tokenizer = tok
     model.to(device)
     model.eval()
+    model = prepare_for_cpu_infer(model)
     return model, int(payload.get("step", 0))
 
 
@@ -821,7 +838,7 @@ class CheckpointGenerator:
         self._mtime: tuple[float | None, float | None] | None = None
         # Bot replies share the machine with everything else; keep inference on
         # the same capped thread count the trainer uses so we never stampede.
-        configure_cpu(settings.train_threads)
+        configure_cpu(getattr(settings, "infer_threads", None) or settings.train_threads)
 
     @property
     def step(self) -> int:

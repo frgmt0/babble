@@ -66,6 +66,10 @@ class Settings:
 
     # Trainer politeness. These exist so the box stays usable while it learns.
     train_threads: int = 2
+    # Decode is bandwidth-bound on the 34M model; 4 intra-op threads is the
+    # measured peak on this 4c/8t box. 8 threads collapse. Training stays at
+    # `train_threads` so a voice pass does not steal the machine.
+    infer_threads: int = 4
     train_nice: int = 19
     checkpoint_every: int = 50
     keep_checkpoints: int = 5
@@ -315,6 +319,7 @@ class Settings:
             export_dir=_env_path("BABBLE_EXPORT_DIR", root / "export"),
             log_dir=_env_path("BABBLE_LOG_DIR", root / "logs"),
             train_threads=_env_int("BABBLE_TRAIN_THREADS", 2),
+            infer_threads=_env_int("BABBLE_INFER_THREADS", 4),
             train_nice=_env_int("BABBLE_TRAIN_NICE", 19),
             checkpoint_every=_env_int("BABBLE_CHECKPOINT_EVERY", 50),
             keep_checkpoints=_env_int("BABBLE_KEEP_CHECKPOINTS", 5),

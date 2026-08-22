@@ -89,9 +89,10 @@ _TORCH_BASELINE_RSS_KB = _rss_kb()
 from babble.config import Settings  # noqa: E402
 from babble.cpu_runtime import configure_cpu, force_cpu_device  # noqa: E402
 from babble.corpus import CorpusStore  # noqa: E402
-from babble.generate import best_continuation  # noqa: E402
+from babble.generate import best_continuation, tokenizer_for_checkpoint  # noqa: E402
 from babble.model import Babbler, ModelConfig, config_from_settings  # noqa: E402
-from babble.tokenizer import text_context  # noqa: E402
+from babble.subword import text_context as tok_text_context  # noqa: E402
+from babble.tokenizer import text_context as byte_text_context  # noqa: E402
 from babble.trainer import corpus_rows  # noqa: E402
 
 CLK_TCK = os.sysconf("SC_CLK_TCK")
@@ -162,9 +163,17 @@ def load_model(settings: Settings, checkpoint: Path | None) -> tuple[Babbler, st
     payload = torch.load(path, map_location=device, weights_only=True)
     model = Babbler(ModelConfig.from_dict(payload["config"]))
     model.load_state_dict(payload["model"])
+    model.tokenizer = tokenizer_for_checkpoint(path, model.config.vocab_size)
     model.to(device)
     model.eval()
     return model, label, int(payload.get("step", 0))
+
+
+def _context(model: Babbler, text: str) -> list[int]:
+    tok = getattr(model, "tokenizer", None)
+    if tok is None:
+        return byte_text_context(text, model.config.block_size)
+    return tok_text_context(tok, text, model.config.block_size)
 
 
 def pick_prompts(settings: Settings) -> tuple[str, list[str]]:
@@ -278,7 +287,7 @@ def run_infer(
     model, source, step = load_model(settings, checkpoint)
     rss_model_idle = _rss_kb()
     canonical, spread = pick_prompts(settings)
-    ctx = text_context(canonical, model.config.block_size)
+    ctx = _context(model, canonical)
 
     # Warm up: first touch of each code path pays lazy-init and allocator costs
     # we do not want folded into the steady-state medians.
@@ -306,7 +315,7 @@ def run_infer(
     # Prompt-length sensitivity of TTFT (prefill is O(prompt length)).
     ttft_by_len = []
     for p in spread:
-        pctx = text_context(p, model.config.block_size)
+        pctx = _context(model, p)
         samples = [decode_cached(model, pctx, max_new_tokens).ttft_s * 1000
                    for _ in range(max(5, runs // 3))]
         ttft_by_len.append({"prompt_chars": len(p), "ctx_tokens": len(pctx),
@@ -370,7 +379,7 @@ def _coldwarm_main(settings: Settings, checkpoint: Path | None, max_new_tokens: 
     model, source, _ = load_model(settings, checkpoint)
     load_s = time.perf_counter() - t_load0
     canonical, _ = pick_prompts(settings)
-    ctx = text_context(canonical, model.config.block_size)
+    ctx = _context(model, canonical)
 
     t_first0 = time.perf_counter()
     first = decode_cached(model, ctx, max_new_tokens)
