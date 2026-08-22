@@ -27,7 +27,7 @@ import torch.nn.functional as F
 
 from .config import Settings
 from .core import Generation
-from .cpu_runtime import configure_cpu, force_cpu_device
+from .cpu_runtime import configure_cpu, force_cpu_device, prepare_for_cpu_infer
 from .logs import EventLog, NullLog
 from .model import Babbler, KVCache, ModelConfig, config_from_settings, per_token_loss
 from .subword import BPETokenizer, ByteTokenizer, Tokenizer
@@ -90,36 +90,89 @@ def _banned_ids(tok: Tokenizer) -> list[int]:
     return [tok.specials.pad, tok.specials.bos, tok.specials.sep]
 
 
+def _apply_repetition_penalty(
+    logits: torch.Tensor, seen: torch.Tensor | None, penalty: float
+) -> torch.Tensor:
+    """HuggingFace-style penalty on tokens already in the prompt or completion.
+
+    Positive logits are divided by `penalty`, negative logits are multiplied,
+    so already-seen tokens become less likely without flipping their sign.
+    `penalty == 1` is a no-op.
+    """
+    if penalty == 1.0 or seen is None or seen.numel() == 0:
+        return logits
+    if seen.dim() == 1:
+        seen = seen.unsqueeze(0)
+    logits = logits.clone()
+    for i in range(logits.size(0)):
+        uniq = seen[i].unique()
+        scores = logits[i].index_select(0, uniq)
+        logits[i].index_copy_(
+            0, uniq, torch.where(scores < 0, scores * penalty, scores / penalty)
+        )
+    return logits
+
+
+def _apply_top_p(logits: torch.Tensor, top_p: float) -> torch.Tensor:
+    """Nucleus mask: keep the smallest prefix of tokens whose mass >= `top_p`."""
+    if not (0.0 < top_p < 1.0):
+        return logits
+    sorted_logits, sorted_idx = torch.sort(logits, dim=-1, descending=True)
+    cumulative = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+    remove = cumulative > top_p
+    # Always keep the highest-probability token, then drop the tail that
+    # pushed the running mass over the nucleus.
+    remove[..., 1:] = remove[..., :-1].clone()
+    remove[..., 0] = False
+    sorted_logits = sorted_logits.masked_fill(remove, float("-inf"))
+    return torch.full_like(logits, float("-inf")).scatter(-1, sorted_idx, sorted_logits)
+
+
 def _next_token(
     logits: torch.Tensor,
     temperature: float,
     top_k: int,
     generator: torch.Generator | None,
     banned: list[int] | None = None,
+    *,
+    seen: torch.Tensor | None = None,
+    repetition_penalty: float = 1.0,
+    top_p: float = 1.0,
 ) -> torch.Tensor:
     """One sampling step over a `(batch, vocab)` block of logits.
 
     Shared by the single and batched samplers so there is exactly one place
-    where temperature, top_k and the banned structural tokens are applied.
-    Vocab is only 260 on the byte path, so a full-softmax over the top-k-masked
-    row stays cheap; keeping the classic mask-then-softmax path preserves the
-    RNG behaviour the tests (and the live bot) already depend on.
+    where temperature, top_k, top_p, repetition penalty and the banned
+    structural tokens are applied. Vocab is only 260 on the byte path, so a
+    full-softmax over the top-k-masked row stays cheap; keeping the classic
+    mask-then-softmax path preserves the RNG behaviour the tests (and the
+    live bot) already depend on when top_p is 1 and the penalty is 1.
     """
     logits = logits.clone()
     logits[:, banned if banned is not None else _BANNED] = float("-inf")
+    logits = _apply_repetition_penalty(logits, seen, repetition_penalty)
     if temperature <= 0:
         return logits.argmax(dim=-1)
     logits = logits / temperature
     if top_k and 0 < top_k < logits.size(-1):
         cutoff = torch.topk(logits, top_k, dim=-1).values[:, -1:]
         logits = logits.masked_fill(logits < cutoff, float("-inf"))
+    logits = _apply_top_p(logits, top_p)
     probs = F.softmax(logits, dim=-1)
     return torch.multinomial(probs, num_samples=1, generator=generator).squeeze(-1)
 
 
 def _can_cache(model: Babbler, context_len: int, max_new_tokens: int) -> bool:
-    """KV cache fits when the whole reply stays inside `block_size`."""
-    return context_len + max_new_tokens <= model.config.block_size
+    """Use the KV cache whenever the prompt itself still fits in `block_size`.
+
+    Older logic required `context + max_new_tokens <= block_size`, which
+    silently fell back to full-prefix attention for any long Discord prompt
+    even when hundreds of cached slots were still free. Decode now caches
+    up to `block_size`, then continues on the sliding-window path if the
+    window fills so `max_new_tokens` is not silently truncated.
+    """
+    del max_new_tokens
+    return context_len < model.config.block_size and hasattr(model, "new_cache")
 
 
 # --- the decoder ---------------------------------------------------------
@@ -135,6 +188,8 @@ def _decode_from(
     top_k: int,
     generator: torch.Generator | None,
     tok: Tokenizer | None = None,
+    top_p: float = 1.0,
+    repetition_penalty: float = 1.0,
 ) -> str:
     """Continue `context` one token at a time until <eos>.
 
@@ -153,34 +208,65 @@ def _decode_from(
     try:
         context = list(context)
         produced: list[int] = []
-        use_cache = _can_cache(model, len(context), max_new_tokens) and hasattr(
-            model, "new_cache"
-        )
+        seen = torch.tensor([context], dtype=torch.long)
+        use_cache = _can_cache(model, len(context), max_new_tokens)
+        remaining = max_new_tokens
         if use_cache:
             cache: KVCache | None = model.new_cache(
-                1, max_len=len(context) + max_new_tokens
+                1, max_len=min(model.config.block_size, len(context) + max_new_tokens)
             )
-            prompt = torch.tensor([context], dtype=torch.long)
-            logits = model(prompt, cache=cache)[:, -1]
-            for _ in range(max_new_tokens):
-                nxt = int(_next_token(logits, temperature, top_k, generator, banned)[0])
+            logits = model(seen, cache=cache)[:, -1]
+            step = torch.empty((1, 1), dtype=torch.long)
+            for _ in range(remaining):
+                nxt = int(
+                    _next_token(
+                        logits,
+                        temperature,
+                        top_k,
+                        generator,
+                        banned,
+                        seen=seen,
+                        repetition_penalty=repetition_penalty,
+                        top_p=top_p,
+                    )[0]
+                )
+                remaining -= 1
                 if nxt == eos_id:
-                    break
+                    return tok.decode(produced)
                 produced.append(nxt)
                 context.append(nxt)
-                logits = model(
-                    torch.tensor([[nxt]], dtype=torch.long), cache=cache
-                )[:, -1]
-            return tok.decode(produced)
+                seen = torch.cat([seen, torch.tensor([[nxt]], dtype=torch.long)], dim=1)
+                if cache.length >= cache.max_len:
+                    break
+                step[0, 0] = nxt
+                logits = model(step, cache=cache)[:, -1]
+            else:
+                return tok.decode(produced)
 
-        for _ in range(max_new_tokens):
+        window_t = torch.empty((1, model.config.block_size), dtype=torch.long)
+        while remaining > 0:
             window = context[-model.config.block_size :]
-            logits = model(torch.tensor([window], dtype=torch.long))[:, -1]
-            nxt = int(_next_token(logits, temperature, top_k, generator, banned)[0])
+            nwin = len(window)
+            window_t[0, :nwin].copy_(torch.as_tensor(window, dtype=torch.long))
+            logits = model(window_t[:, :nwin])[:, -1]
+            nxt = int(
+                _next_token(
+                    logits,
+                    temperature,
+                    top_k,
+                    generator,
+                    banned,
+                    seen=seen,
+                    repetition_penalty=repetition_penalty,
+                    top_p=top_p,
+                )[0]
+            )
+            remaining -= 1
             if nxt == eos_id:
                 break
             produced.append(nxt)
             context.append(nxt)
+            seen = torch.cat([seen, torch.tensor([[nxt]], dtype=torch.long)], dim=1)
         return tok.decode(produced)
     finally:
         model.train(was_training)
@@ -197,6 +283,8 @@ def _decode_many_from(
     top_k: int,
     generator: torch.Generator | None,
     tok: Tokenizer | None = None,
+    top_p: float = 1.0,
+    repetition_penalty: float = 1.0,
 ) -> list[str]:
     """`n` independent continuations of the same context, in one batched pass.
 
@@ -218,31 +306,55 @@ def _decode_many_from(
     try:
         produced: list[list[int]] = [[] for _ in range(n)]
         finished = torch.zeros(n, dtype=torch.bool)
-        use_cache = _can_cache(model, len(context), max_new_tokens) and hasattr(
-            model, "new_cache"
-        )
+        tokens = torch.tensor([list(context)], dtype=torch.long).repeat(n, 1)
+        use_cache = _can_cache(model, len(context), max_new_tokens)
+        remaining = max_new_tokens
 
         if use_cache:
             cache: KVCache | None = model.new_cache(
-                n, max_len=len(context) + max_new_tokens
+                n, max_len=min(model.config.block_size, len(context) + max_new_tokens)
             )
-            prompt = torch.tensor([list(context)], dtype=torch.long).repeat(n, 1)
-            logits = model(prompt, cache=cache)[:, -1]
-            for _ in range(max_new_tokens):
-                nxt = _next_token(logits, temperature, top_k, generator, banned)
-                for i in range(n):
-                    if not finished[i] and int(nxt[i]) != eos_id:
-                        produced[i].append(int(nxt[i]))
+            logits = model(tokens, cache=cache)[:, -1]
+            step = torch.empty((n, 1), dtype=torch.long)
+            for _ in range(remaining):
+                nxt = _next_token(
+                    logits,
+                    temperature,
+                    top_k,
+                    generator,
+                    banned,
+                    seen=tokens,
+                    repetition_penalty=repetition_penalty,
+                    top_p=top_p,
+                )
+                remaining -= 1
+                ids = nxt.tolist()
+                for i, nid in enumerate(ids):
+                    if not finished[i] and nid != eos_id:
+                        produced[i].append(nid)
                 finished |= nxt == eos_id
+                tokens = torch.cat([tokens, nxt[:, None]], dim=1)
                 if bool(finished.all()):
+                    return [tok.decode(row) for row in produced]
+                if cache.length >= cache.max_len:
                     break
-                logits = model(nxt[:, None], cache=cache)[:, -1]
-            return [tok.decode(row) for row in produced]
+                step[:, 0] = nxt
+                logits = model(step, cache=cache)[:, -1]
+            else:
+                return [tok.decode(row) for row in produced]
 
-        tokens = torch.tensor([list(context)], dtype=torch.long).repeat(n, 1)
-        for _ in range(max_new_tokens):
+        for _ in range(remaining):
             window = tokens[:, -model.config.block_size :]
-            nxt = _next_token(model(window)[:, -1], temperature, top_k, generator, banned)
+            nxt = _next_token(
+                model(window)[:, -1],
+                temperature,
+                top_k,
+                generator,
+                banned,
+                seen=tokens,
+                repetition_penalty=repetition_penalty,
+                top_p=top_p,
+            )
             # A row that has already emitted <eos> keeps being fed -- rows are
             # independent inside the batch, so its continuation is ignored
             # rather than removed.
@@ -302,6 +414,8 @@ def continue_text(
     max_new_tokens: int = 96,
     temperature: float = 0.5,
     top_k: int = 40,
+    top_p: float = 1.0,
+    repetition_penalty: float = 1.0,
     generator: torch.Generator | None = None,
 ) -> str:
     """Keep writing after `prefix`, in the layout the corpus objective trains."""
@@ -314,6 +428,8 @@ def continue_text(
         top_k=top_k,
         generator=generator,
         tok=tok,
+        top_p=top_p,
+        repetition_penalty=repetition_penalty,
     )
 
 
@@ -325,6 +441,8 @@ def continue_many(
     max_new_tokens: int = 96,
     temperature: float = 0.5,
     top_k: int = 40,
+    top_p: float = 1.0,
+    repetition_penalty: float = 1.0,
     generator: torch.Generator | None = None,
 ) -> list[str]:
     """`n` independent continuations of `prefix`, in one batched pass."""
@@ -338,6 +456,8 @@ def continue_many(
         top_k=top_k,
         generator=generator,
         tok=tok,
+        top_p=top_p,
+        repetition_penalty=repetition_penalty,
     )
 
 
@@ -359,6 +479,8 @@ def best_continuation(
     max_new_tokens: int = 96,
     temperature: float = 0.5,
     top_k: int = 40,
+    top_p: float = 1.0,
+    repetition_penalty: float = 1.0,
     generator: torch.Generator | None = None,
 ) -> str:
     """Draw `n` continuations of `prefix` and keep the one the model likes best.
@@ -374,6 +496,8 @@ def best_continuation(
             max_new_tokens=max_new_tokens,
             temperature=temperature,
             top_k=top_k,
+            top_p=top_p,
+            repetition_penalty=repetition_penalty,
             generator=generator,
         )
     candidates = continue_many(
@@ -383,6 +507,8 @@ def best_continuation(
         max_new_tokens=max_new_tokens,
         temperature=temperature,
         top_k=top_k,
+        top_p=top_p,
+        repetition_penalty=repetition_penalty,
         generator=generator,
     )
     real = [c for c in candidates if c]
@@ -422,6 +548,8 @@ def sample(
     max_new_tokens: int = 96,
     temperature: float = 1.0,
     top_k: int = 40,
+    top_p: float = 1.0,
+    repetition_penalty: float = 1.0,
     generator: torch.Generator | None = None,
 ) -> str:
     """Continue `<bos> prompt <sep>` one token at a time until <eos>."""
@@ -434,6 +562,8 @@ def sample(
         top_k=top_k,
         generator=generator,
         tok=tok,
+        top_p=top_p,
+        repetition_penalty=repetition_penalty,
     )
 
 
@@ -445,6 +575,8 @@ def sample_many(
     max_new_tokens: int = 96,
     temperature: float = 0.5,
     top_k: int = 40,
+    top_p: float = 1.0,
+    repetition_penalty: float = 1.0,
     generator: torch.Generator | None = None,
 ) -> list[str]:
     """`n` independent responses to the same prompt, in one batched pass."""
@@ -458,6 +590,8 @@ def sample_many(
         top_k=top_k,
         generator=generator,
         tok=tok,
+        top_p=top_p,
+        repetition_penalty=repetition_penalty,
     )
 
 
@@ -489,6 +623,8 @@ def best_of(
     max_new_tokens: int = 96,
     temperature: float = 0.5,
     top_k: int = 40,
+    top_p: float = 1.0,
+    repetition_penalty: float = 1.0,
     generator: torch.Generator | None = None,
 ) -> str:
     """Draw `n` answers to `prompt` and keep the one the model scores best.
@@ -503,6 +639,8 @@ def best_of(
             max_new_tokens=max_new_tokens,
             temperature=temperature,
             top_k=top_k,
+            top_p=top_p,
+            repetition_penalty=repetition_penalty,
             generator=generator,
         )
     candidates = sample_many(
@@ -512,6 +650,8 @@ def best_of(
         max_new_tokens=max_new_tokens,
         temperature=temperature,
         top_k=top_k,
+        top_p=top_p,
+        repetition_penalty=repetition_penalty,
         generator=generator,
     )
     real = [c for c in candidates if c]
@@ -530,13 +670,14 @@ def load_model(settings: Settings) -> tuple[Babbler, int]:
     pure noise, which is the honest state of a model that has learned nothing.
     Always lands on CPU — babble never offloads inference to a GPU.
     """
-    configure_cpu(getattr(settings, "train_threads", None))
+    configure_cpu(getattr(settings, "infer_threads", None) or getattr(settings, "train_threads", None))
     device = force_cpu_device()
     path = settings.latest_checkpoint
     if not path.exists():
         model = Babbler(config_from_settings(settings)).to(device)
         model.tokenizer = ByteTokenizer()
         model.eval()
+        model = prepare_for_cpu_infer(model)
         return model, 0
     payload = torch.load(path, map_location=device, weights_only=True)
     cfg = ModelConfig.from_dict(payload["config"])
@@ -546,6 +687,7 @@ def load_model(settings: Settings) -> tuple[Babbler, int]:
     model.tokenizer = tok
     model.to(device)
     model.eval()
+    model = prepare_for_cpu_infer(model)
     return model, int(payload.get("step", 0))
 
 
@@ -570,7 +712,7 @@ class CheckpointGenerator:
         self._mtime: tuple[float | None, float | None] | None = None
         # Bot replies share the machine with everything else; keep inference on
         # the same capped thread count the trainer uses so we never stampede.
-        configure_cpu(settings.train_threads)
+        configure_cpu(getattr(settings, "infer_threads", None) or settings.train_threads)
 
     @property
     def step(self) -> int:
@@ -609,12 +751,16 @@ class CheckpointGenerator:
             max_new_tokens=self.settings.max_new_tokens,
             temperature=self.settings.temperature,
             top_k=self.settings.top_k,
+            top_p=self.settings.top_p,
+            repetition_penalty=self.settings.repetition_penalty,
         )
         return Generation(
             text=text,
             step=self._step,
             temperature=self.settings.temperature,
             top_k=self.settings.top_k,
+            top_p=self.settings.top_p,
+            repetition_penalty=self.settings.repetition_penalty,
             max_new_tokens=self.settings.max_new_tokens,
             ms=(time.perf_counter() - started) * 1000,
         )

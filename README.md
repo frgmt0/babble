@@ -788,8 +788,12 @@ cannot afford the decode cost.
   at `max_new_tokens=64`, 9.4× at 128, 15.1× at the shipped default of 256 —
   the longer the reply, the more the cache is worth.
 - **oneDNN / MKL-DNN**, denormal flushing, and a capped thread count from
-  `be_polite` / `CheckpointGenerator` (this model is too small to feed eight
-  threads — the cap is itself a speedup).
+  `be_polite` / `CheckpointGenerator`. Inference defaults to 4 threads
+  (`BABBLE_INFER_THREADS`); training stays at 2. Eight threads is a regression
+  on this box (see `CPU_INFERENCE.md`).
+- **Dynamic int8 Linears** at load (`BABBLE_QUANTIZE=0` to keep fp32). On the
+  34.1M live checkpoint that is ~2× tok/s at +0.003 bits/char. `torch.compile`
+  stays off: ~35 s to first forward.
 - **tanh-approx GELU**, `Identity` instead of `Dropout(0)`, tied embeddings,
   bias-free projections — fewer ops for the same 3.3M-param shape. The GELU
   form is a decode-shape win and a train-shape loss on this box: at `T=1` it
@@ -1110,7 +1114,9 @@ The knobs that decide what the bot sounds like:
 | variable | default | what it does |
 | --- | --- | --- |
 | `BABBLE_TEMPERATURE` | `0.5` | sampling temperature — [`1.0` was the babble](#why-it-babbled-at-loss-002) |
-| `BABBLE_TOP_K` | `40` | truncate sampling to the top k bytes |
+| `BABBLE_TOP_K` | `40` | truncate sampling to the top k tokens |
+| `BABBLE_TOP_P` | `0.9` | nucleus sampling; `1.0` disables it (top-k still applies) |
+| `BABBLE_REPETITION_PENALTY` | `1.15` | HF-style penalty on prompt + generated tokens; `1.0` disables it |
 | `BABBLE_MAX_NEW_TOKENS` | `256` | longest reply, in bytes |
 | `BABBLE_BLOCK_SIZE` | `512` | context window in bytes; changing it [invalidates checkpoints](#pretraining) (harmless -- every run starts from random init) |
 | `BABBLE_TRAIN_TRIGGER_ROWS` | `100` | new corpus rows that [re-fire training](#pretraining); `0` = manual only |
@@ -1132,8 +1138,10 @@ The knobs that decide what the bot sounds like:
 | `BABBLE_POST_GATE_MARGIN` | `0.05` | [promotion gate](#post-training-on-the-correction-pairs): a candidate worse than the pretrain snapshot by more than this on held-out corpus val is not written to `latest.pt`; negative disables |
 | `BABBLE_POST_LAYOUT` | `continuation` | what post-train teaches: `continuation` (the layout serving actually uses) or `pair` (the historical `<bos> prompt <sep> response` layout) |
 | `BABBLE_BEST_OF` | `4` | [candidates drawn per reply](#best-of-n); `1` turns it off |
-| `BABBLE_TRAIN_THREADS` | `2` | CPU threads for train + inference; stays polite on a shared box |
-| `BABBLE_TORCH_COMPILE` | off | set `1` to `torch.compile` the model for a long training run |
+| `BABBLE_TRAIN_THREADS` | `2` | CPU threads for **training** |
+| `BABBLE_INFER_THREADS` | `4` | CPU threads for decode (8 is slower; see `CPU_INFERENCE.md`) |
+| `BABBLE_QUANTIZE` | on | dynamic int8 on Linear layers at load; `0` keeps fp32 |
+| `BABBLE_TORCH_COMPILE` | off | set `1` to `torch.compile` the model (slow first forward) |
 | `BABBLE_VAL_FRACTION` | `0.2` | [share of corpus rows held out](#validation) |
 | `BABBLE_VAL_MIN_ROWS` | `20` | corpus size below which validation is skipped |
 

@@ -66,6 +66,10 @@ class Settings:
 
     # Trainer politeness. These exist so the box stays usable while it learns.
     train_threads: int = 2
+    # Decode is bandwidth-bound on the 34M model; 4 intra-op threads is the
+    # measured peak on this 4c/8t box. 8 threads collapse. Training stays at
+    # `train_threads` so a voice pass does not steal the machine.
+    infer_threads: int = 4
     train_nice: int = 19
     checkpoint_every: int = 50
     keep_checkpoints: int = 5
@@ -108,6 +112,13 @@ class Settings:
     # way back. See "Why it babbled at loss 0.02" in the README.
     temperature: float = 0.5
     top_k: int = 40
+    # Nucleus sampling. 1.0 leaves the distribution alone (top-k still applies).
+    # 0.9 is enough to cut the long tail on a small model without changing the
+    # shipped temperature.
+    top_p: float = 0.9
+    # HuggingFace-style repetition penalty over prompt + generated tokens.
+    # 1.0 is off; 1.15 is enough to break "the world of the world" loops.
+    repetition_penalty: float = 1.15
     # 256, not the old 96: ro asked for a considerably longer reply. The model
     # still stops early on <eos>; this only raises the ceiling.
     max_new_tokens: int = 256
@@ -271,6 +282,7 @@ class Settings:
             export_dir=_env_path("BABBLE_EXPORT_DIR", root / "export"),
             log_dir=_env_path("BABBLE_LOG_DIR", root / "logs"),
             train_threads=_env_int("BABBLE_TRAIN_THREADS", 2),
+            infer_threads=_env_int("BABBLE_INFER_THREADS", 4),
             train_nice=_env_int("BABBLE_TRAIN_NICE", 19),
             checkpoint_every=_env_int("BABBLE_CHECKPOINT_EVERY", 50),
             keep_checkpoints=_env_int("BABBLE_KEEP_CHECKPOINTS", 5),
@@ -284,6 +296,8 @@ class Settings:
             weight_decay=_env_float("BABBLE_WEIGHT_DECAY", 0.01),
             temperature=_env_float("BABBLE_TEMPERATURE", 0.5),
             top_k=_env_int("BABBLE_TOP_K", 40),
+            top_p=_env_float("BABBLE_TOP_P", 0.9),
+            repetition_penalty=_env_float("BABBLE_REPETITION_PENALTY", 1.15),
             max_new_tokens=_env_int("BABBLE_MAX_NEW_TOKENS", 256),
             best_of=_env_int("BABBLE_BEST_OF", 4),
             correction_boost=_env_float("BABBLE_CORRECTION_BOOST", 3.0),
