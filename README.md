@@ -1112,7 +1112,10 @@ The knobs that decide what the bot sounds like:
 | `BABBLE_TEMPERATURE` | `0.5` | sampling temperature — [`1.0` was the babble](#why-it-babbled-at-loss-002) |
 | `BABBLE_TOP_K` | `40` | truncate sampling to the top k tokens |
 | `BABBLE_TOP_P` | `0.9` | nucleus sampling; `1.0` disables it (top-k still applies) |
-| `BABBLE_REPETITION_PENALTY` | `1.15` | HF-style penalty on prompt + generated tokens; `1.0` disables it |
+| `BABBLE_REPETITION_PENALTY` | `1.15` | HF-style penalty on prompt + generated tokens; `1.0` disables it -- **flat**: a token seen 80 times is discounted the same as one seen once |
+| `BABBLE_FREQUENCY_PENALTY` | `0.12` | additive penalty that grows with each repeat (`logit -= frequency_penalty * count`) -- the fix for the flat penalty above letting an induced loop run away; largest value in testing that broke every induced loop without visibly degrading normal replies; `0.0` disables it |
+| `BABBLE_PRESENCE_PENALTY` | `0.0` | flat, one-time additive penalty on anything already seen at all, count aside; off by default -- testing found no loop it stopped that `frequency_penalty` did not already stop |
+| `BABBLE_NO_REPEAT_NGRAM_SIZE` | `0` | hard-ban whichever next token would complete an already-seen n-gram of this size; off by default -- on top of `frequency_penalty=0.12` it only ever fired on ordinary phrase reuse and fragmented otherwise-coherent replies; a last-resort circuit breaker to enable if a future prompt gets past the frequency penalty alone |
 | `BABBLE_MAX_NEW_TOKENS` | `256` | longest reply, in bytes |
 | `BABBLE_BLOCK_SIZE` | `512` | context window in bytes; changing it [invalidates checkpoints](#pretraining) (harmless -- every run starts from random init) |
 | `BABBLE_TRAIN_TRIGGER_ROWS` | `100` | new corpus rows that [re-fire training](#pretraining); `0` = manual only |
@@ -1198,6 +1201,19 @@ for it: a checkout can sit behind `main` — or worse, have its `origin` pointed
 somewhere that will never pull anything real again — while everything still
 *looks* healthy. `deploy/update-live.sh` is a small, idempotent script built to
 run on a timer and catch exactly that:
+
+**Never hand-edit tracked files inside `~/babble-live` directly.** It happened
+once (2026-08-22): a run patched `generate.py` and friends straight into the
+live checkout instead of landing the change on `main`, which left `git
+status` dirty and silently blocked `babble-update.timer`'s own drift check
+(`"working tree has uncommitted tracked changes -- refusing to merge"`,
+logged every five minutes) — so two full merged PRs' worth of fixes sat on
+`main` while the channel was told they were live. Land the change on `main`
+like any other change, then either wait for the timer or run `systemctl
+--user start babble-update.service` once to pull it in immediately. If you
+truly need to poke the live checkout by hand for a one-off diagnosis, `git
+checkout -- <file>` (or `git reset --hard origin/main`) before you leave it,
+so the next scheduled check finds a clean tree and can keep doing its job.
 
 - **Fails loudly**, never silently "fixes" anything, if `origin` isn't actually
   `kowo-co/babble` — a wrong remote is the kind of bug that hides for weeks, so

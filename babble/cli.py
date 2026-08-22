@@ -169,6 +169,9 @@ def build_parser() -> argparse.ArgumentParser:
     gen.add_argument("--top-k", type=int, default=None)
     gen.add_argument("--top-p", type=float, default=None)
     gen.add_argument("--repetition-penalty", type=float, default=None)
+    gen.add_argument("--frequency-penalty", type=float, default=None)
+    gen.add_argument("--presence-penalty", type=float, default=None)
+    gen.add_argument("--no-repeat-ngram-size", type=int, default=None)
     gen.add_argument("-c", "--count", type=int, default=1, help="how many samples")
 
     sub.add_parser("curve", help="print the loss curve")
@@ -217,6 +220,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "train":
         from .identity import Pseudonymiser
         from .logs import EventLog
+        from .tokenizer import VOCAB_SIZE
         from .trainer import train
 
         log = EventLog(settings, Pseudonymiser.load(settings), component="trainer", echo=not args.quiet)
@@ -239,6 +243,14 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 f"Not due: {new} new row(s) since the last run "
                 f"(threshold {settings.train_trigger_rows}). Use --force to run anyway.",
+                flush=True,
+            )
+        elif result.stopped_because == "tokenizer_mismatch":
+            print(
+                f"Refused: a tokenizer is promoted for serving at {settings.tokenizer_path} "
+                f"that disagrees with this pretrain path's byte-level (vocab_size {VOCAB_SIZE}) "
+                f"model. {settings.latest_checkpoint} was not touched. Nothing to do here until "
+                f"the promoted tokenizer is retired or this pretrain path is.",
                 flush=True,
             )
         else:
@@ -565,6 +577,21 @@ def main(argv: list[str] | None = None) -> int:
                     settings.repetition_penalty
                     if args.repetition_penalty is None
                     else args.repetition_penalty
+                ),
+                frequency_penalty=(
+                    settings.frequency_penalty
+                    if args.frequency_penalty is None
+                    else args.frequency_penalty
+                ),
+                presence_penalty=(
+                    settings.presence_penalty
+                    if args.presence_penalty is None
+                    else args.presence_penalty
+                ),
+                no_repeat_ngram_size=(
+                    settings.no_repeat_ngram_size
+                    if args.no_repeat_ngram_size is None
+                    else args.no_repeat_ngram_size
                 ),
             )
             print(f"{args.prompt!r} -> {text!r}", flush=True)
