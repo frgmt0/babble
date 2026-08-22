@@ -1,11 +1,10 @@
 """Corpus-trained subword tokenizers: byte-pair encoding and word-level.
 
-Experimental, off the production path -- `babble/tokenizer.py` (raw UTF-8
-bytes) stays the tokenizer the live bot, `core.py`, `generate.py` and
-`trainer.py` use. Nothing in this module is imported by any of them; it exists
-for `experiments/tokenizer_sweep.py`, which asks whether spending fewer,
-bigger tokens on the same 423-row corpus buys anything over spelling English
-one byte at a time. See TOKENIZER_SWAP_REPORT.md.
+`BPETokenizer` is on the serving path when a checkpoint ships a
+`tokenizer.json` beside `latest.pt` (`babble.generate.tokenizer_for_checkpoint`).
+The historical byte tokenizer in `babble/tokenizer.py` remains the default
+when that sidecar is absent. This module also backs `experiments/tokenizer_sweep.py`
+and `post_train_from_checkpoint`.
 
 Both tokenizers keep byte-level's one real virtue -- total coverage, no
 `<unk>` -- by building on top of the same 256 raw byte ids rather than
