@@ -168,13 +168,18 @@ def prepare_for_cpu_infer(
 ) -> nn.Module:
     """Serving-time transforms. Never used on the training path.
 
-    Dynamic int8 is on by default (`BABBLE_QUANTIZE=0` turns it off) after
-    a measured bits/char cost well under the 0.05 budget on the Discord val
-    split. `torch.compile` stays off: the inductor tax on first forward is
-    tens of seconds for a chatbot that must answer immediately after load.
+    Dynamic int8 is off by default (`BABBLE_QUANTIZE=1` turns it on): it is a
+    real ~1.4-2x decode speedup, but it is not free — measured bits/char on
+    the Discord val split moves from the fp32 number by a few thousandths,
+    and this project's bar (set by the #26 repetition-quality work landing
+    alongside this) is that serving quality must not regress by default.
+    Opt in with `BABBLE_QUANTIZE=1` if the speed is worth that tradeoff for
+    your deployment. `torch.compile` stays off: the inductor tax on first
+    forward is tens of seconds for a chatbot that must answer immediately
+    after load.
     """
     if quantize is None:
-        quantize = _env_flag("BABBLE_QUANTIZE", True)
+        quantize = _env_flag("BABBLE_QUANTIZE", False)
     if compile_model is None:
         compile_model = _env_flag("BABBLE_TORCH_COMPILE", False)
     model.eval()
