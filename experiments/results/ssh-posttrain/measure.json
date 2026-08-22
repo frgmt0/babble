@@ -1,0 +1,127 @@
+{
+  "val_rows": 97,
+  "val_chars": 7215,
+  "pretrain": {
+    "mean_nats_per_token": 3.770477771759033,
+    "tokens": 3193,
+    "nats_total": 12039.135525226593,
+    "bits_per_char": 2.4073182423887114,
+    "probes": {
+      "hola": [
+        "hola can be a valuable resource for anyone looking to enhance their fitness and fitness skills.\nWith its intuitive interface and user-friendly interface, it can be optimized for various occasions, ",
+        "hola and the other is the most important part of the process. This is why we should not use the following methods for the future.\nThe best way to get the",
+        "hola and the “pale of the human being,” the “pale of the human being,” the “pale of the human being,” the “pale” of the human"
+      ],
+      "hello": [
+        "hello in the world of the world of digital life. The journey of digital life is a journey that will be both transformative and transformative. At the heart of this ",
+        "hello and the first two of the three is the first of the second half of the two is the second half of the two is the second half of the",
+        "hello and the other thing that was made to be a great deal with the fact that the company was able to deliver the same thing as a result of the"
+      ],
+      "do you want to enter giveway": [
+        "do you want to enter giveway and have a good chance of having a great deal of money. If you are a member of the brand new casino you can also get a great deal of",
+        "do you want to enter giveway and you will be able to get the most out of the internet to be able to play the newest online gambling enterprises for the the best possible and you",
+        "do you want to enter giveway for the new version of the game you are playing in any way that you want to play in the game you are playing in the game. In this case,"
+      ],
+      "why is": [
+        "why is it important to remember that the fact that we do not know what it means to be what we do? You can get the best out of the world ",
+        "why is it important to remember that your dream is not a good idea but it is not a good idea for your dream to be a good idea for your dream",
+        "why is it important to know what I do to do in a good way?\nI believe that you have a great time to start your journey with the help of "
+      ],
+      "the cat": [
+        "the cat. It is a big part of the cat that says the cat is not being seen as a cat. It is a cat that is not seen as a",
+        "the cat of the world. The cat of the world is a human expression of the human body. The cat of the world is a human expression of the human body. The",
+        "the catalyze of the human body. The catalyze of the human body is a form of a human body. It is the form of the human body, a human body"
+      ],
+      "where": [
+        "where to make the most of the most effective and effective solutions for your business. Your goal is to be a good idea for your business. If you are a business",
+        "where it was a big deal to the WiFi market on the NATO market. The price of the WiFi market is a very different and economical and ",
+        "where you are going to be able to find a new one that you are looking for. This is a great way to get to know that you are going to"
+      ]
+    }
+  },
+  "posttrain": {
+    "mean_nats_per_token": 3.3092470169067383,
+    "tokens": 3193,
+    "nats_total": 10566.425724983215,
+    "bits_per_char": 2.1128385299175125,
+    "probes": {
+      "hola": [
+        "hola senorhola senorhola senorhola",
+        "hola is a stupid clanker",
+        "hola is the best of the repo"
+      ],
+      "hello": [
+        "hellohellohellohellohellohellohellohellohellohellohellohellohellohellohellohellohellohellohellohellohellohellohellohellohellohellohellohellohellohellohello",
+        "hello there",
+        "hellohellohellohellohellohellohellohellohellohellohellohellohellohellohellohellohellohellohellohellohellohellohellohellohellohellohellohellohellohellohello"
+      ],
+      "do you want to enter giveway": [
+        "do you want to enter givewayobviously of course. gimme",
+        "do you want to enter giveway",
+        "do you want to enter giveway"
+      ],
+      "why is": [
+        "why is the sky",
+        "why is the sky",
+        "why is the sky"
+      ],
+      "the cat": [
+        "the cat is the cat is the cat is the cat",
+        "the cat is the cat is the cat is the cat",
+        "the cat is the cat is the cat with a cat is the cat with a cat with a cat with a cat with a cat with a cat with a cat"
+      ],
+      "where": [
+        "where are you live",
+        "where is the sky",
+        "where is the sky"
+      ]
+    }
+  },
+  "live_served": {
+    "mean_nats_per_token": 2.491654634475708,
+    "tokens": 7344,
+    "nats_total": 18298.7116355896,
+    "bits_per_char": 3.6589688886101577,
+    "config": {
+      "vocab_size": 260,
+      "block_size": 512,
+      "n_layer": 4,
+      "n_head": 4,
+      "n_embd": 256,
+      "dropout": 0.2
+    },
+    "step": 150,
+    "probes": {
+      "hola": [
+        "l he wed the ber st is blent ber is we whis s avethete w ans",
+        " we dd dod cand sting in ma ode d tha ad and a d the wanghad",
+        "o you it fou we call st pomet wang tor ma ithe or inthe thof"
+      ],
+      "hello": [
+        " who",
+        " is to good too thatar mo cand the athasow thas sond wake mu",
+        " whats ther is ding the hereda the there thenood alor to god"
+      ],
+      "do you want to enter giveway": [
+        "",
+        " the thes woul st s s se thator the worang ar alis the sothe",
+        " an a the woulea int tall anthe ing ase se soure cang sone t"
+      ],
+      "why is": [
+        " that thereve stthe torsthing as ing shathesod it ssh a inge",
+        "s the int thered is wh is whes oo so nor athath t as memas g",
+        " there the"
+      ],
+      "the cat": [
+        "s the crusure in y isou wh thast wou that the isoro sore sul",
+        "s the ther sor the cthe cousk loure thato athe isthis the wo",
+        "llot wake the make d worke s andor that s dathate to me the "
+      ],
+      "where": [
+        " is the sheser leer le mast ishat wor mere go aso jus ton co",
+        " is the ther wat arylis acas the ingou woull d thato soo go ",
+        " se the st st sther o sk chesthist re atis the s isttho so t"
+      ]
+    }
+  }
+}

@@ -1,0 +1,15 @@
+/home/beckett/Projects/babble/.beckett/worktrees/run-20260822-post-train-booper-on-ssh-s-pretrained-ch/.venv/lib/python3.12/site-packages/torch/_subclasses/functional_tensor.py:368: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+2026-08-22T07:13:54+00:00  train.polite           nice=19 threads=2 cpus=8 device=cpu mkldnn=True
+2026-08-22T07:14:24+00:00  post_from_ckpt.start   pairs=53 train_examples=42 val_examples=11 rehearsal=0.5 rehearsal_examples=387 lr=0.0001 block_size=1024 steps=200 patience=3 from_checkpoint=artifacts/hf-booper-pretrain/latest.pt tokenizer=artifacts/hf-booper-pretrain/tokenizer.json
+2026-08-22T07:15:27+00:00  post_from_ckpt.checkpoint step=50 loss=3.14 val_loss=4.8276 corpus_val=3.3864
+[post-ckpt] step      50 | loss   3.1400 | pair val 4.8276 | corpus val 3.3864
+2026-08-22T07:16:31+00:00  post_from_ckpt.checkpoint step=100 loss=1.967 val_loss=4.4814 corpus_val=3.3327
+[post-ckpt] step     100 | loss   1.9670 | pair val 4.4814 | corpus val 3.3327
+2026-08-22T07:17:41+00:00  post_from_ckpt.checkpoint step=150 loss=1.7361 val_loss=3.6628 corpus_val=3.3092
+[post-ckpt] step     150 | loss   1.7361 | pair val 3.6628 | corpus val 3.3092
+2026-08-22T07:18:51+00:00  post_from_ckpt.checkpoint step=200 loss=1.5799 val_loss=3.619 corpus_val=3.3432
+[post-ckpt] step     200 | loss   1.5799 | pair val 3.6190 | corpus val 3.3432
+2026-08-22T07:19:19+00:00  post_from_ckpt.done    step=150 loss=1.7361 val_loss=3.6628 corpus_val_before=3.7705 corpus_val_after=3.3092 promoted=True pairs_trained=53 checkpoints=4 stopped_early=False budget=200
+stage 2 (post-train-from-checkpoint): fine-tuned 53 correction pair(s) from artifacts/hf-booper-pretrain/latest.pt, best checkpoint at step 150 (loss 1.7361, val 3.6628) after 4 checkpoint(s)
+promoted (corpus val 3.3092 vs supplied checkpoint 3.7705) -> /home/beckett/Projects/babble/.beckett/worktrees/run-20260822-post-train-booper-on-ssh-s-pretrained-ch/checkpoints/latest.pt

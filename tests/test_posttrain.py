@@ -791,6 +791,7 @@ def test_post_train_from_checkpoint_loads_and_trains_an_external_pretrain(settin
 
     assert result.ran
     assert result.pairs_trained == len(PAIRS)
+    assert (settings.checkpoint_dir / "post_candidate.pt").exists()
     # This is an ordinary corpus-trained checkpoint against a fresh random
     # BPE-tokenised init, so the gate is expected to sometimes refuse it --
     # what matters here is that the run completed and decided, not which way.

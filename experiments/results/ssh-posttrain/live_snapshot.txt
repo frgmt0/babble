@@ -1,0 +1,8 @@
+copied_at=2026-08-22T07:12:16Z
+8519c57218d4466e93ea6cd927ceb9807078806b2339cc3a73d29894abfa48d9  /home/beckett/babble-live/checkpoints/latest.pt
+43358490dc7823b78b93b9eb0c4e8a6a33855839e6cdfa860b8442dce8c1051b  /home/beckett/babble-live/checkpoints/pretrained.pt
+bce42ebfbaf66e2b8818ab3caf8e1d195d3d2abbba0be96da7959f52ea3e42bc  /home/beckett/babble-live/data/corpus.jsonl
+76f0a2ee9ab9f0531f7977c23358f06ebeb696b298a3326706a092d0eb963ebb  /home/beckett/babble-live/data/interactions.jsonl
+   484 /home/beckett/babble-live/data/corpus.jsonl
+    53 /home/beckett/babble-live/data/interactions.jsonl
+   537 total
