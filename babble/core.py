@@ -246,6 +246,9 @@ class Generation:
     top_k: int = 0
     top_p: float = 1.0
     repetition_penalty: float = 1.0
+    frequency_penalty: float = 0.0
+    presence_penalty: float = 0.0
+    no_repeat_ngram_size: int = 0
     max_new_tokens: int = 0
     ms: float = 0.0
 
@@ -628,6 +631,9 @@ class Babble:
             top_k=generation.top_k,
             top_p=generation.top_p,
             repetition_penalty=generation.repetition_penalty,
+            frequency_penalty=generation.frequency_penalty,
+            presence_penalty=generation.presence_penalty,
+            no_repeat_ngram_size=generation.no_repeat_ngram_size,
             max_new_tokens=generation.max_new_tokens,
             ms=round(generation.ms, 1),
             prompt_chars=preview["chars"],

@@ -230,3 +230,80 @@ def test_repetition_penalty_reduces_repeated_ngrams():
     assert _repeated_ngrams(on) < _repeated_ngrams(off)
     assert overlapping(on) < overlapping(off)
     assert "b" in on and "b" not in off
+
+
+class _StubbornLoopBias(torch.nn.Module):
+    """Gap wide enough that a *flat* repetition penalty can never close it --
+    10/1.15 is still far above -5, so `repetition_penalty` alone loops
+    forever no matter how many times 'a' repeats. Mirrors the live incident:
+    "boop boop boop" in, ~85 consecutive "boop" out, with
+    `BABBLE_REPETITION_PENALTY=1.15` nominally active the whole time.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.config = TINY
+
+    def forward(self, idx: torch.Tensor) -> torch.Tensor:
+        logits = torch.full((idx.shape[0], idx.shape[1], VOCAB_SIZE), -100.0)
+        logits[..., 97] = 10.0  # 'a'
+        logits[..., 98] = -5.0  # 'b' -- /1.15 never brings 'a' this low, but still the
+        # clear second choice once something finally does (everything else is -100)
+        return logits
+
+
+def test_flat_repetition_penalty_alone_cannot_break_a_wide_enough_loop():
+    """Proves the failure mode is real, not hypothetical, before proving the fix."""
+    model = _StubbornLoopBias()
+    text = continue_text(
+        model,
+        "x",
+        max_new_tokens=32,
+        temperature=0.0,
+        top_k=0,
+        top_p=1.0,
+        repetition_penalty=1.15,
+    )
+    assert text == "a" * 32
+
+
+def test_frequency_penalty_breaks_a_loop_flat_repetition_penalty_cannot():
+    model = _StubbornLoopBias()
+    text = continue_text(
+        model,
+        "x",
+        max_new_tokens=32,
+        temperature=0.0,
+        top_k=0,
+        top_p=1.0,
+        repetition_penalty=1.15,
+        frequency_penalty=2.0,
+    )
+    assert "b" in text, "a penalty that grows with count must eventually outweigh a flat one"
+
+
+class _TwoTokenPreference(torch.nn.Module):
+    """Strong preference for 'a', clear second-place 'b', everything else far
+    behind -- so once no-repeat-ngram bans a token, which one wins next is
+    unambiguous."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.config = TINY
+
+    def forward(self, idx: torch.Tensor) -> torch.Tensor:
+        logits = torch.full((idx.shape[0], idx.shape[1], VOCAB_SIZE), -100.0)
+        logits[..., 97] = 10.0  # 'a'
+        logits[..., 98] = 5.0  # 'b'
+        return logits
+
+
+def test_no_repeat_ngram_blocks_a_repeated_bigram():
+    model = _TwoTokenPreference()
+    args = dict(max_new_tokens=8, temperature=0.0, top_k=0, top_p=1.0)
+    off = continue_text(model, "x", no_repeat_ngram_size=0, **args)
+    on = continue_text(model, "x", no_repeat_ngram_size=2, **args)
+
+    assert off == "a" * 8
+    assert on != "a" * 8
+    assert "b" in on

@@ -82,7 +82,8 @@ from .model import (
     per_token_loss,
     sequence_loss,
 )
-from .tokenizer import PAD_ID, Example, text_examples
+from .subword import BPETokenizer
+from .tokenizer import PAD_ID, VOCAB_SIZE, Example, text_examples
 from .util import atomic_write_text, truncate, utcnow_iso
 
 from . import valsplit
@@ -497,6 +498,31 @@ def _build_optimizer(
 SCRATCH_DIR = ".partial"
 
 
+class TokenizerMismatch(RuntimeError):
+    """A checkpoint write was refused because its vocab_size disagrees with
+    the tokenizer promoted for serving next to it.
+
+    Raised instead of silently writing the bad file: this is exactly how a
+    fresh byte-level (vocab 260) pretrain clobbered the promoted BPE (vocab
+    16384) `latest.pt` live on 2026-08-22 -- see DEFECT_3 in the
+    reconciliation PR. `save_checkpoint` is shared by the pretrain loop and
+    `post_train`/`post_train_from_checkpoint`, so this guard protects both.
+    """
+
+
+def served_tokenizer_vocab_size(settings: Settings) -> int | None:
+    """Vocab size of whatever `tokenizer.json` is currently promoted next to
+    `latest.pt`, or `None` if none is promoted (the byte tokenizer is live).
+
+    Cheap: `tokenizer.json` is just the ordered merge list, so loading it to
+    read `vocab_size` costs a JSON parse, not a checkpoint load.
+    """
+    path = settings.tokenizer_path
+    if not path.is_file():
+        return None
+    return BPETokenizer.from_json(path).vocab_size
+
+
 def save_checkpoint(settings: Settings, model: Babbler, optimizer, step: int, loss: float) -> Path:
     """Write `ckpt-NNNNNNN.pt` and repoint `latest.pt`, both atomically.
 
@@ -507,6 +533,11 @@ def save_checkpoint(settings: Settings, model: Babbler, optimizer, step: int, lo
     landing mid-write left it there. Staging elsewhere makes "nothing
     half-written is ever in the checkpoint directory" true by construction
     instead of true by how fast the write happened to be.
+
+    Refuses (`TokenizerMismatch`, nothing written) if a tokenizer is already
+    promoted for serving and this model's own vocab_size disagrees with it --
+    defense in depth alongside the fail-fast check in `train()`, so any other
+    caller of this function (post-train included) gets the same protection.
     """
     settings.checkpoint_dir.mkdir(parents=True, exist_ok=True)
     scratch = settings.checkpoint_dir / SCRATCH_DIR
@@ -520,6 +551,14 @@ def save_checkpoint(settings: Settings, model: Babbler, optimizer, step: int, lo
         "torch_rng": torch.get_rng_state(),
         "saved_at": utcnow_iso(),
     }
+    served_vocab = served_tokenizer_vocab_size(settings)
+    model_vocab = payload["config"].get("vocab_size")
+    if served_vocab is not None and model_vocab != served_vocab:
+        raise TokenizerMismatch(
+            f"refusing to write checkpoint with vocab_size={model_vocab}: the "
+            f"tokenizer promoted for serving at {settings.tokenizer_path} has "
+            f"vocab_size={served_vocab} -- {settings.latest_checkpoint} was not touched"
+        )
     archive = settings.checkpoint_dir / f"ckpt-{step:07d}.pt"
     tmp = scratch / f"{archive.name}.tmp"
     torch.save(payload, tmp)
@@ -804,6 +843,40 @@ def train(
             log.flush()
         return TrainResult(
             False, "not_due", current_rows=status.current_rows, last_trained_rows=status.last_trained_rows
+        )
+
+    # This path always builds a fresh byte-level (vocab_size 260) model from
+    # random init -- see the docstring above. If a BPE (or other learned)
+    # tokenizer is already promoted for serving, that model is incompatible
+    # with what `latest.pt` currently holds; writing over it is exactly the
+    # DEFECT_3 incident (a byte-level checkpoint clobbered a promoted 34M BPE
+    # model live on 2026-08-22). Refuse loudly instead, and advance the
+    # trigger by a full cycle so this does not refire on every subsequent
+    # corpus row -- same cadence as a real run, until a human either retires
+    # this pretrain path or un-promotes the tokenizer.
+    served_vocab = served_tokenizer_vocab_size(settings)
+    if served_vocab is not None and served_vocab != VOCAB_SIZE:
+        log.event(
+            "train.skipped",
+            reason="tokenizer_mismatch",
+            pretrain_vocab=VOCAB_SIZE,
+            served_vocab=served_vocab,
+            tokenizer_path=str(settings.tokenizer_path),
+        )
+        write_train_state(
+            settings,
+            rows=status.current_rows,
+            step=int(read_train_state(settings).get("step", 0)),
+        )
+        if owns_log:
+            log.close()
+        else:
+            log.flush()
+        return TrainResult(
+            False,
+            "tokenizer_mismatch",
+            current_rows=status.current_rows,
+            last_trained_rows=status.current_rows,
         )
 
     # Migrate before reading, so an install that predates the corpus starts
@@ -1148,6 +1221,9 @@ def _checkpoint(
         top_k=settings.top_k,
         top_p=settings.top_p,
         repetition_penalty=settings.repetition_penalty,
+        frequency_penalty=settings.frequency_penalty,
+        presence_penalty=settings.presence_penalty,
+        no_repeat_ngram_size=settings.no_repeat_ngram_size,
     )
     # What the running mean hides: which example is worst. `_example_owner`
     # walks the rows the same way `to_examples` did, so a long row that became

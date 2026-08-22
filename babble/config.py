@@ -113,8 +113,45 @@ class Settings:
     # shipped temperature.
     top_p: float = 0.9
     # HuggingFace-style repetition penalty over prompt + generated tokens.
-    # 1.0 is off; 1.15 is enough to break "the world of the world" loops.
+    # 1.0 is off; 1.15 is enough to break "the world of the world" loops --
+    # but it is a *flat* per-unique-token divisor, so a token seen 80 times
+    # is discounted exactly as much as one seen once. That is what let SSH
+    # induce ~85 consecutive "boop" tokens on live with this penalty nominally
+    # active: once the loop was running, the flat penalty never grew to break
+    # it. `frequency_penalty` below is the fix; this knob stays as an
+    # additional, independent discount (both apply; neither replaces `top_p`).
     repetition_penalty: float = 1.15
+    # Additive, OpenAI-style penalty scaled by *how many times* a token has
+    # already appeared: `logit -= frequency_penalty * count`. Unlike
+    # `repetition_penalty` above, this keeps growing every repeat, so a loop
+    # gets pushed harder the longer it runs instead of hitting a fixed
+    # discount. Tuned by hand against the live checkpoint (see the
+    # before/after table in the reconciliation PR): 0.4 reliably broke every
+    # induced loop but also visibly degraded normal replies ("orgasm" and
+    # other non-sequiturs appearing in an otherwise coherent "hello" reply);
+    # 0.12 was the largest value in the sweep that still broke every
+    # "boop"/"beep"/"hello hello hello" loop while leaving `hello` / `tell me
+    # a story` output as coherent as the unpenalised baseline. 0.0 disables.
+    frequency_penalty: float = 0.12
+    # Flat, one-time discount on anything already seen at all (count aside):
+    # `logit -= presence_penalty * (count > 0)`. A distinct knob from
+    # `frequency_penalty` (OpenAI exposes both), but the sweep found no
+    # combination where it added loop protection `frequency_penalty` did not
+    # already provide, only extra quality cost -- default 0.0 (off) until
+    # evidence says otherwise; left configurable for further tuning.
+    presence_penalty: float = 0.0
+    # Hard-ban whichever next token would complete an n-gram already seen
+    # earlier in this reply -- a safeguard the penalties above can never be
+    # talked around by a confident-enough model, e.g. "the world of the"
+    # cannot recur once "the world of the" has already appeared once
+    # `no_repeat_ngram_size=3`. Measured on top of `frequency_penalty=0.12`:
+    # at this operating point the loops are already broken, so this only
+    # ever fired on ordinary short phrase reuse and visibly fragmented
+    # otherwise-coherent replies without stopping anything the frequency
+    # penalty had not already stopped. Default 0 (off); worth turning on as
+    # a last-resort circuit breaker if a future, stronger adversarial prompt
+    # gets past the frequency penalty alone.
+    no_repeat_ngram_size: int = 0
     # 256, not the old 96: ro asked for a considerably longer reply. The model
     # still stops early on <eos>; this only raises the ceiling.
     max_new_tokens: int = 256
@@ -293,6 +330,9 @@ class Settings:
             top_k=_env_int("BABBLE_TOP_K", 40),
             top_p=_env_float("BABBLE_TOP_P", 0.9),
             repetition_penalty=_env_float("BABBLE_REPETITION_PENALTY", 1.15),
+            frequency_penalty=_env_float("BABBLE_FREQUENCY_PENALTY", 0.12),
+            presence_penalty=_env_float("BABBLE_PRESENCE_PENALTY", 0.0),
+            no_repeat_ngram_size=_env_int("BABBLE_NO_REPEAT_NGRAM_SIZE", 0),
             max_new_tokens=_env_int("BABBLE_MAX_NEW_TOKENS", 256),
             best_of=_env_int("BABBLE_BEST_OF", 4),
             correction_boost=_env_float("BABBLE_CORRECTION_BOOST", 3.0),
