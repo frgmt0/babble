@@ -514,6 +514,28 @@ pairs.`) rather than crashing or writing a degenerate checkpoint.
 `babble summary` reports the pair count and whether a post-train is due
 alongside everything else.
 
+## HF pretrain + Discord post-train (two-stage)
+
+`pretrain_hf.py` (repo root) is a self-contained script -- no dependency on
+this package being installed -- that pretrains booper's architecture on a
+bounded, streamed slice of `openbmb/Ultra-FineWeb-L1` (an English web corpus)
+on a real GPU, at a size (20-50M params, config-selectable) that the ~463-row
+Discord corpus alone could never inform. It ships with three JSON presets
+under `configs/pretrain/` and is meant to be handed to whoever owns the GPU:
+`hf jobs uv run --flavor l4x1 --secrets HF_TOKEN <url-to-this-file> --
+--config configs/pretrain/default.json --output-dir <path>`.
+
+`babble post-train-from-checkpoint --checkpoint <ckpt.pt> --tokenizer
+<tokenizer.json>` is stage 2 against whatever `pretrain_hf.py` produces:
+the same guardrails as `post-train` above (own LR, rehearsal, pair floor,
+best-val selection, promotion gate), generalised over the pretrain's own
+tokenizer instead of hardcoding `babble.tokenizer`'s raw bytes.
+
+Full writeup — dataset/model-size/tokenizer justification, measured
+throughput, the exact SSH-facing command, cost estimates, and what "done"
+looks like once a real checkpoint comes back — lives in
+[HF_PRETRAIN_PIPELINE.md](HF_PRETRAIN_PIPELINE.md).
+
 ## Synthetic correction pairs
 
 ro's ask: post-train has only ever had a few dozen human corrections to learn

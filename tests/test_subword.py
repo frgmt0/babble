@@ -8,7 +8,9 @@ from babble.subword import (
     BPETokenizer,
     ByteTokenizer,
     WordTokenizer,
+    build_continuation_example,
     build_text_example,
+    stack_examples,
     text_context,
     text_examples,
 )
@@ -81,6 +83,22 @@ def test_bpe_specials_sit_above_the_learned_vocab():
     assert tok.specials.sep == base + 2
     assert tok.specials.eos == base + 3
     assert tok.vocab_size == base + 4
+
+
+def test_bpe_to_json_from_json_round_trips(tmp_path):
+    """Same schema `pretrain_hf.py` writes: only `merges` needs to round-trip,
+    `vocab` is rebuilt from replaying them -- this is what lets
+    `post_train_from_checkpoint` load a tokenizer.json a pretrain job produced
+    with no translation step."""
+    tok = BPETokenizer.train(CORPUS, num_merges=15)
+    path = tmp_path / "tokenizer.json"
+    tok.to_json(path)
+    reloaded = BPETokenizer.from_json(path)
+    assert reloaded.merges == tok.merges
+    assert reloaded.vocab == tok.vocab
+    assert reloaded.vocab_size == tok.vocab_size
+    for text in CORPUS:
+        assert reloaded.encode(text) == tok.encode(text)
 
 
 # --- word-level ---------------------------------------------------------
@@ -191,3 +209,30 @@ def test_text_context_keeps_the_tail_under_budget():
     assert len(ctx) <= block_size
     # Keeps the tail, matching babble.tokenizer.text_context's rule.
     assert tok.decode(ctx[1:]).endswith("fit")
+
+
+# --- generalised continuation example / stacking, used by stage 2 against an
+# externally pretrained (non-byte) tokenizer -- see posttrain.post_train_from_checkpoint
+
+
+def test_build_continuation_example_masks_the_prefix_only():
+    tok = BPETokenizer.train(CORPUS, num_merges=10)
+    ex = build_continuation_example(tok, "the cat sat", "on the mat", block_size=32)
+    assert ex.tokens[0] == tok.specials.bos
+    assert ex.tokens[-1] == tok.specials.eos
+    assert ex.mask[0] == 0  # <bos> is never trained
+    assert ex.mask[-1] == 1  # <eos> is trained, matching babble.tokenizer's layout
+
+
+def test_stack_examples_pads_with_the_tokenizer_own_pad_id_not_256():
+    """A BPE tokenizer's first learned merge can land exactly on id 256 --
+    the byte tokenizer's hardcoded PAD_ID. Padding must use the tokenizer's
+    own pad id (above its learned vocab), never a bare 256."""
+    tok = BPETokenizer.train(CORPUS, num_merges=3)
+    assert tok.specials.pad != 256  # sanity: this tokenizer's pad is NOT the byte PAD_ID
+    short = build_text_example(tok, tok.encode("hi"))
+    long = build_text_example(tok, tok.encode("hello there friend, a much longer one"))
+    tokens, mask, weights = stack_examples([short, long], tok.specials.pad)
+    pad_positions = tokens[0, len(short.tokens):]
+    assert (pad_positions == tok.specials.pad).all()
+    assert not (pad_positions == 256).all()  # would be true if this used the byte PAD_ID by mistake

@@ -11,7 +11,10 @@ requires-python = ">=3.10"
 license = { text = "MIT" }
 
 # Deliberately tiny. torch for the model, discord.py for the bot, hub for the export.
-# No numpy, no datasets, no transformers, no tokenizer downloads.
+# No numpy, no datasets, no transformers, no tokenizer downloads -- on the
+# production/live path. `datasets` is an optional extra (below), needed only
+# by pretrain_hf.py to stream the HF pretrain corpus; the bot, trainer, and
+# post-train never import it.
 dependencies = [
     "torch>=2.1",
     "discord.py>=2.3",
@@ -20,6 +23,12 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7"]
+# Only needed to run pretrain_hf.py (Stage 1, HF-dataset streaming) locally
+# for a smoke test. `pretrain_hf.py` itself is deliberately self-contained
+# (see its module docstring) and declares this same dependency via its own
+# PEP 723 `# /// script` header for `uv run`/`hf jobs uv run` -- this extra
+# exists so `pip install -e .[pretrain]` also works for local development.
+pretrain = ["datasets>=2.19,<3", "pyarrow>=14"]
 
 [project.scripts]
 babble = "babble.cli:main"

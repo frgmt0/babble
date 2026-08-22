@@ -12,9 +12,10 @@ from babble.cli import build_parser
 from babble.config import Settings
 from babble.consent import ConsentStore
 from babble.cpu_runtime import force_cpu_device
-from babble.model import Babbler, config_from_settings
+from babble.model import Babbler, ModelConfig, config_from_settings
 from babble.post_state import post_trigger
-from babble.posttrain import AutoPostTrigger, post_train
+from babble.posttrain import AutoPostTrigger, post_train, post_train_from_checkpoint
+from babble.subword import BPETokenizer
 from babble.store import CORRECTION, Interaction, InteractionStore, make_row_id
 from babble.trainer import _build_optimizer, save_checkpoint
 
@@ -751,3 +752,76 @@ def test_rehearsal_mixes_corpus_rows_into_post_train_batches(settings, ids, monk
     result = post_train(settings, force=True, steps=4, echo=False, ids=ids)
 
     assert result.ran and result.promoted
+
+
+# --- post_train_from_checkpoint: stage 2 against an EXTERNAL pretrain ------
+#
+# Stands in for `pretrain_hf.py`'s output (a different tokenizer, a
+# `tokenizer.json` next to the checkpoint) without actually running that
+# script -- proves the wiring `babble post-train-from-checkpoint` depends on:
+# a checkpoint whose vocab_size did not come from `babble.tokenizer` still
+# loads, trains, evaluates, and gates correctly.
+
+
+def _seed_external_pretrain(settings, tmp_path, *, block_size=64):
+    tok = BPETokenizer.train(["hello there friend", "general kenobi you are a bold one"], num_merges=20)
+    tokenizer_path = tmp_path / "tokenizer.json"
+    tok.to_json(tokenizer_path)
+
+    model_cfg = ModelConfig(vocab_size=tok.vocab_size, block_size=block_size, n_layer=2, n_head=2, n_embd=32)
+    model = Babbler(model_cfg)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    checkpoint_path = tmp_path / "external.pt"
+    torch.save(
+        {"step": 0, "loss": 4.0, "config": model_cfg.to_dict(), "model": model.state_dict(),
+         "optim": optimizer.state_dict(), "torch_rng": torch.get_rng_state()},
+        checkpoint_path,
+    )
+    return checkpoint_path, tokenizer_path
+
+
+def test_post_train_from_checkpoint_loads_and_trains_an_external_pretrain(settings, ids, tmp_path):
+    _seed_corpus_rows(settings, ids)
+    _seed_pairs(settings, ids, PAIRS)
+    checkpoint_path, tokenizer_path = _seed_external_pretrain(settings, tmp_path)
+
+    result = post_train_from_checkpoint(
+        settings, checkpoint_path, tokenizer_path, force=True, steps=4, echo=False, ids=ids
+    )
+
+    assert result.ran
+    assert result.pairs_trained == len(PAIRS)
+    # This is an ordinary corpus-trained checkpoint against a fresh random
+    # BPE-tokenised init, so the gate is expected to sometimes refuse it --
+    # what matters here is that the run completed and decided, not which way.
+    assert result.corpus_val_before is not None and result.corpus_val_after is not None
+    if result.promoted:
+        assert settings.latest_checkpoint.exists()
+        saved_cfg = torch.load(settings.latest_checkpoint, map_location="cpu", weights_only=True)["config"]
+        assert saved_cfg["vocab_size"] == BPETokenizer.from_json(tokenizer_path).vocab_size
+
+
+def test_post_train_from_checkpoint_rejects_a_mismatched_tokenizer(settings, ids, tmp_path):
+    _seed_corpus_rows(settings, ids)
+    _seed_pairs(settings, ids, PAIRS)
+    checkpoint_path, _ = _seed_external_pretrain(settings, tmp_path)
+    wrong_tok = BPETokenizer.train(["something completely different here"], num_merges=5)
+    wrong_tokenizer_path = tmp_path / "wrong_tokenizer.json"
+    wrong_tok.to_json(wrong_tokenizer_path)
+
+    with pytest.raises(ValueError, match="vocab_size"):
+        post_train_from_checkpoint(
+            settings, checkpoint_path, wrong_tokenizer_path, force=True, steps=1, echo=False, ids=ids
+        )
+
+
+def test_post_train_from_checkpoint_refuses_below_the_min_pairs_floor(settings, ids, tmp_path):
+    settings.post_min_pairs = 100
+    _seed_corpus_rows(settings, ids)
+    _seed_pairs(settings, ids, PAIRS)  # 20 pairs: below the floor
+    checkpoint_path, tokenizer_path = _seed_external_pretrain(settings, tmp_path)
+
+    result = post_train_from_checkpoint(settings, checkpoint_path, tokenizer_path, steps=1, echo=False, ids=ids)
+
+    assert not result.ran and result.reason == "too_few_pairs"
+    assert not settings.latest_checkpoint.exists()

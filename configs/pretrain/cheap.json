@@ -1,0 +1,32 @@
+{
+  "dataset_id": "openbmb/Ultra-FineWeb-L1",
+  "train_config": "CC-MAIN-2025-51",
+  "val_config": "CC-MAIN-2025-47",
+  "text_field": "content",
+  "token_budget": 350000000,
+  "val_docs": 512,
+  "tokenizer_fit_docs": 12000,
+
+  "vocab_size": 8192,
+  "block_size": 768,
+  "n_layer": 6,
+  "n_head": 6,
+  "n_embd": 384,
+  "dropout": 0.1,
+
+  "batch_size": 64,
+  "learning_rate": 0.0008,
+  "min_lr_ratio": 0.1,
+  "warmup_steps": 150,
+  "weight_decay": 0.1,
+  "grad_clip": 1.0,
+
+  "seed": 1337,
+  "checkpoint_every_steps": 200,
+  "keep_checkpoints": 3,
+  "log_every_steps": 20,
+  "amp_bf16": true,
+
+  "hub_checkpoint_repo": "",
+  "hub_private": true
+}
