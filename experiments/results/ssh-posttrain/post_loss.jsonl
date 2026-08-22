@@ -1,0 +1,4 @@
+{"step": 50, "loss": 3.139968, "rows": 42, "stored_rows": 53, "train_rows": 42, "val_rows": 11, "at": "2026-08-22T07:15:27+00:00", "sample": "", "val_loss": 4.827572}
+{"step": 100, "loss": 1.967046, "rows": 42, "stored_rows": 53, "train_rows": 42, "val_rows": 11, "at": "2026-08-22T07:16:31+00:00", "sample": "", "val_loss": 4.481433}
+{"step": 150, "loss": 1.736061, "rows": 42, "stored_rows": 53, "train_rows": 42, "val_rows": 11, "at": "2026-08-22T07:17:41+00:00", "sample": "", "val_loss": 3.6628}
+{"step": 200, "loss": 1.579887, "rows": 42, "stored_rows": 53, "train_rows": 42, "val_rows": 11, "at": "2026-08-22T07:18:51+00:00", "sample": "", "val_loss": 3.618961}

@@ -765,6 +765,26 @@ def post_train_from_checkpoint(
         del pretrain_model
         promoted = corpus_val_after <= corpus_val_before + settings.post_gate_margin
 
+    # Persist the best candidate for inspection even when the gate leaves
+    # latest.pt untouched. This file is never served.
+    settings.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    scratch = settings.checkpoint_dir / SCRATCH_DIR
+    scratch.mkdir(exist_ok=True)
+    candidate_path = settings.checkpoint_dir / "post_candidate.pt"
+    tmp = scratch / "post_candidate.pt.tmp"
+    torch.save(
+        {
+            "step": final_step,
+            "loss": final_loss,
+            "config": uncompiled(model).config.to_dict(),
+            "model": model_state_dict(model),
+            "optim": optimizer.state_dict(),
+            "torch_rng": torch.get_rng_state(),
+        },
+        tmp,
+    )
+    os.replace(tmp, candidate_path)
+
     if promoted:
         save_checkpoint(settings, model, optimizer, final_step, final_loss)
 

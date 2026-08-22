@@ -1,0 +1,33 @@
+/home/beckett/Projects/babble/.beckett/worktrees/run-20260822-post-train-booper-on-ssh-s-pretrained-ch/.venv/lib/python3.12/site-packages/torch/_subclasses/functional_tensor.py:368: UserWarning: Failed to initialize NumPy: No module named 'numpy' (Triggered internally at /__w/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:84.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+{
+  "val_rows": 97,
+  "val_chars": 7215,
+  "pretrain": {
+    "mean_nats_per_token": 3.770477771759033,
+    "tokens": 3193,
+    "nats_total": 12039.135525226593,
+    "bits_per_char": 2.4073182423887114
+  },
+  "posttrain": {
+    "mean_nats_per_token": 3.3092470169067383,
+    "tokens": 3193,
+    "nats_total": 10566.425724983215,
+    "bits_per_char": 2.1128385299175125
+  },
+  "live_served": {
+    "mean_nats_per_token": 2.491654634475708,
+    "tokens": 7344,
+    "nats_total": 18298.7116355896,
+    "bits_per_char": 3.6589688886101577,
+    "config": {
+      "vocab_size": 260,
+      "block_size": 512,
+      "n_layer": 4,
+      "n_head": 4,
+      "n_embd": 256,
+      "dropout": 0.2
+    },
+    "step": 150
+  }
+}
