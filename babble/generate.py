@@ -90,29 +90,74 @@ def _banned_ids(tok: Tokenizer) -> list[int]:
     return [tok.specials.pad, tok.specials.bos, tok.specials.sep]
 
 
+def _apply_repetition_penalty(
+    logits: torch.Tensor, seen: torch.Tensor | None, penalty: float
+) -> torch.Tensor:
+    """HuggingFace-style penalty on tokens already in the prompt or completion.
+
+    Positive logits are divided by `penalty`, negative logits are multiplied,
+    so already-seen tokens become less likely without flipping their sign.
+    `penalty == 1` is a no-op.
+    """
+    if penalty == 1.0 or seen is None or seen.numel() == 0:
+        return logits
+    if seen.dim() == 1:
+        seen = seen.unsqueeze(0)
+    logits = logits.clone()
+    for i in range(logits.size(0)):
+        uniq = seen[i].unique()
+        scores = logits[i].index_select(0, uniq)
+        logits[i].index_copy_(
+            0, uniq, torch.where(scores < 0, scores * penalty, scores / penalty)
+        )
+    return logits
+
+
+def _apply_top_p(logits: torch.Tensor, top_p: float) -> torch.Tensor:
+    """Nucleus mask: keep the smallest prefix of tokens whose mass >= `top_p`."""
+    if not (0.0 < top_p < 1.0):
+        return logits
+    sorted_logits, sorted_idx = torch.sort(logits, dim=-1, descending=True)
+    cumulative = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+    remove = cumulative > top_p
+    # Always keep the highest-probability token, then drop the tail that
+    # pushed the running mass over the nucleus.
+    remove[..., 1:] = remove[..., :-1].clone()
+    remove[..., 0] = False
+    sorted_logits = sorted_logits.masked_fill(remove, float("-inf"))
+    return torch.full_like(logits, float("-inf")).scatter(-1, sorted_idx, sorted_logits)
+
+
 def _next_token(
     logits: torch.Tensor,
     temperature: float,
     top_k: int,
     generator: torch.Generator | None,
     banned: list[int] | None = None,
+    *,
+    seen: torch.Tensor | None = None,
+    repetition_penalty: float = 1.0,
+    top_p: float = 1.0,
 ) -> torch.Tensor:
     """One sampling step over a `(batch, vocab)` block of logits.
 
     Shared by the single and batched samplers so there is exactly one place
-    where temperature, top_k and the banned structural tokens are applied.
-    Vocab is only 260 on the byte path, so a full-softmax over the top-k-masked
-    row stays cheap; keeping the classic mask-then-softmax path preserves the
-    RNG behaviour the tests (and the live bot) already depend on.
+    where temperature, top_k, top_p, repetition penalty and the banned
+    structural tokens are applied. Vocab is only 260 on the byte path, so a
+    full-softmax over the top-k-masked row stays cheap; keeping the classic
+    mask-then-softmax path preserves the RNG behaviour the tests (and the
+    live bot) already depend on when top_p is 1 and the penalty is 1.
     """
     logits = logits.clone()
     logits[:, banned if banned is not None else _BANNED] = float("-inf")
+    logits = _apply_repetition_penalty(logits, seen, repetition_penalty)
     if temperature <= 0:
         return logits.argmax(dim=-1)
     logits = logits / temperature
     if top_k and 0 < top_k < logits.size(-1):
         cutoff = torch.topk(logits, top_k, dim=-1).values[:, -1:]
         logits = logits.masked_fill(logits < cutoff, float("-inf"))
+    logits = _apply_top_p(logits, top_p)
     probs = F.softmax(logits, dim=-1)
     return torch.multinomial(probs, num_samples=1, generator=generator).squeeze(-1)
 
@@ -135,6 +180,8 @@ def _decode_from(
     top_k: int,
     generator: torch.Generator | None,
     tok: Tokenizer | None = None,
+    top_p: float = 1.0,
+    repetition_penalty: float = 1.0,
 ) -> str:
     """Continue `context` one token at a time until <eos>.
 
@@ -162,25 +209,53 @@ def _decode_from(
             )
             prompt = torch.tensor([context], dtype=torch.long)
             logits = model(prompt, cache=cache)[:, -1]
+            seen = prompt
             for _ in range(max_new_tokens):
-                nxt = int(_next_token(logits, temperature, top_k, generator, banned)[0])
+                nxt = int(
+                    _next_token(
+                        logits,
+                        temperature,
+                        top_k,
+                        generator,
+                        banned,
+                        seen=seen,
+                        repetition_penalty=repetition_penalty,
+                        top_p=top_p,
+                    )[0]
+                )
                 if nxt == eos_id:
                     break
                 produced.append(nxt)
                 context.append(nxt)
+                seen = torch.cat(
+                    [seen, torch.tensor([[nxt]], dtype=torch.long)], dim=1
+                )
                 logits = model(
                     torch.tensor([[nxt]], dtype=torch.long), cache=cache
                 )[:, -1]
             return tok.decode(produced)
 
+        seen = torch.tensor([context], dtype=torch.long)
         for _ in range(max_new_tokens):
             window = context[-model.config.block_size :]
             logits = model(torch.tensor([window], dtype=torch.long))[:, -1]
-            nxt = int(_next_token(logits, temperature, top_k, generator, banned)[0])
+            nxt = int(
+                _next_token(
+                    logits,
+                    temperature,
+                    top_k,
+                    generator,
+                    banned,
+                    seen=seen,
+                    repetition_penalty=repetition_penalty,
+                    top_p=top_p,
+                )[0]
+            )
             if nxt == eos_id:
                 break
             produced.append(nxt)
             context.append(nxt)
+            seen = torch.cat([seen, torch.tensor([[nxt]], dtype=torch.long)], dim=1)
         return tok.decode(produced)
     finally:
         model.train(was_training)
@@ -197,6 +272,8 @@ def _decode_many_from(
     top_k: int,
     generator: torch.Generator | None,
     tok: Tokenizer | None = None,
+    top_p: float = 1.0,
+    repetition_penalty: float = 1.0,
 ) -> list[str]:
     """`n` independent continuations of the same context, in one batched pass.
 
@@ -228,21 +305,41 @@ def _decode_many_from(
             )
             prompt = torch.tensor([list(context)], dtype=torch.long).repeat(n, 1)
             logits = model(prompt, cache=cache)[:, -1]
+            seen = prompt
             for _ in range(max_new_tokens):
-                nxt = _next_token(logits, temperature, top_k, generator, banned)
+                nxt = _next_token(
+                    logits,
+                    temperature,
+                    top_k,
+                    generator,
+                    banned,
+                    seen=seen,
+                    repetition_penalty=repetition_penalty,
+                    top_p=top_p,
+                )
                 for i in range(n):
                     if not finished[i] and int(nxt[i]) != eos_id:
                         produced[i].append(int(nxt[i]))
                 finished |= nxt == eos_id
                 if bool(finished.all()):
                     break
+                seen = torch.cat([seen, nxt[:, None]], dim=1)
                 logits = model(nxt[:, None], cache=cache)[:, -1]
             return [tok.decode(row) for row in produced]
 
         tokens = torch.tensor([list(context)], dtype=torch.long).repeat(n, 1)
         for _ in range(max_new_tokens):
             window = tokens[:, -model.config.block_size :]
-            nxt = _next_token(model(window)[:, -1], temperature, top_k, generator, banned)
+            nxt = _next_token(
+                model(window)[:, -1],
+                temperature,
+                top_k,
+                generator,
+                banned,
+                seen=tokens,
+                repetition_penalty=repetition_penalty,
+                top_p=top_p,
+            )
             # A row that has already emitted <eos> keeps being fed -- rows are
             # independent inside the batch, so its continuation is ignored
             # rather than removed.
@@ -302,6 +399,8 @@ def continue_text(
     max_new_tokens: int = 96,
     temperature: float = 0.5,
     top_k: int = 40,
+    top_p: float = 1.0,
+    repetition_penalty: float = 1.0,
     generator: torch.Generator | None = None,
 ) -> str:
     """Keep writing after `prefix`, in the layout the corpus objective trains."""
@@ -312,6 +411,8 @@ def continue_text(
         max_new_tokens=max_new_tokens,
         temperature=temperature,
         top_k=top_k,
+        top_p=top_p,
+        repetition_penalty=repetition_penalty,
         generator=generator,
         tok=tok,
     )
@@ -325,6 +426,8 @@ def continue_many(
     max_new_tokens: int = 96,
     temperature: float = 0.5,
     top_k: int = 40,
+    top_p: float = 1.0,
+    repetition_penalty: float = 1.0,
     generator: torch.Generator | None = None,
 ) -> list[str]:
     """`n` independent continuations of `prefix`, in one batched pass."""
@@ -336,6 +439,8 @@ def continue_many(
         max_new_tokens=max_new_tokens,
         temperature=temperature,
         top_k=top_k,
+        top_p=top_p,
+        repetition_penalty=repetition_penalty,
         generator=generator,
         tok=tok,
     )
@@ -359,6 +464,8 @@ def best_continuation(
     max_new_tokens: int = 96,
     temperature: float = 0.5,
     top_k: int = 40,
+    top_p: float = 1.0,
+    repetition_penalty: float = 1.0,
     generator: torch.Generator | None = None,
 ) -> str:
     """Draw `n` continuations of `prefix` and keep the one the model likes best.
@@ -374,6 +481,8 @@ def best_continuation(
             max_new_tokens=max_new_tokens,
             temperature=temperature,
             top_k=top_k,
+            top_p=top_p,
+            repetition_penalty=repetition_penalty,
             generator=generator,
         )
     candidates = continue_many(
@@ -383,6 +492,8 @@ def best_continuation(
         max_new_tokens=max_new_tokens,
         temperature=temperature,
         top_k=top_k,
+        top_p=top_p,
+        repetition_penalty=repetition_penalty,
         generator=generator,
     )
     real = [c for c in candidates if c]
@@ -422,6 +533,8 @@ def sample(
     max_new_tokens: int = 96,
     temperature: float = 1.0,
     top_k: int = 40,
+    top_p: float = 1.0,
+    repetition_penalty: float = 1.0,
     generator: torch.Generator | None = None,
 ) -> str:
     """Continue `<bos> prompt <sep>` one token at a time until <eos>."""
@@ -432,6 +545,8 @@ def sample(
         max_new_tokens=max_new_tokens,
         temperature=temperature,
         top_k=top_k,
+        top_p=top_p,
+        repetition_penalty=repetition_penalty,
         generator=generator,
         tok=tok,
     )
@@ -445,6 +560,8 @@ def sample_many(
     max_new_tokens: int = 96,
     temperature: float = 0.5,
     top_k: int = 40,
+    top_p: float = 1.0,
+    repetition_penalty: float = 1.0,
     generator: torch.Generator | None = None,
 ) -> list[str]:
     """`n` independent responses to the same prompt, in one batched pass."""
@@ -456,6 +573,8 @@ def sample_many(
         max_new_tokens=max_new_tokens,
         temperature=temperature,
         top_k=top_k,
+        top_p=top_p,
+        repetition_penalty=repetition_penalty,
         generator=generator,
         tok=tok,
     )
@@ -489,6 +608,8 @@ def best_of(
     max_new_tokens: int = 96,
     temperature: float = 0.5,
     top_k: int = 40,
+    top_p: float = 1.0,
+    repetition_penalty: float = 1.0,
     generator: torch.Generator | None = None,
 ) -> str:
     """Draw `n` answers to `prompt` and keep the one the model scores best.
@@ -503,6 +624,8 @@ def best_of(
             max_new_tokens=max_new_tokens,
             temperature=temperature,
             top_k=top_k,
+            top_p=top_p,
+            repetition_penalty=repetition_penalty,
             generator=generator,
         )
     candidates = sample_many(
@@ -512,6 +635,8 @@ def best_of(
         max_new_tokens=max_new_tokens,
         temperature=temperature,
         top_k=top_k,
+        top_p=top_p,
+        repetition_penalty=repetition_penalty,
         generator=generator,
     )
     real = [c for c in candidates if c]
@@ -609,12 +734,16 @@ class CheckpointGenerator:
             max_new_tokens=self.settings.max_new_tokens,
             temperature=self.settings.temperature,
             top_k=self.settings.top_k,
+            top_p=self.settings.top_p,
+            repetition_penalty=self.settings.repetition_penalty,
         )
         return Generation(
             text=text,
             step=self._step,
             temperature=self.settings.temperature,
             top_k=self.settings.top_k,
+            top_p=self.settings.top_p,
+            repetition_penalty=self.settings.repetition_penalty,
             max_new_tokens=self.settings.max_new_tokens,
             ms=(time.perf_counter() - started) * 1000,
         )

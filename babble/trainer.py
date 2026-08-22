@@ -1146,6 +1146,8 @@ def _checkpoint(
         max_new_tokens=min(64, settings.max_new_tokens),
         temperature=settings.temperature,
         top_k=settings.top_k,
+        top_p=settings.top_p,
+        repetition_penalty=settings.repetition_penalty,
     )
     # What the running mean hides: which example is worst. `_example_owner`
     # walks the rows the same way `to_examples` did, so a long row that became

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import torch
 
-from babble.generate import sample
+from babble.generate import continue_text, sample
 from babble.model import Babbler, ModelConfig, sequence_loss
 from babble.tokenizer import (
     BOS_ID,
@@ -194,3 +194,39 @@ def test_sampling_leaves_the_model_in_training_mode():
     sample(model, "hi", max_new_tokens=2)
 
     assert model.training, "the trainer would silently lose dropout otherwise"
+
+
+def _repeated_ngrams(text: str, n: int = 3) -> int:
+    grams = [text[i : i + n] for i in range(max(0, len(text) - n + 1))]
+    return 0 if not grams else len(grams) - len(set(grams))
+
+
+class _LoopBias(torch.nn.Module):
+    """Always prefers one byte, with a weaker runner-up — greedy without a
+    penalty emits a solid run of the favourite, which is the loop we want
+    the penalty to break.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.config = TINY
+
+    def forward(self, idx: torch.Tensor) -> torch.Tensor:
+        logits = torch.zeros(idx.shape[0], idx.shape[1], VOCAB_SIZE)
+        logits[..., 97] = 10.0  # 'a'
+        logits[..., 98] = 9.0  # 'b' — above 10/1.15 so a penalty of 1.15 switches
+        return logits
+
+
+def test_repetition_penalty_reduces_repeated_ngrams():
+    model = _LoopBias()
+    args = dict(max_new_tokens=32, temperature=0.0, top_k=0, top_p=1.0)
+    off = continue_text(model, "x", repetition_penalty=1.0, **args)
+    on = continue_text(model, "x", repetition_penalty=1.15, **args)
+
+    def overlapping(text: str, n: int = 3) -> int:
+        return sum(1 for i in range(len(text) - n + 1) if text[i : i + n] == "a" * n)
+
+    assert _repeated_ngrams(on) < _repeated_ngrams(off)
+    assert overlapping(on) < overlapping(off)
+    assert "b" in on and "b" not in off
