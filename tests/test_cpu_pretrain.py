@@ -15,7 +15,14 @@ if str(ROOT) not in sys.path:
 from babble.model import Babbler, ModelConfig
 from babble.subword import BPETokenizer
 
-from cpu_pretrain import VocabMismatch, assert_vocab_matches, row_to_text, save_checkpoint
+from cpu_pretrain import (
+    ResumeError,
+    RESUME_REQUIRED_KEYS,
+    VocabMismatch,
+    assert_vocab_matches,
+    row_to_text,
+    save_checkpoint,
+)
 
 
 def test_row_to_text_prefers_text_field():
@@ -78,3 +85,19 @@ def test_assert_vocab_matches_ok():
         ModelConfig(vocab_size=tok.vocab_size, n_layer=1, n_head=1, n_embd=8, block_size=16)
     )
     assert_vocab_matches(model, tok)
+
+
+def test_resume_required_keys_cover_served_payload():
+    served_keys = {
+        "config",
+        "docs_consumed",
+        "loss",
+        "model",
+        "optim",
+        "saved_at",
+        "step",
+        "tokens_consumed",
+        "torch_rng",
+    }
+    assert set(RESUME_REQUIRED_KEYS) <= served_keys
+    assert ResumeError is ResumeError

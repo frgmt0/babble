@@ -1,12 +1,12 @@
 [Unit]
-Description=babble throttled CPU pretrain on Discord-Dialogues (scratch, not served)
+Description=babble throttled CPU pretrain continuing from the served checkpoint (scratch, not served)
 After=network-online.target
 Wants=network-online.target
 # Independent of babble-bot / babble-train. Never promote these checkpoints.
 
 [Service]
 Type=simple
-WorkingDirectory=%h/Projects/babble/.beckett/worktrees/run-20260822-throttled-multi-day-cpu-pretrain-detache
+WorkingDirectory=%h/Projects/babble/.beckett/worktrees/run-20260822-cpu-training-continues-from-the-served-c
 # 6 of 8 logical CPUs (systemd CPUQuota is percent of *one* CPU, so 600% = 6 cores).
 # Leave two threads for interactive use (bot + desktop). Nice 19 matches babble's trainer.
 Nice=19
@@ -19,13 +19,17 @@ OOMPolicy=stop
 Environment=OMP_NUM_THREADS=6
 Environment=MKL_NUM_THREADS=6
 Environment=TOKENIZERS_PARALLELISM=false
-ExecStart=%h/Projects/babble/.beckett/worktrees/run-20260822-throttled-multi-day-cpu-pretrain-detache/.venv/bin/python -u cpu_pretrain.py --output-dir %h/babble-scratch/throttled-cpu-pretrain --tokenizer %h/babble-live/checkpoints/tokenizer.json --dataset mookiezi/Discord-Dialogues --token-budget 80000000 --batch-size 8 --threads 6 --nice 19 --log-every 1 --checkpoint-every 50 --keep-checkpoints 2
+# --token-budget is TOTAL tokens_consumed, not remaining. Served ckpt is
+# ~600.2M tokens; 680M leaves ~80M of continued training (~3 days at ~314 tok/s).
+ExecStart=%h/Projects/babble/.beckett/worktrees/run-20260822-cpu-training-continues-from-the-served-c/.venv/bin/python -u cpu_pretrain.py --output-dir %h/babble-scratch/cpu-continue --tokenizer %h/babble-live/checkpoints/tokenizer.json --dataset mookiezi/Discord-Dialogues --token-budget 680000000 --batch-size 8 --threads 6 --nice 19 --log-every 1 --checkpoint-every 50 --keep-checkpoints 2
 Restart=on-failure
 RestartSec=60s
 KillSignal=SIGTERM
 TimeoutStopSec=180s
-StandardOutput=append:%h/babble-scratch/throttled-cpu-pretrain/train.out
-StandardError=append:%h/babble-scratch/throttled-cpu-pretrain/train.out
+# stdout/stderr go to the journal. cpu_pretrain.py also appends the same
+# lines to <output-dir>/train.out for the Discord progress card.
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=default.target
