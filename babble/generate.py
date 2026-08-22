@@ -113,6 +113,67 @@ def _apply_repetition_penalty(
     return logits
 
 
+def _apply_frequency_presence_penalty(
+    logits: torch.Tensor,
+    seen: torch.Tensor | None,
+    frequency_penalty: float,
+    presence_penalty: float,
+) -> torch.Tensor:
+    """OpenAI-style penalty, scaled by *how many times* each token has already
+    appeared -- the fix for the flaw in `_apply_repetition_penalty` above: a
+    flat per-unique-token divisor punishes a token seen 80 times exactly as
+    much as one seen once, so once a loop is running the penalty never grows
+    to escape it (observed live: "boop boop boop" in, ~85 consecutive "boop"
+    tokens out, with `repetition_penalty=1.15` nominally active the whole
+    time). Subtracting `frequency_penalty * count` keeps pushing a repeated
+    token down every time it repeats; `presence_penalty` adds a flat, one-time
+    nudge against anything already seen at all, count aside.
+
+    Applied in raw logit space, same stage as `_apply_repetition_penalty` and
+    before temperature. Both `0.0` is a no-op, same convention as the other
+    penalties here.
+    """
+    if (frequency_penalty == 0.0 and presence_penalty == 0.0) or seen is None or seen.numel() == 0:
+        return logits
+    if seen.dim() == 1:
+        seen = seen.unsqueeze(0)
+    logits = logits.clone()
+    vocab = logits.size(-1)
+    for i in range(logits.size(0)):
+        counts = torch.bincount(seen[i], minlength=vocab).to(logits.dtype)
+        logits[i] -= counts * frequency_penalty + (counts > 0).to(logits.dtype) * presence_penalty
+    return logits
+
+
+def _apply_no_repeat_ngram(
+    logits: torch.Tensor, seen: torch.Tensor | None, ngram_size: int
+) -> torch.Tensor:
+    """Hard-ban whichever next tokens would complete an n-gram already present
+    earlier in the sequence -- standard alongside a frequency penalty (HF's
+    `NoRepeatNGramLogitsProcessor`), and the one guard here that a large
+    enough penalty can never talk its way around: if "boop boop" already
+    happened once, a third "boop" that would complete another "boop boop" is
+    removed from the distribution outright, not merely discounted.
+    `ngram_size <= 0` is a no-op.
+    """
+    if ngram_size <= 0 or seen is None or seen.numel() == 0 or seen.size(-1) < ngram_size - 1:
+        return logits
+    if seen.dim() == 1:
+        seen = seen.unsqueeze(0)
+    logits = logits.clone()
+    for i in range(seen.size(0)):
+        seq = seen[i].tolist()
+        prefix = tuple(seq[-(ngram_size - 1) :]) if ngram_size > 1 else ()
+        banned = {
+            seq[j + ngram_size - 1]
+            for j in range(len(seq) - ngram_size + 1)
+            if tuple(seq[j : j + ngram_size - 1]) == prefix
+        }
+        if banned:
+            logits[i, list(banned)] = float("-inf")
+    return logits
+
+
 def _apply_top_p(logits: torch.Tensor, top_p: float) -> torch.Tensor:
     """Nucleus mask: keep the smallest prefix of tokens whose mass >= `top_p`."""
     if not (0.0 < top_p < 1.0):
@@ -138,19 +199,24 @@ def _next_token(
     seen: torch.Tensor | None = None,
     repetition_penalty: float = 1.0,
     top_p: float = 1.0,
+    frequency_penalty: float = 0.0,
+    presence_penalty: float = 0.0,
+    no_repeat_ngram_size: int = 0,
 ) -> torch.Tensor:
     """One sampling step over a `(batch, vocab)` block of logits.
 
     Shared by the single and batched samplers so there is exactly one place
-    where temperature, top_k, top_p, repetition penalty and the banned
+    where temperature, top_k, top_p, the repetition penalties and the banned
     structural tokens are applied. Vocab is only 260 on the byte path, so a
     full-softmax over the top-k-masked row stays cheap; keeping the classic
     mask-then-softmax path preserves the RNG behaviour the tests (and the
-    live bot) already depend on when top_p is 1 and the penalty is 1.
+    live bot) already depend on when top_p is 1 and every penalty is off.
     """
     logits = logits.clone()
     logits[:, banned if banned is not None else _BANNED] = float("-inf")
     logits = _apply_repetition_penalty(logits, seen, repetition_penalty)
+    logits = _apply_frequency_presence_penalty(logits, seen, frequency_penalty, presence_penalty)
+    logits = _apply_no_repeat_ngram(logits, seen, no_repeat_ngram_size)
     if temperature <= 0:
         return logits.argmax(dim=-1)
     logits = logits / temperature
@@ -190,6 +256,9 @@ def _decode_from(
     tok: Tokenizer | None = None,
     top_p: float = 1.0,
     repetition_penalty: float = 1.0,
+    frequency_penalty: float = 0.0,
+    presence_penalty: float = 0.0,
+    no_repeat_ngram_size: int = 0,
 ) -> str:
     """Continue `context` one token at a time until <eos>.
 
@@ -228,6 +297,9 @@ def _decode_from(
                         seen=seen,
                         repetition_penalty=repetition_penalty,
                         top_p=top_p,
+                        frequency_penalty=frequency_penalty,
+                        presence_penalty=presence_penalty,
+                        no_repeat_ngram_size=no_repeat_ngram_size,
                     )[0]
                 )
                 remaining -= 1
@@ -259,6 +331,9 @@ def _decode_from(
                     seen=seen,
                     repetition_penalty=repetition_penalty,
                     top_p=top_p,
+                    frequency_penalty=frequency_penalty,
+                    presence_penalty=presence_penalty,
+                    no_repeat_ngram_size=no_repeat_ngram_size,
                 )[0]
             )
             remaining -= 1
@@ -285,6 +360,9 @@ def _decode_many_from(
     tok: Tokenizer | None = None,
     top_p: float = 1.0,
     repetition_penalty: float = 1.0,
+    frequency_penalty: float = 0.0,
+    presence_penalty: float = 0.0,
+    no_repeat_ngram_size: int = 0,
 ) -> list[str]:
     """`n` independent continuations of the same context, in one batched pass.
 
@@ -326,6 +404,9 @@ def _decode_many_from(
                     seen=tokens,
                     repetition_penalty=repetition_penalty,
                     top_p=top_p,
+                    frequency_penalty=frequency_penalty,
+                    presence_penalty=presence_penalty,
+                    no_repeat_ngram_size=no_repeat_ngram_size,
                 )
                 remaining -= 1
                 ids = nxt.tolist()
@@ -354,6 +435,9 @@ def _decode_many_from(
                 seen=tokens,
                 repetition_penalty=repetition_penalty,
                 top_p=top_p,
+                frequency_penalty=frequency_penalty,
+                presence_penalty=presence_penalty,
+                no_repeat_ngram_size=no_repeat_ngram_size,
             )
             # A row that has already emitted <eos> keeps being fed -- rows are
             # independent inside the batch, so its continuation is ignored
@@ -416,6 +500,9 @@ def continue_text(
     top_k: int = 40,
     top_p: float = 1.0,
     repetition_penalty: float = 1.0,
+    frequency_penalty: float = 0.0,
+    presence_penalty: float = 0.0,
+    no_repeat_ngram_size: int = 0,
     generator: torch.Generator | None = None,
 ) -> str:
     """Keep writing after `prefix`, in the layout the corpus objective trains."""
@@ -426,6 +513,9 @@ def continue_text(
         max_new_tokens=max_new_tokens,
         temperature=temperature,
         top_k=top_k,
+        frequency_penalty=frequency_penalty,
+        presence_penalty=presence_penalty,
+        no_repeat_ngram_size=no_repeat_ngram_size,
         generator=generator,
         tok=tok,
         top_p=top_p,
@@ -443,6 +533,9 @@ def continue_many(
     top_k: int = 40,
     top_p: float = 1.0,
     repetition_penalty: float = 1.0,
+    frequency_penalty: float = 0.0,
+    presence_penalty: float = 0.0,
+    no_repeat_ngram_size: int = 0,
     generator: torch.Generator | None = None,
 ) -> list[str]:
     """`n` independent continuations of `prefix`, in one batched pass."""
@@ -454,6 +547,9 @@ def continue_many(
         max_new_tokens=max_new_tokens,
         temperature=temperature,
         top_k=top_k,
+        frequency_penalty=frequency_penalty,
+        presence_penalty=presence_penalty,
+        no_repeat_ngram_size=no_repeat_ngram_size,
         generator=generator,
         tok=tok,
         top_p=top_p,
@@ -481,6 +577,9 @@ def best_continuation(
     top_k: int = 40,
     top_p: float = 1.0,
     repetition_penalty: float = 1.0,
+    frequency_penalty: float = 0.0,
+    presence_penalty: float = 0.0,
+    no_repeat_ngram_size: int = 0,
     generator: torch.Generator | None = None,
 ) -> str:
     """Draw `n` continuations of `prefix` and keep the one the model likes best.
@@ -498,6 +597,9 @@ def best_continuation(
             top_k=top_k,
             top_p=top_p,
             repetition_penalty=repetition_penalty,
+            frequency_penalty=frequency_penalty,
+            presence_penalty=presence_penalty,
+            no_repeat_ngram_size=no_repeat_ngram_size,
             generator=generator,
         )
     candidates = continue_many(
@@ -509,6 +611,9 @@ def best_continuation(
         top_k=top_k,
         top_p=top_p,
         repetition_penalty=repetition_penalty,
+        frequency_penalty=frequency_penalty,
+        presence_penalty=presence_penalty,
+        no_repeat_ngram_size=no_repeat_ngram_size,
         generator=generator,
     )
     real = [c for c in candidates if c]
@@ -550,6 +655,9 @@ def sample(
     top_k: int = 40,
     top_p: float = 1.0,
     repetition_penalty: float = 1.0,
+    frequency_penalty: float = 0.0,
+    presence_penalty: float = 0.0,
+    no_repeat_ngram_size: int = 0,
     generator: torch.Generator | None = None,
 ) -> str:
     """Continue `<bos> prompt <sep>` one token at a time until <eos>."""
@@ -560,6 +668,9 @@ def sample(
         max_new_tokens=max_new_tokens,
         temperature=temperature,
         top_k=top_k,
+        frequency_penalty=frequency_penalty,
+        presence_penalty=presence_penalty,
+        no_repeat_ngram_size=no_repeat_ngram_size,
         generator=generator,
         tok=tok,
         top_p=top_p,
@@ -577,6 +688,9 @@ def sample_many(
     top_k: int = 40,
     top_p: float = 1.0,
     repetition_penalty: float = 1.0,
+    frequency_penalty: float = 0.0,
+    presence_penalty: float = 0.0,
+    no_repeat_ngram_size: int = 0,
     generator: torch.Generator | None = None,
 ) -> list[str]:
     """`n` independent responses to the same prompt, in one batched pass."""
@@ -588,6 +702,9 @@ def sample_many(
         max_new_tokens=max_new_tokens,
         temperature=temperature,
         top_k=top_k,
+        frequency_penalty=frequency_penalty,
+        presence_penalty=presence_penalty,
+        no_repeat_ngram_size=no_repeat_ngram_size,
         generator=generator,
         tok=tok,
         top_p=top_p,
@@ -625,6 +742,9 @@ def best_of(
     top_k: int = 40,
     top_p: float = 1.0,
     repetition_penalty: float = 1.0,
+    frequency_penalty: float = 0.0,
+    presence_penalty: float = 0.0,
+    no_repeat_ngram_size: int = 0,
     generator: torch.Generator | None = None,
 ) -> str:
     """Draw `n` answers to `prompt` and keep the one the model scores best.
@@ -641,6 +761,9 @@ def best_of(
             top_k=top_k,
             top_p=top_p,
             repetition_penalty=repetition_penalty,
+            frequency_penalty=frequency_penalty,
+            presence_penalty=presence_penalty,
+            no_repeat_ngram_size=no_repeat_ngram_size,
             generator=generator,
         )
     candidates = sample_many(
@@ -652,6 +775,9 @@ def best_of(
         top_k=top_k,
         top_p=top_p,
         repetition_penalty=repetition_penalty,
+        frequency_penalty=frequency_penalty,
+        presence_penalty=presence_penalty,
+        no_repeat_ngram_size=no_repeat_ngram_size,
         generator=generator,
     )
     real = [c for c in candidates if c]
@@ -729,7 +855,26 @@ class CheckpointGenerator:
             return
 
         previous = self._step
-        self._model, self._step = load_model(self.settings)
+        try:
+            model, step = load_model(self.settings)
+        except Exception as exc:
+            # A checkpoint/tokenizer pair that disagrees (the continuous
+            # trainer writing a mismatched vocab_size over a promoted
+            # checkpoint is exactly how this happened live once already --
+            # see DEFECT_3 in the reconciliation PR) must not take the bot
+            # mute: keep answering with whatever last loaded cleanly, log
+            # loudly, and try again next message rather than raising out of
+            # `__call__` and into `handle_message`.
+            self.log.event(
+                "model.load_failed",
+                error=f"{type(exc).__name__}: {exc}",
+                kept_step=self._step if self._model is not None else None,
+            )
+            if self._model is None:
+                raise
+            self._mtime = signature  # do not retry this exact bad pair every message
+            return
+        self._model, self._step = model, step
         self._mtime = signature
         self.log.event(
             "model.load",
@@ -753,6 +898,9 @@ class CheckpointGenerator:
             top_k=self.settings.top_k,
             top_p=self.settings.top_p,
             repetition_penalty=self.settings.repetition_penalty,
+            frequency_penalty=self.settings.frequency_penalty,
+            presence_penalty=self.settings.presence_penalty,
+            no_repeat_ngram_size=self.settings.no_repeat_ngram_size,
         )
         return Generation(
             text=text,
@@ -761,6 +909,9 @@ class CheckpointGenerator:
             top_k=self.settings.top_k,
             top_p=self.settings.top_p,
             repetition_penalty=self.settings.repetition_penalty,
+            frequency_penalty=self.settings.frequency_penalty,
+            presence_penalty=self.settings.presence_penalty,
+            no_repeat_ngram_size=self.settings.no_repeat_ngram_size,
             max_new_tokens=self.settings.max_new_tokens,
             ms=(time.perf_counter() - started) * 1000,
         )
