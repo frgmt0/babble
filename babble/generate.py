@@ -889,7 +889,20 @@ class CheckpointGenerator:
         self._ensure_current()
         assert self._model is not None
         started = time.perf_counter()
-        text = best_continuation(
+        # "continuation" (`<bos> text`, keep going) is what a plain
+        # corpus-trained checkpoint understands; "pair" (`<bos> prompt <sep>`,
+        # generate to <eos>) is what a checkpoint SFT'd on prompt/response
+        # pairs -- like SSH's booper-chat -- actually understands. See
+        # `Settings.serve_layout`.
+        respond = {"continuation": best_continuation, "pair": best_of}.get(
+            self.settings.serve_layout
+        )
+        if respond is None:
+            raise ValueError(
+                f"unknown serve_layout {self.settings.serve_layout!r} -- "
+                f"expected 'continuation' or 'pair'"
+            )
+        text = respond(
             self._model,
             prompt,
             n=max(1, self.settings.best_of),
