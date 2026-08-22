@@ -1,0 +1,31 @@
+[Unit]
+Description=babble throttled CPU pretrain on Discord-Dialogues (scratch, not served)
+After=network-online.target
+Wants=network-online.target
+# Independent of babble-bot / babble-train. Never promote these checkpoints.
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Projects/babble/.beckett/worktrees/run-20260822-throttled-multi-day-cpu-pretrain-detache
+# 6 of 8 logical CPUs (systemd CPUQuota is percent of *one* CPU, so 600% = 6 cores).
+# Leave two threads for interactive use (bot + desktop). Nice 19 matches babble's trainer.
+Nice=19
+CPUQuota=600%
+# 42.5M params + AdamW + 8x1024 activations fit well under 12G; 31G box then
+# still has ~19G for everything else so we cannot push the machine into swap.
+MemoryMax=12G
+MemoryHigh=10G
+OOMPolicy=stop
+Environment=OMP_NUM_THREADS=6
+Environment=MKL_NUM_THREADS=6
+Environment=TOKENIZERS_PARALLELISM=false
+ExecStart=%h/Projects/babble/.beckett/worktrees/run-20260822-throttled-multi-day-cpu-pretrain-detache/.venv/bin/python -u cpu_pretrain.py --output-dir %h/babble-scratch/throttled-cpu-pretrain --tokenizer %h/babble-live/checkpoints/tokenizer.json --dataset mookiezi/Discord-Dialogues --token-budget 80000000 --batch-size 8 --threads 6 --nice 19 --log-every 1 --checkpoint-every 50 --keep-checkpoints 2
+Restart=on-failure
+RestartSec=60s
+KillSignal=SIGTERM
+TimeoutStopSec=180s
+StandardOutput=append:%h/babble-scratch/throttled-cpu-pretrain/train.out
+StandardError=append:%h/babble-scratch/throttled-cpu-pretrain/train.out
+
+[Install]
+WantedBy=default.target
