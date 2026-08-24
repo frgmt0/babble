@@ -68,6 +68,7 @@ real, held-out pairs no matter which of the two optional pools are enabled.
 from __future__ import annotations
 
 import copy
+import json
 import os
 import random
 import shutil
@@ -116,6 +117,7 @@ from .trainer import (
     sweep_scratch,
     to_examples,
 )
+from .util import atomic_write_text, utcnow_iso, utcnow_stamp
 
 __all__ = [
     "PostTrainResult",
@@ -178,6 +180,71 @@ def _ensure_pretrained_snapshot(settings: Settings) -> Path:
         shutil.copyfile(settings.latest_checkpoint, tmp)
         os.replace(tmp, target)
     return target
+
+
+#: Timestamped predecessor copies, alongside the stable `previous.pt` pointer.
+ARCHIVE_DIR = "archive"
+
+
+def _archive_outgoing_checkpoint(settings: Settings) -> None:
+    """Snapshot `latest.pt` before a promotion overwrites it.
+
+    Nothing here touches `pretrained.pt` or its staleness discipline -- this
+    is a *serving-layer* archive, one level up. `babble ab run` compares the
+    freshly promoted checkpoint against exactly this snapshot by default, and
+    `babble ab rollback` restores it if the humans say the promotion made
+    things worse. A no-op the first time a post-train ever promotes anything
+    -- there is no outgoing checkpoint yet.
+
+    Both copies are written atomically (temp file in the same `.partial`
+    scratch dir `save_checkpoint` uses, then `os.replace`), so a kill mid-copy
+    can never leave a half-written archive next to the good ones. Timestamped
+    copies are pruned to `keep_checkpoints`, the same cadence
+    `prune_checkpoints` already gives `ckpt-*.pt` -- these are full ~400MB
+    checkpoints too, and unbounded growth here would be its own incident.
+    """
+    current = settings.latest_checkpoint
+    if not current.exists():
+        return
+    settings.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    scratch = settings.checkpoint_dir / SCRATCH_DIR
+    scratch.mkdir(exist_ok=True)
+    archive_dir = settings.checkpoint_dir / ARCHIVE_DIR
+    archive_dir.mkdir(exist_ok=True)
+
+    step = None
+    try:
+        payload = torch.load(current, map_location="cpu", weights_only=True)
+        step = payload.get("step")
+    except Exception:
+        pass  # archiving must never block a promotion over a bad read of the OLD file
+
+    timestamped = archive_dir / f"previous-{utcnow_stamp()}.pt"
+    tmp_timestamped = scratch / f"{timestamped.name}.tmp"
+    shutil.copyfile(current, tmp_timestamped)
+    os.replace(tmp_timestamped, timestamped)
+
+    tmp_previous = scratch / "previous.pt.tmp"
+    shutil.copyfile(current, tmp_previous)
+    os.replace(tmp_previous, settings.previous_checkpoint)
+
+    keep = max(1, settings.keep_checkpoints)
+    archived = sorted(archive_dir.glob("previous-*.pt"))
+    for stale in archived[:-keep] if len(archived) > keep else []:
+        stale.unlink(missing_ok=True)
+
+    atomic_write_text(
+        settings.previous_meta_path,
+        json.dumps(
+            {
+                "archived_at": utcnow_iso(),
+                "step": step,
+                "hash": file_hash(current),
+                "timestamped_path": str(timestamped),
+            },
+            indent=2,
+        ),
+    )
 
 
 def _load_pretrained(path: Path) -> Babbler:
@@ -498,6 +565,7 @@ def post_train(
         del pretrain_model
         promoted = corpus_val_after <= corpus_val_before + settings.post_gate_margin
     if promoted:
+        _archive_outgoing_checkpoint(settings)
         save_checkpoint(settings, model, optimizer, final_step, final_loss)
 
     current = pair_count(settings)
@@ -786,6 +854,7 @@ def post_train_from_checkpoint(
     os.replace(tmp, candidate_path)
 
     if promoted:
+        _archive_outgoing_checkpoint(settings)
         save_checkpoint(settings, model, optimizer, final_step, final_loss)
 
     log.event(

@@ -12,6 +12,10 @@
     babble synth-status       synthetic vs human correction-pair counts
     babble augment-pairs      LLM-paraphrase train-side correction pairs -> augmented_pairs.jsonl
     babble augment-check      re-run the train/val leakage check on augmented_pairs.jsonl
+    babble ab run             blind A/B: sample two checkpoints over a fixed prompt set -> a session file
+    babble ab rate <session>  rate a session in the terminal, blind -- resumes cleanly if interrupted
+    babble ab report <session> unblind a session, tally votes, run a binomial sign test
+    babble ab rollback        restore the archived predecessor checkpoint into latest.pt
     babble sample -p hello    continue a prefix from the latest checkpoint
     babble curve              the loss curve, as a picture
     babble summary            one-shot state of the whole thing
@@ -160,6 +164,43 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser(
         "augment-check",
         help="re-run the train/val leakage check against stored augmented_pairs.jsonl",
+    )
+
+    ab = sub.add_parser(
+        "ab",
+        help="blind A/B rating between two checkpoints (default: latest.pt vs the archived "
+        "predecessor) -- does not gate promotion, see babble/abtest.py",
+    )
+    ab_sub = ab.add_subparsers(dest="ab_command")
+
+    ab_run = ab_sub.add_parser(
+        "run", help="sample a fixed prompt set from two checkpoints into a blind rating session"
+    )
+    ab_run.add_argument("--a", type=Path, default=None, help="candidate checkpoint (default: checkpoints/latest.pt)")
+    ab_run.add_argument(
+        "--b", type=Path, default=None,
+        help="baseline checkpoint (default: checkpoints/previous.pt, the archived predecessor)",
+    )
+    ab_run.add_argument(
+        "--prompts", type=int, default=None, help="how many prompts total (default: 20)"
+    )
+    ab_run.add_argument("--seed", type=int, default=1, help="deterministic sampling seed, recorded in the session file")
+    ab_run.add_argument(
+        "--out", type=Path, default=None,
+        help="session file to write (default: checkpoints/ab_sessions/ab-<timestamp>.json)",
+    )
+
+    ab_rate = ab_sub.add_parser(
+        "rate", help="rate a session's prompts blind, in the terminal -- resumes cleanly if interrupted"
+    )
+    ab_rate.add_argument("session", type=Path, help="session file written by `babble ab run`")
+
+    ab_report = ab_sub.add_parser("report", help="unblind a session and tally the votes")
+    ab_report.add_argument("session", type=Path, help="session file")
+
+    ab_sub.add_parser(
+        "rollback",
+        help="restore the archived predecessor (checkpoints/previous.pt) into latest.pt, atomically",
     )
 
     gen = sub.add_parser("sample", help="continue a prefix using the latest checkpoint")
@@ -556,6 +597,71 @@ def main(argv: list[str] | None = None) -> int:
             flush=True,
         )
         return 0
+
+    if args.command == "ab":
+        if args.ab_command == "run":
+            from .abtest import DEFAULT_PROMPT_COUNT, run_ab
+            from .identity import Pseudonymiser
+
+            try:
+                session, out_path = run_ab(
+                    settings,
+                    checkpoint_a=args.a,
+                    checkpoint_b=args.b,
+                    count=args.prompts or DEFAULT_PROMPT_COUNT,
+                    seed=args.seed,
+                    out_path=args.out,
+                    ids=Pseudonymiser.load(settings),
+                )
+            except FileNotFoundError as exc:
+                print(f"refused: {exc}", file=sys.stderr, flush=True)
+                return 1
+            print(
+                f"sampled {len(session.items)} prompt(s)\n"
+                f"  candidate: {session.candidate_checkpoint} (step {session.candidate_step})\n"
+                f"  baseline:  {session.baseline_checkpoint} (step {session.baseline_step})\n"
+                f"seed {session.seed} -> {out_path}\n"
+                f"next: babble ab rate {out_path}",
+                flush=True,
+            )
+            return 0
+
+        if args.ab_command == "rate":
+            from .abtest import rate_interactive
+
+            if not args.session.exists():
+                print(f"no such session file: {args.session}", file=sys.stderr, flush=True)
+                return 1
+            rate_interactive(args.session)
+            return 0
+
+        if args.ab_command == "report":
+            from .abtest import build_report, load_session, render_report
+
+            if not args.session.exists():
+                print(f"no such session file: {args.session}", file=sys.stderr, flush=True)
+                return 1
+            session = load_session(args.session)
+            print(render_report(session, build_report(session)), flush=True)
+            return 0
+
+        if args.ab_command == "rollback":
+            from .abtest import rollback
+
+            try:
+                result = rollback(settings)
+            except FileNotFoundError as exc:
+                print(f"refused: {exc}", file=sys.stderr, flush=True)
+                return 1
+            print(
+                f"restored {result['restored_from']} (step {result['restored_step']}) -> "
+                f"{settings.latest_checkpoint}",
+                flush=True,
+            )
+            return 0
+
+        print("usage: babble ab {run,rate,report,rollback}", file=sys.stderr, flush=True)
+        return 1
 
     if args.command == "sample":
         from .generate import continue_text, load_model

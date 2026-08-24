@@ -13,6 +13,12 @@ def utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def utcnow_stamp() -> str:
+    """Filesystem-safe timestamp -- same moment as `utcnow_iso()`, without the
+    colons that break using it directly in a filename."""
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
 def atomic_write_text(path: Path, text: str) -> None:
     """Write a file such that a kill -9 mid-write can never leave a half file.
 

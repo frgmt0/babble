@@ -141,6 +141,29 @@ def write_post_state(settings: Settings, *, pairs: int, step: int, latest_hash: 
     )
 
 
+def record_rollback(settings: Settings, *, restored_from: str, restored_step: int | None) -> None:
+    """Note that `babble ab rollback` just restored an archived checkpoint
+    into `latest.pt` -- called only there, never by post-train itself.
+
+    Also rewrites `latest_hash` to the restored file's own hash. Without
+    that, `pretrained_snapshot_stale` (which compares this field against the
+    hash of whatever is on disk right now) would see `latest.pt` no longer
+    matching what the last post-train itself wrote, read the rollback as a
+    fresh `babble train` landing, and silently re-snapshot `pretrained.pt`
+    from a *post-trained* checkpoint instead of a real pretrain -- exactly
+    the compounding `pretrained.pt` exists to prevent. Recording the
+    restored hash here keeps that snapshot exactly as it was before the
+    promotion that just got rolled back, and updates the state file with the
+    rollback timestamp so subsequent post-trains never miss it happened.
+    """
+    state = read_post_state(settings)
+    state["latest_hash"] = file_hash(settings.latest_checkpoint)
+    state["rolled_back_at"] = utcnow_iso()
+    state["rolled_back_from"] = restored_from
+    state["rolled_back_to_step"] = restored_step
+    atomic_write_text(settings.post_state_path, json.dumps(state, indent=2))
+
+
 def post_trigger(settings: Settings) -> PostTrigger:
     state = read_post_state(settings)
     return PostTrigger(
