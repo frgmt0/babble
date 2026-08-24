@@ -289,7 +289,11 @@ class Settings:
     post_learning_rate: float = 1e-4
     # Refuse to *run* below this many trainable pairs unless forced -- there
     # is nothing a supervised pass can generalise from at a few dozen rows.
-    post_min_pairs: int = 100
+    # 50, not the original 100: the live box already runs at 50
+    # (BABBLE_POST_MIN_PAIRS=50 in the deploy env) -- this brings the in-repo
+    # default in line with what is actually served rather than leaving code
+    # and box disagreeing about a floor neither overrides by accident.
+    post_min_pairs: int = 50
     # Promotion gate: after post-train, the candidate is scored against the
     # pretrain snapshot on the real-corpus validation split (the layout the
     # bot actually serves). If the candidate is worse by more than this
@@ -375,7 +379,7 @@ class Settings:
             post_patience=_env_int("BABBLE_POST_PATIENCE", 3),
             post_layout=os.environ.get("BABBLE_POST_LAYOUT", "continuation"),
             post_learning_rate=_env_float("BABBLE_POST_LEARNING_RATE", 1e-4),
-            post_min_pairs=_env_int("BABBLE_POST_MIN_PAIRS", 100),
+            post_min_pairs=_env_int("BABBLE_POST_MIN_PAIRS", 50),
             post_gate_margin=_env_float("BABBLE_POST_GATE_MARGIN", 0.05),
             post_rehearsal=_env_float("BABBLE_POST_REHEARSAL", 0.5),
             post_trigger_pairs=_env_int("BABBLE_POST_TRIGGER_PAIRS", 10),
@@ -483,6 +487,26 @@ class Settings:
         """Persisted last-trained correction-pair count, so the +N-pair
         post-train trigger does not re-fire on a restart."""
         return self.checkpoint_dir / "post_state.json"
+
+    @property
+    def previous_checkpoint(self) -> Path:
+        """The checkpoint a promotion most recently replaced, archived here
+        before `latest.pt` was overwritten -- see `posttrain._archive_outgoing_checkpoint`.
+        This is what `babble ab run` compares the fresh promotion against by
+        default, and what `babble ab rollback` restores. Absent until the
+        first promotion after this feature landed."""
+        return self.checkpoint_dir / "previous.pt"
+
+    @property
+    def previous_meta_path(self) -> Path:
+        """What `previous_checkpoint` was and when it was archived -- written
+        alongside it by the same promotion that archived the weights."""
+        return self.checkpoint_dir / "previous_meta.json"
+
+    @property
+    def ab_sessions_dir(self) -> Path:
+        """Where `babble ab run` writes blind rating session files."""
+        return self.checkpoint_dir / "ab_sessions"
 
     @property
     def update_state_path(self) -> Path:
