@@ -1212,6 +1212,42 @@ retired for exactly that reason). To train on demand from a terminal:
 babble train --force
 ```
 
+### Running a second bot side by side
+
+Nothing in babble is a singleton: every path and knob comes from the
+environment, the model's shape and vocab come from the checkpoint file itself,
+and bots ignore each other's messages (bot-authored messages are dropped at
+capture). So a second bot serving a *different model under a different Discord
+account* — for A/B-ing two checkpoints in the same channel — is one more
+systemd unit pointed at its own env file, sharing the installed code and venv:
+
+```bash
+# Own state root -- data (consent, salt), checkpoints, logs all separate.
+mkdir -p ~/babble-boopit
+cp deploy/env.boopit.example ~/babble-boopit/.env   # then edit: token + paths
+
+# The checkpoint pair, from its HF repo:
+deploy/fetch-hf-checkpoint.sh ProCreations/boopit-1 ~/babble-boopit/checkpoints
+
+cp deploy/babble-boopit.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now babble-boopit
+BABBLE_LOG_DIR=~/babble-boopit/logs babble logs --follow   # wait for bot.ready
+```
+
+Three things the env file must get right (see `deploy/env.boopit.example`,
+which sets all three):
+
+- **One token, one process.** The second bot needs its own Discord
+  application and token; two processes on one token bounce each other off
+  the gateway.
+- **`BABBLE_SERVE_LAYOUT` must match the served checkpoint** — same
+  invariant as the main bot, nothing auto-detects it.
+- **Zero the training triggers** (`BABBLE_TRAIN_TRIGGER_ROWS=0`,
+  `BABBLE_POST_TRIGGER_PAIRS=0`) so corpus growth can never overwrite the
+  promoted checkpoint with a from-scratch model, and zero the publish
+  cadences — one comparison bot must not double-publish the dataset.
+
 ## Keeping the live install current
 
 The bot runs from a **plain clone**, and drift is invisible if nothing checks
