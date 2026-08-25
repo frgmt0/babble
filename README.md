@@ -1146,7 +1146,8 @@ The knobs that decide what the bot sounds like:
 | `BABBLE_BEST_OF` | `4` | [candidates drawn per reply](#best-of-n); `1` turns it off |
 | `BABBLE_TRAIN_THREADS` | `2` | CPU threads for **training** |
 | `BABBLE_INFER_THREADS` | `4` | CPU threads for decode (8 is slower; see `CPU_INFERENCE.md`) |
-| `BABBLE_QUANTIZE` | off | `1` turns on dynamic int8 on Linear layers at load (faster, small bits/char cost) |
+| `BABBLE_QUANTIZE` | off | `1` turns on dynamic int8 on all Linear layers at load (fastest, small bits/char cost); `head` quantizes only `lm_head` (most of the speedup, fp32 transformer blocks — see `docs/reports/CPU_EXTREME_FOLLOWUP_2026-08-25.md`) |
+| `BABBLE_KV_DTYPE` | off | `bf16`/`fp16` allocates the decode KV cache in half precision — measured *slower* end-to-end on the AVX2 deploy CPU; exists for measurement and future hardware |
 | `BABBLE_TORCH_COMPILE` | off | set `1` to `torch.compile` the model (slow first forward) |
 | `BABBLE_VAL_FRACTION` | `0.2` | [share of corpus rows held out](#validation) |
 | `BABBLE_VAL_MIN_ROWS` | `20` | corpus size below which validation is skipped |

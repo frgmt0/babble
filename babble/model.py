@@ -134,6 +134,12 @@ class CausalSelfAttention(nn.Module):
             cache.v[self.layer_idx][:, :, start:end, :] = v
             k_full = cache.k[self.layer_idx][:, :, :end, :]
             v_full = cache.v[self.layer_idx][:, :, :end, :]
+            if k_full.dtype != q.dtype:
+                # Low-precision KV cache (BABBLE_KV_DTYPE): attention runs in
+                # the cache dtype so the halved K/V buffers are what actually
+                # stream through cache/RAM; only this block's output is cast
+                # back. Everything outside attention stays in the model dtype.
+                q = q.to(k_full.dtype)
             if start == 0:
                 # Fresh prefill: standard causal attention over the prompt.
                 out = F.scaled_dot_product_attention(
@@ -156,6 +162,8 @@ class CausalSelfAttention(nn.Module):
                 )
 
         out = out.transpose(1, 2).contiguous().view(B, T, C)
+        if out.dtype != x.dtype:
+            out = out.to(x.dtype)
         return self.proj(out)
 
 
@@ -212,12 +220,21 @@ class Babbler(nn.Module):
         elif isinstance(module, nn.Embedding):
             nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def new_cache(self, batch_size: int = 1, max_len: int | None = None) -> KVCache:
+    def new_cache(
+        self,
+        batch_size: int = 1,
+        max_len: int | None = None,
+        dtype: torch.dtype | None = None,
+    ) -> KVCache:
         """Fresh preallocated KV cache on CPU.
 
         `max_len` defaults to `block_size`. Prefer passing the tight bound
         `len(context) + max_new_tokens` so Discord replies do not zero a full
         512-step buffer when they only need a fraction of it.
+
+        `dtype` defaults to the model dtype (fp32). A lower-precision cache
+        (bf16/fp16) halves the K/V footprint; attention then runs in that
+        dtype for the cached steps. Opt-in only — see `BABBLE_KV_DTYPE`.
         """
         c = self.config
         head_dim = c.n_embd // c.n_head
@@ -232,7 +249,7 @@ class Babbler(nn.Module):
             head_dim,
             slots,
             device=weight.device,
-            dtype=weight.dtype,
+            dtype=weight.dtype if dtype is None else dtype,
         )
 
     def forward(
