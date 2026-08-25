@@ -27,6 +27,10 @@ between a fine-tune and the served bot, each config-flippable:
    actually serves -- and a candidate worse by more than the margin never
    touches `latest.pt`. Nothing writes `latest.pt` mid-run either, so a
    half-finished fine-tune can never ship.
+5. **A live-checkpoint gate** (`post_live_gate_margin`): the same held-out
+   split is also scored on whatever `latest.pt` is currently served. A
+   candidate that beats its own starting checkpoint but is worse than live
+   by more than the margin does not ship. `--force-promote` overrides.
 
 The `rejected` half of each correction is captured and published, but it is
 not the objective here: this is supervised fine-tuning on the chosen answer,
@@ -123,11 +127,14 @@ __all__ = [
     "PostTrainResult",
     "PostTrigger",
     "AutoPostTrigger",
+    "LiveScore",
+    "decide_promotion",
     "pair_count",
     "post_train",
     "post_train_from_checkpoint",
     "post_trigger",
     "read_post_state",
+    "score_live_checkpoint",
     "trainable_pairs",
     "write_post_state",
 ]
@@ -156,6 +163,13 @@ class PostTrainResult:
     gated: bool = False
     corpus_val_before: float | None = None
     corpus_val_after: float | None = None
+    live_corpus_val: float | None = None
+    live_compare_reason: str | None = None
+    gate_reason: str | None = None
+    force_promote: bool = False
+    candidate_layout: str | None = None
+    live_layout: str | None = None
+    serve_layout_mismatch: bool = False
 
 
 def _ensure_pretrained_snapshot(settings: Settings) -> Path:
@@ -257,6 +271,181 @@ def _load_pretrained(path: Path) -> Babbler:
     return maybe_compile(model)
 
 
+@dataclass(frozen=True)
+class LiveScore:
+    """How currently served `latest.pt` scored on the candidate's val split."""
+
+    corpus_val: float | None = None
+    skip_reason: str | None = None
+    layout: str | None = None
+
+
+def checkpoint_layout(payload: object) -> str | None:
+    """Serve/train layout stamped on a checkpoint, or None if the file predates it."""
+    if not isinstance(payload, dict):
+        return None
+    layout = payload.get("layout")
+    return layout if isinstance(layout, str) and layout else None
+
+
+def score_live_checkpoint(
+    settings: Settings,
+    examples: list[Example],
+    *,
+    candidate_vocab: int,
+    eval_fn,
+) -> LiveScore:
+    """Score currently served `latest.pt` on the candidate's held-out examples.
+
+    Always reports `layout` when the file is readable. `skip_reason` is set
+    when the live checkpoint cannot be compared (missing, unreadable, vocab
+    mismatch). Layout mismatch is the caller's decision: this still scores
+    when vocab matches so both numbers can be logged.
+    """
+    path = settings.latest_checkpoint
+    if not path.is_file():
+        return LiveScore(skip_reason="live_missing")
+    try:
+        payload = torch.load(path, map_location="cpu", weights_only=True)
+    except Exception:
+        return LiveScore(skip_reason="live_unreadable")
+    cfg = payload.get("config") if isinstance(payload, dict) else None
+    if not isinstance(cfg, dict):
+        return LiveScore(skip_reason="live_unreadable")
+    layout = checkpoint_layout(payload)
+    live_vocab = cfg.get("vocab_size")
+    if live_vocab != candidate_vocab:
+        return LiveScore(skip_reason="vocab_mismatch", layout=layout)
+    try:
+        live_model = _load_pretrained(path)
+        loss = eval_fn(live_model, examples)
+        del live_model
+    except Exception:
+        return LiveScore(skip_reason="eval_failed", layout=layout)
+    if loss is None:
+        return LiveScore(skip_reason="live_unscored", layout=layout)
+    return LiveScore(corpus_val=float(loss), layout=layout)
+
+
+def decide_promotion(
+    *,
+    corpus_val_before: float | None,
+    corpus_val_after: float | None,
+    live_corpus_val: float | None,
+    live_compare_reason: str | None,
+    lineage_margin: float,
+    live_margin: float,
+    force_promote: bool,
+    candidate_layout: str | None = None,
+    live_layout: str | None = None,
+) -> tuple[bool, str]:
+    """Lineage gate plus live-checkpoint gate. A candidate must clear both.
+
+    Live corpus_val is only decisive when candidate and live share a layout.
+    corpus_val is continuation-format, so a pair-SFT checkpoint's number is
+    not evidence it is worse than a continuation checkpoint. Different or
+    unknown layouts skip the live numeric refuse (caller still logs both
+    numbers). `force_promote` ships anyway after both verdicts are recorded.
+    """
+    lineage_ok = True
+    if (
+        corpus_val_after is not None
+        and corpus_val_before is not None
+        and lineage_margin >= 0
+    ):
+        lineage_ok = corpus_val_after <= corpus_val_before + lineage_margin
+        lineage_reason = "cleared_lineage" if lineage_ok else "worse_than_start"
+    elif lineage_margin < 0:
+        lineage_reason = "lineage_gate_disabled"
+    else:
+        lineage_reason = "no_lineage_score"
+
+    live_ok = True
+    if live_compare_reason in (
+        "live_missing",
+        "live_unreadable",
+        "vocab_mismatch",
+        "eval_failed",
+        "live_unscored",
+        "live_gate_disabled",
+    ):
+        live_reason = live_compare_reason
+    elif candidate_layout and live_layout and candidate_layout != live_layout:
+        live_reason = "layout_mismatch"
+    elif live_layout is None or candidate_layout is None:
+        live_reason = "layout_unknown"
+    elif live_margin < 0:
+        live_reason = "live_gate_disabled"
+    elif live_corpus_val is not None and corpus_val_after is not None:
+        live_ok = corpus_val_after <= live_corpus_val + live_margin
+        live_reason = "cleared_live" if live_ok else "worse_than_live"
+    else:
+        live_reason = live_compare_reason or "live_unscored"
+
+    would_promote = lineage_ok and live_ok
+    if force_promote and not would_promote:
+        return True, "force_promote"
+    if would_promote:
+        if live_reason in (
+            "cleared_live",
+            "layout_mismatch",
+            "layout_unknown",
+            "vocab_mismatch",
+            "live_missing",
+            "live_unreadable",
+            "eval_failed",
+            "live_unscored",
+            "live_gate_disabled",
+        ):
+            return True, live_reason
+        return True, lineage_reason
+    return False, live_reason if not live_ok else lineage_reason
+
+
+def _live_gate(
+    settings: Settings,
+    examples: list[Example],
+    *,
+    candidate_vocab: int,
+    candidate_layout: str,
+    eval_fn,
+    corpus_val_before: float | None,
+    corpus_val_after: float | None,
+    force_promote: bool,
+) -> tuple[bool, float | None, str | None, str, str | None, bool]:
+    live_corpus_val: float | None = None
+    live_compare_reason: str | None = None
+    live_layout: str | None = None
+    if examples:
+        scored = score_live_checkpoint(
+            settings, examples, candidate_vocab=candidate_vocab, eval_fn=eval_fn
+        )
+        live_corpus_val = scored.corpus_val
+        live_layout = scored.layout
+        live_compare_reason = scored.skip_reason
+        if settings.post_live_gate_margin < 0 and live_compare_reason is None:
+            live_compare_reason = "live_gate_disabled"
+    promoted, gate_reason = decide_promotion(
+        corpus_val_before=corpus_val_before,
+        corpus_val_after=corpus_val_after,
+        live_corpus_val=live_corpus_val,
+        live_compare_reason=live_compare_reason,
+        lineage_margin=settings.post_gate_margin,
+        live_margin=settings.post_live_gate_margin,
+        force_promote=force_promote,
+        candidate_layout=candidate_layout,
+        live_layout=live_layout,
+    )
+    if gate_reason in ("layout_mismatch", "layout_unknown") and live_compare_reason is None:
+        live_compare_reason = gate_reason
+    serve_mismatch = candidate_layout != settings.serve_layout
+    return promoted, live_corpus_val, live_compare_reason, gate_reason, live_layout, serve_mismatch
+
+
+def _round_or_none(value: float | None) -> float | None:
+    return round(value, 6) if value is not None else None
+
+
 def _example_builder(settings: Settings):
     """The layout post-train teaches, per `Settings.post_layout`.
 
@@ -293,6 +482,7 @@ def post_train(
     settings: Settings,
     *,
     force: bool = False,
+    force_promote: bool = False,
     steps: int | None = None,
     patience: int | None = None,
     seed: int = 1,
@@ -553,7 +743,6 @@ def post_train(
     # a measure of memorisation.
     corpus_val_before: float | None = None
     corpus_val_after: float | None = None
-    promoted = True
     if corpus_val_examples and settings.post_gate_margin >= 0:
         corpus_val_after = (
             candidate_corpus_val
@@ -563,10 +752,35 @@ def post_train(
         pretrain_model = _load_pretrained(pretrained_path)
         corpus_val_before = eval_loss(pretrain_model, corpus_val_examples)
         del pretrain_model
-        promoted = corpus_val_after <= corpus_val_before + settings.post_gate_margin
+    elif corpus_val_examples:
+        corpus_val_after = (
+            candidate_corpus_val
+            if candidate_corpus_val is not None
+            else eval_loss(model, corpus_val_examples)
+        )
+    promoted, live_corpus_val, live_compare_reason, gate_reason, live_layout, serve_mismatch = _live_gate(
+        settings,
+        corpus_val_examples,
+        candidate_vocab=uncompiled(model).config.vocab_size,
+        candidate_layout=settings.post_layout,
+        eval_fn=eval_loss,
+        corpus_val_before=corpus_val_before,
+        corpus_val_after=corpus_val_after,
+        force_promote=force_promote,
+    )
+    if serve_mismatch:
+        log.event(
+            "post.serve_layout_mismatch",
+            candidate_layout=settings.post_layout,
+            serve_layout=settings.serve_layout,
+            promoted=promoted,
+            reason="checkpoint_layout_disagrees_with_BABBLE_SERVE_LAYOUT",
+        )
     if promoted:
         _archive_outgoing_checkpoint(settings)
-        save_checkpoint(settings, model, optimizer, final_step, final_loss)
+        save_checkpoint(
+            settings, model, optimizer, final_step, final_loss, layout=settings.post_layout
+        )
 
     current = pair_count(settings)
     write_post_state(
@@ -577,8 +791,18 @@ def post_train(
         step=final_step,
         loss=round(final_loss, 6) if final_loss is not None else None,
         val_loss=round(final_val, 6) if final_val is not None else None,
-        corpus_val_before=round(corpus_val_before, 6) if corpus_val_before is not None else None,
-        corpus_val_after=round(corpus_val_after, 6) if corpus_val_after is not None else None,
+        corpus_val_before=_round_or_none(corpus_val_before),
+        corpus_val_after=_round_or_none(corpus_val_after),
+        live_corpus_val=_round_or_none(live_corpus_val),
+        live_compare_reason=live_compare_reason,
+        candidate_layout=settings.post_layout,
+        live_layout=live_layout,
+        serve_layout=settings.serve_layout,
+        serve_layout_mismatch=True if serve_mismatch else None,
+        post_gate_margin=settings.post_gate_margin,
+        post_live_gate_margin=settings.post_live_gate_margin,
+        gate_reason=gate_reason,
+        force_promote=force_promote,
         promoted=promoted,
         pairs_trained=len(pairs),
         synthetic_pairs_trained=len(synthetic_pairs),
@@ -608,7 +832,21 @@ def post_train(
         gated=not promoted,
         corpus_val_before=corpus_val_before,
         corpus_val_after=corpus_val_after,
+        live_corpus_val=live_corpus_val,
+        live_compare_reason=live_compare_reason,
+        gate_reason=gate_reason,
+        force_promote=force_promote,
+        candidate_layout=settings.post_layout,
+        live_layout=live_layout,
+        serve_layout_mismatch=serve_mismatch,
     )
+
+
+#: Output of `post_train_from_checkpoint` is pair-SFT (prompt/response), even
+#: when corpus_val is still scored in continuation format. Stamped on the
+#: promoted checkpoint so a later continuation post-train cannot "beat" it
+#: on an incomparable corpus_val.
+FROM_CKPT_LAYOUT = "pair"
 
 
 def post_train_from_checkpoint(
@@ -617,6 +855,7 @@ def post_train_from_checkpoint(
     tokenizer_path: Path,
     *,
     force: bool = False,
+    force_promote: bool = False,
     steps: int | None = None,
     patience: int | None = None,
     seed: int = 1,
@@ -822,7 +1061,6 @@ def post_train_from_checkpoint(
 
     corpus_val_before: float | None = None
     corpus_val_after: float | None = None
-    promoted = True
     if corpus_val_examples and settings.post_gate_margin >= 0:
         corpus_val_after = (
             candidate_corpus_val if candidate_corpus_val is not None else eval_examples(corpus_val_examples)
@@ -831,7 +1069,30 @@ def post_train_from_checkpoint(
         pretrain_model.load_state_dict(payload["model"])
         corpus_val_before = eval_examples_with_model(pretrain_model, corpus_val_examples, tok.specials.pad)
         del pretrain_model
-        promoted = corpus_val_after <= corpus_val_before + settings.post_gate_margin
+    elif corpus_val_examples:
+        corpus_val_after = (
+            candidate_corpus_val if candidate_corpus_val is not None else eval_examples(corpus_val_examples)
+        )
+    pad_id = tok.specials.pad
+    candidate_layout = FROM_CKPT_LAYOUT
+    promoted, live_corpus_val, live_compare_reason, gate_reason, live_layout, serve_mismatch = _live_gate(
+        settings,
+        corpus_val_examples,
+        candidate_vocab=model_cfg.vocab_size,
+        candidate_layout=candidate_layout,
+        eval_fn=lambda m, ex: eval_examples_with_model(m, ex, pad_id),
+        corpus_val_before=corpus_val_before,
+        corpus_val_after=corpus_val_after,
+        force_promote=force_promote,
+    )
+    if serve_mismatch:
+        log.event(
+            "post_from_ckpt.serve_layout_mismatch",
+            candidate_layout=candidate_layout,
+            serve_layout=settings.serve_layout,
+            promoted=promoted,
+            reason="checkpoint_layout_disagrees_with_BABBLE_SERVE_LAYOUT",
+        )
 
     # Persist the best candidate for inspection even when the gate leaves
     # latest.pt untouched. This file is never served.
@@ -848,6 +1109,7 @@ def post_train_from_checkpoint(
             "model": model_state_dict(model),
             "optim": optimizer.state_dict(),
             "torch_rng": torch.get_rng_state(),
+            "layout": candidate_layout,
         },
         tmp,
     )
@@ -855,15 +1117,27 @@ def post_train_from_checkpoint(
 
     if promoted:
         _archive_outgoing_checkpoint(settings)
-        save_checkpoint(settings, model, optimizer, final_step, final_loss)
+        save_checkpoint(
+            settings, model, optimizer, final_step, final_loss, layout=candidate_layout
+        )
 
     log.event(
         "post_from_ckpt.done",
         step=final_step,
         loss=round(final_loss, 6) if final_loss is not None else None,
         val_loss=round(final_val, 6) if final_val is not None else None,
-        corpus_val_before=round(corpus_val_before, 6) if corpus_val_before is not None else None,
-        corpus_val_after=round(corpus_val_after, 6) if corpus_val_after is not None else None,
+        corpus_val_before=_round_or_none(corpus_val_before),
+        corpus_val_after=_round_or_none(corpus_val_after),
+        live_corpus_val=_round_or_none(live_corpus_val),
+        live_compare_reason=live_compare_reason,
+        candidate_layout=candidate_layout,
+        live_layout=live_layout,
+        serve_layout=settings.serve_layout,
+        serve_layout_mismatch=True if serve_mismatch else None,
+        post_gate_margin=settings.post_gate_margin,
+        post_live_gate_margin=settings.post_live_gate_margin,
+        gate_reason=gate_reason,
+        force_promote=force_promote,
         promoted=promoted,
         pairs_trained=len(pairs),
         checkpoints=checkpoints,
@@ -888,6 +1162,13 @@ def post_train_from_checkpoint(
         gated=not promoted,
         corpus_val_before=corpus_val_before,
         corpus_val_after=corpus_val_after,
+        live_corpus_val=live_corpus_val,
+        live_compare_reason=live_compare_reason,
+        gate_reason=gate_reason,
+        force_promote=force_promote,
+        candidate_layout=candidate_layout,
+        live_layout=live_layout,
+        serve_layout_mismatch=serve_mismatch,
     )
 
 

@@ -523,7 +523,15 @@ def served_tokenizer_vocab_size(settings: Settings) -> int | None:
     return BPETokenizer.from_json(path).vocab_size
 
 
-def save_checkpoint(settings: Settings, model: Babbler, optimizer, step: int, loss: float) -> Path:
+def save_checkpoint(
+    settings: Settings,
+    model: Babbler,
+    optimizer,
+    step: int,
+    loss: float,
+    *,
+    layout: str = "continuation",
+) -> Path:
     """Write `ckpt-NNNNNNN.pt` and repoint `latest.pt`, both atomically.
 
     Half-written files are staged in a `.partial/` scratch directory rather than
@@ -550,6 +558,12 @@ def save_checkpoint(settings: Settings, model: Babbler, optimizer, step: int, lo
         "optim": optimizer.state_dict(),
         "torch_rng": torch.get_rng_state(),
         "saved_at": utcnow_iso(),
+        # Decode layout this checkpoint is meant to be served/scored as.
+        # corpus_val is continuation-format; pair vs continuation numbers
+        # are not comparable. Recorded here so the promotion gate does not
+        # have to guess. Pretrain writes "continuation"; post-train writes
+        # the layout it actually trained.
+        "layout": layout,
     }
     served_vocab = served_tokenizer_vocab_size(settings)
     model_vocab = payload["config"].get("vocab_size")

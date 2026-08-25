@@ -301,6 +301,14 @@ class Settings:
     # The margin is the measured val noise band, same figure as
     # `train_stall_margin`. Negative disables the gate.
     post_gate_margin: float = 0.05
+    # Additional promotion gate: the candidate is also scored against the
+    # currently served `latest.pt` on the same held-out corpus split. A run
+    # that improves on its own starting checkpoint can still be worse than
+    # what is already live (a weaker lineage). If the candidate is worse than
+    # live by more than this margin, it does not ship. Same default as
+    # `post_gate_margin`. Negative disables only this live comparison; the
+    # per-lineage gate is unchanged. `--force-promote` overrides a refusal.
+    post_live_gate_margin: float = 0.05
     # Fraction of each post-train batch drawn from plain corpus rows
     # (rehearsal) rather than pairs, so the fine-tune cannot drift the
     # weights off the corpus distribution unopposed. 0 disables.
@@ -381,6 +389,7 @@ class Settings:
             post_learning_rate=_env_float("BABBLE_POST_LEARNING_RATE", 1e-4),
             post_min_pairs=_env_int("BABBLE_POST_MIN_PAIRS", 50),
             post_gate_margin=_env_float("BABBLE_POST_GATE_MARGIN", 0.05),
+            post_live_gate_margin=_env_float("BABBLE_POST_LIVE_GATE_MARGIN", 0.05),
             post_rehearsal=_env_float("BABBLE_POST_REHEARSAL", 0.5),
             post_trigger_pairs=_env_int("BABBLE_POST_TRIGGER_PAIRS", 10),
             post_augment_pairs=_env_bool("BABBLE_POST_AUGMENT_PAIRS", False),
