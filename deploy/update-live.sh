@@ -17,6 +17,22 @@
 # Skips (exit 0, try again next tick) rather than fails when a training run
 # is currently in flight, so a restart never kills one mid-write.
 #
+# A refusal or failure is never just a failed systemd unit: `data/update_state.json`
+# (already the record of the last check) also carries a `consecutive_failures`
+# counter and a `commits_behind` count, and every such run appends an
+# `update.alert` log line and, once (first failure) then every
+# BABBLE_UPDATE_ALERT_EVERY_N-th failure after that, both drops a
+# `data/UPDATE_FAILING` marker file and -- if BABBLE_LOG_WEBHOOK_URL (the same
+# webhook the training feed uses, see .env.example) is set -- posts one line
+# to it. Unconfigured webhook is silent, same convention as the rest of the
+# repo's Discord feed. The marker and counter both clear on the next clean
+# run, so a resolved drift does not lie forever.
+#
+# `--check` prints a one-line, network-free status (clean/dirty, commits
+# behind origin/main, last update action, consecutive failures) and exits 0
+# if clean or 1 if dirty -- so this is greppable in one command instead of
+# requiring a `git status` on the box.
+#
 # Every path below is overridable by env var so this runs from any checkout,
 # not just this box:
 #   BABBLE_LIVE_DIR             the live checkout (default: $HOME/babble-live)
@@ -31,6 +47,10 @@
 #   BABBLE_UPDATE_VENV_BIN        directory containing `uv` if not on PATH
 #   BABBLE_UPDATE_RESTART_TIMEOUT  seconds to wait for bot.ready (default: 90)
 #   BABBLE_UPDATE_POLL_INTERVAL    seconds between readiness polls (default: 2)
+#   BABBLE_UPDATE_ALERT_EVERY_N    alert on the 1st failure, then every Nth
+#                                consecutive failure after that (default: 5)
+#   BABBLE_LOG_WEBHOOK_URL        optional Discord webhook for alerts (shared
+#                                with the training feed; unset = no post)
 #   BABBLE_TRAIN_SUBCOMMANDS       space-separated `babble` subcommands that
 #                                count as "training in flight"
 #                                (default: "train post-train")
@@ -44,6 +64,8 @@ DATA_DIR="${BABBLE_DATA_DIR:-$LIVE_DIR/data}"
 LOG_DIR="${BABBLE_LOG_DIR:-$LIVE_DIR/logs}"
 RESTART_TIMEOUT="${BABBLE_UPDATE_RESTART_TIMEOUT:-90}"
 POLL_INTERVAL="${BABBLE_UPDATE_POLL_INTERVAL:-2}"
+ALERT_EVERY_N="${BABBLE_UPDATE_ALERT_EVERY_N:-5}"
+[ "$ALERT_EVERY_N" -gt 0 ] 2>/dev/null || ALERT_EVERY_N=5
 TRAIN_SUBCOMMANDS="${BABBLE_TRAIN_SUBCOMMANDS:-train post-train}"
 
 if [ -n "${BABBLE_UPDATE_VENV_BIN:-}" ]; then
@@ -51,10 +73,9 @@ if [ -n "${BABBLE_UPDATE_VENV_BIN:-}" ]; then
 fi
 
 STATE_FILE="$DATA_DIR/update_state.json"
+MARKER_FILE="$DATA_DIR/UPDATE_FAILING"
 LOG_JSONL="$LOG_DIR/babble.jsonl"
 LOG_TEXT="$LOG_DIR/babble.log"
-
-mkdir -p "$DATA_DIR" "$LOG_DIR"
 
 now_iso() { date -u +"%Y-%m-%dT%H:%M:%S+00:00"; }
 
@@ -92,6 +113,7 @@ fail() {
 }
 
 # $1 local sha  $2 remote sha  $3 up_to_date (true/false)  $4 last_action
+# $5 consecutive_failures  $6 commits_behind (a number, or the literal null)
 write_state() {
   local tmp="$STATE_FILE.tmp.$$"
   cat >"$tmp" <<EOF
@@ -100,10 +122,94 @@ write_state() {
   "local_commit": "$1",
   "remote_commit": "$2",
   "up_to_date": $3,
-  "last_action": "$4"
+  "last_action": "$4",
+  "consecutive_failures": $5,
+  "commits_behind": $6
 }
 EOF
   mv "$tmp" "$STATE_FILE"
+}
+
+# Pulls one integer/string field back out of the last-written state file, so
+# a fresh run knows how many consecutive failures came before it without a
+# second state file. Plain grep/sed on purpose -- update_state.json is a
+# small, fixed shape this script itself writes, and pulling in `jq` (or
+# python, which the live venv does not even carry numpy under) for one field
+# is not worth a new dependency.
+state_field_int() {
+  local key=$1 default=$2 val=""
+  if [ -f "$STATE_FILE" ]; then
+    val=$(grep -o "\"$key\"[[:space:]]*:[[:space:]]*[0-9]*" "$STATE_FILE" 2>/dev/null | grep -o '[0-9]*$' | head -1) || true
+  fi
+  printf '%s' "${val:-$default}"
+}
+
+state_field_str() {
+  local key=$1 default=$2 val=""
+  if [ -f "$STATE_FILE" ]; then
+    val=$(grep -o "\"$key\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" "$STATE_FILE" 2>/dev/null | sed -E 's/.*: *"([^"]*)"$/\1/' | head -1) || true
+  fi
+  printf '%s' "${val:-$default}"
+}
+
+# How many commits HEAD is behind $2, or the literal `null` (unknown) when
+# $2 isn't resolvable -- e.g. a fetch just failed and origin/$BRANCH has
+# never been fetched at all yet.
+commits_behind() {
+  local loc=$1 rem=$2 n
+  if [ -z "$rem" ]; then
+    printf 'null'
+    return
+  fi
+  n=$(git rev-list --count "$loc..$rem" 2>/dev/null) || n=""
+  printf '%s' "${n:-null}"
+}
+
+# First failure, then every ALERT_EVERY_N-th one after that -- the same
+# "first-then-every-fifth" shape as a rate-limited alarm, so a stuck update
+# is impossible to miss but does not spam every 5 minutes forever. Always
+# logs; only drops the marker file / posts to Discord on an actual alert
+# tick, and the marker's content differs every time (growing count and
+# behind-number) rather than repeating byte-for-byte.
+maybe_alert() {
+  local reason=$1 count=$2 behind=$3 behind_display=$3
+  [ "$behind_display" = "null" ] && behind_display="unknown"
+  log_event "alert" "reason=$reason" "consecutive_failures=$count" "commits_behind=$behind_display"
+  if [ "$count" -ne 1 ] && [ $((count % ALERT_EVERY_N)) -ne 0 ]; then
+    return
+  fi
+  local msg
+  msg="update-live ALERT: $reason -- $LIVE_DIR is $count consecutive checks behind (commits_behind=$behind_display over origin/$BRANCH)"
+  {
+    printf '%s\n' "$msg"
+    printf 'checked_at: %s\n' "$(now_iso)"
+  } >"$MARKER_FILE"
+  if [ -n "${BABBLE_LOG_WEBHOOK_URL:-}" ] && command -v curl >/dev/null 2>&1; then
+    curl -fsS -m 5 -X POST -H 'Content-Type: application/json' \
+      -d "{\"content\":\"$(json_escape "$msg")\",\"allowed_mentions\":{\"parse\":[]}}" \
+      "$BABBLE_LOG_WEBHOOK_URL" >/dev/null 2>&1 || true
+  fi
+}
+
+# Clears the marker left by a prior failing streak once things are current
+# again, so a resolved drift does not go on claiming to be broken.
+clear_alert() {
+  if [ -f "$MARKER_FILE" ]; then
+    rm -f "$MARKER_FILE"
+    log_event "recovered" "commit=${1:0:12}"
+  fi
+}
+
+# Writes state with an incremented failure count, alerts, then fails loudly.
+# $1 local sha  $2 remote sha  $3 last_action  $4 human-readable fail message
+fail_drift() {
+  local local_sha=$1 remote_sha=$2 action=$3 message=$4 prev count behind
+  prev=$(state_field_int consecutive_failures 0)
+  count=$((prev + 1))
+  behind=$(commits_behind "$local_sha" "$remote_sha")
+  write_state "$local_sha" "$remote_sha" false "$action" "$count" "$behind"
+  maybe_alert "$action" "$count" "$behind"
+  fail "$message"
 }
 
 # True if a `babble train` process is currently running, from any user's
@@ -166,6 +272,32 @@ normalize_remote() {
   printf '%s' "$u"
 }
 
+# --- --check: a network-free, one-line status query. Reads whatever
+# origin/$BRANCH ref the last real run already fetched (never fetches
+# itself, same "never hit the network just to answer a question" rule
+# `babble summary` follows) plus the state file's own bookkeeping, so it is
+# safe to run as often as you like by hand.
+if [ "${1:-}" = "--check" ]; then
+  [ -d "$LIVE_DIR" ] || { echo "update-live --check: BABBLE_LIVE_DIR=$LIVE_DIR does not exist" >&2; exit 2; }
+  cd "$LIVE_DIR"
+  git rev-parse --git-dir >/dev/null 2>&1 || { echo "update-live --check: $LIVE_DIR is not a git checkout" >&2; exit 2; }
+  status="clean"
+  [ -n "$(git status --porcelain --untracked-files=no)" ] && status="dirty"
+  behind="unknown"
+  if git rev-parse "origin/$BRANCH" >/dev/null 2>&1; then
+    behind=$(git rev-list --count "HEAD..origin/$BRANCH" 2>/dev/null) || behind="unknown"
+  fi
+  last_action=$(state_field_str last_action unknown)
+  consecutive=$(state_field_int consecutive_failures 0)
+  checked_at=$(state_field_str checked_at never)
+  printf 'status=%s behind=%s last_action=%s consecutive_failures=%s checked_at=%s\n' \
+    "$status" "$behind" "$last_action" "$consecutive" "$checked_at"
+  [ "$status" = "clean" ]
+  exit $?
+fi
+
+mkdir -p "$DATA_DIR" "$LOG_DIR"
+
 [ -d "$LIVE_DIR" ] || fail "BABBLE_LIVE_DIR=$LIVE_DIR does not exist"
 cd "$LIVE_DIR"
 git rev-parse --git-dir >/dev/null 2>&1 || fail "$LIVE_DIR is not a git checkout"
@@ -180,37 +312,42 @@ if [ "$(normalize_remote "$origin_url")" != "$(normalize_remote "$EXPECTED_REMOT
 fi
 
 # --- 2. fetch, then compare.
-git fetch --quiet origin "$BRANCH" || fail "git fetch origin $BRANCH failed"
-
 local_sha=$(git rev-parse HEAD)
+if ! git fetch --quiet origin "$BRANCH"; then
+  remote_sha=$(git rev-parse "origin/$BRANCH" 2>/dev/null || printf '')
+  fail_drift "$local_sha" "$remote_sha" "failed_fetch" "git fetch origin $BRANCH failed"
+fi
+
 remote_sha=$(git rev-parse "origin/$BRANCH")
 
 if [ "$local_sha" = "$remote_sha" ]; then
-  write_state "$local_sha" "$remote_sha" true "noop"
+  write_state "$local_sha" "$remote_sha" true "noop" 0 0
+  clear_alert "$local_sha"
   log_event "noop" "commit=${local_sha:0:12}"
   exit 0
 fi
 
 # --- 3. refuse to merge over uncommitted tracked changes.
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
-  write_state "$local_sha" "$remote_sha" false "skipped_dirty"
-  fail "working tree in $LIVE_DIR has uncommitted tracked changes -- refusing to merge"
+  fail_drift "$local_sha" "$remote_sha" "skipped_dirty" \
+    "working tree in $LIVE_DIR has uncommitted tracked changes -- refusing to merge"
 fi
 
 # --- 4. never restart mid-write: a training run in flight means skip this
 # cycle, not fail it -- the next tick will pick it up once the run has
-# finished and written its checkpoint.
+# finished and written its checkpoint. Not a failure, so it neither
+# increments nor resets the consecutive-failure count.
 if training_in_flight; then
-  write_state "$local_sha" "$remote_sha" false "skipped_training"
+  prev_failures=$(state_field_int consecutive_failures 0)
+  behind=$(commits_behind "$local_sha" "$remote_sha")
+  write_state "$local_sha" "$remote_sha" false "skipped_training" "$prev_failures" "$behind"
   log_event "skipped" "reason=training_in_flight" "commit=${local_sha:0:12}"
   exit 0
 fi
 
 # --- 5. fast-forward only. Never merge, never rebase, never force.
-git merge --ff-only --quiet "origin/$BRANCH" || {
-  write_state "$local_sha" "$remote_sha" false "failed_merge"
-  fail "git merge --ff-only origin/$BRANCH failed (local history has diverged?)"
-}
+git merge --ff-only --quiet "origin/$BRANCH" || fail_drift "$local_sha" "$remote_sha" "failed_merge" \
+  "git merge --ff-only origin/$BRANCH failed (local history has diverged?)"
 new_sha=$(git rev-parse HEAD)
 log_event "merged" "from=${local_sha:0:12}" "to=${new_sha:0:12}"
 
@@ -220,8 +357,7 @@ if git diff --name-only "$local_sha" "$new_sha" | grep -qx 'uv.lock'; then
     if uv sync --quiet; then
       log_event "synced" "commit=${new_sha:0:12}"
     else
-      write_state "$new_sha" "$remote_sha" false "failed_sync"
-      fail "uv sync failed after merging to ${new_sha:0:12}"
+      fail_drift "$new_sha" "$remote_sha" "failed_sync" "uv sync failed after merging to ${new_sha:0:12}"
     fi
   else
     log_event "sync_skipped" "reason=uv_not_found"
@@ -233,10 +369,8 @@ fi
 offset_before=0
 [ -f "$LOG_TEXT" ] && offset_before=$(wc -c <"$LOG_TEXT")
 
-systemctl --user restart "$BOT_UNIT" || {
-  write_state "$new_sha" "$remote_sha" false "failed_restart"
-  fail "systemctl --user restart $BOT_UNIT failed"
-}
+systemctl --user restart "$BOT_UNIT" || fail_drift "$new_sha" "$remote_sha" "failed_restart" \
+  "systemctl --user restart $BOT_UNIT failed"
 log_event "restarted" "unit=$BOT_UNIT" "commit=${new_sha:0:12}"
 
 deadline=$(( $(date +%s) + RESTART_TIMEOUT ))
@@ -253,9 +387,10 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
 done
 
 if [ -z "$ready" ]; then
-  write_state "$new_sha" "$remote_sha" false "failed_restart_verify"
-  fail "$BOT_UNIT did not log bot.ready within ${RESTART_TIMEOUT}s of restart"
+  fail_drift "$new_sha" "$remote_sha" "failed_restart_verify" \
+    "$BOT_UNIT did not log bot.ready within ${RESTART_TIMEOUT}s of restart"
 fi
 
-write_state "$new_sha" "$remote_sha" true "updated"
+write_state "$new_sha" "$remote_sha" true "updated" 0 0
+clear_alert "$new_sha"
 log_event "done" "commit=${new_sha:0:12}"

@@ -824,10 +824,13 @@ class CheckpointGenerator:
     new mtime before the next generation and picks it up, so the bot gets smarter
     (or at least different) without a restart.
 
-    What it produces is a **continuation** of what was said to it, not an answer
-    to it, because that is the only thing the corpus objective ever taught it to
-    do. Feeding it `<bos> prompt <sep>` instead would put a token in front of it
-    that never once appeared in training.
+    What it produces depends on `Settings.serve_layout`. By default it is a
+    **continuation** of what was said to it, not an answer to it, because that
+    is the only thing the plain corpus objective ever taught an ordinary
+    checkpoint to do -- feeding it `<bos> prompt <sep>` instead would put a
+    token in front of it that never once appeared in training. A checkpoint
+    SFT'd on prompt/response **pairs** (`serve_layout="pair"`) understands that
+    token and is served that way instead.
     """
 
     def __init__(self, settings: Settings, log: EventLog | None = None) -> None:

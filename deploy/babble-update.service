@@ -13,4 +13,9 @@ Description=babble live-install self-update (check origin/main, fast-forward, re
 Type=oneshot
 WorkingDirectory=%h/babble-live
 Environment=BABBLE_LIVE_DIR=%h/babble-live
+# Optional (leading '-'): only read for BABBLE_LOG_WEBHOOK_URL, so a loud
+# refusal can also post to Discord. Missing .env is not an error -- the
+# script's alerting is silent without it, same as everywhere else this
+# webhook is used.
+EnvironmentFile=-%h/babble-live/.env
 ExecStart=%h/babble-live/deploy/update-live.sh
