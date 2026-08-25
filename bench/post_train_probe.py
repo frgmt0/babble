@@ -1,5 +1,5 @@
 """Fixed-probe sampler used for the corrections-only post-train A/B in
-POST_TRAIN_EXPERIMENT.md.
+docs/reports/POST_TRAIN_EXPERIMENT.md.
 
 Loads whatever checkpoint sits at `$BABBLE_CHECKPOINT_DIR/latest.pt` and runs a
 fixed prompt set through it with seeded generators, so the *same* random draws

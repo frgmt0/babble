@@ -37,7 +37,7 @@ project report for what it found on this run.
 correction pair on the *train* side of `pairsplit.pair_split` -- the same
 split `posttrain.py` uses to hold out real pairs for validation. Generating
 from a val-side pair would let paraphrased-but-recognisable val phrasing back
-into training, exactly the leak `PIPELINE_REVAMP_2026-08-20.md` §7.1
+into training, exactly the leak `docs/reports/PIPELINE_REVAMP_2026-08-20.md` §7.1
 documents for the corpus-level generator (364/1200 rows carrying val-only
 trigrams, a fake 0.33 nat "improvement"). `generate_augmented_pairs` only
 ever reads train-side pairs; `check_leakage` / `assert_no_leakage` below are

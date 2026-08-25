@@ -1,6 +1,6 @@
 """One tokenizer-swap run: train+eval with byte / BPE / word tokenization,
 reporting a normalised bits-per-character number so the three are comparable
-on one axis -- see the measurement trap in CAPACITY_TOKENIZER_REPORT.md.
+on one axis -- see the measurement trap in docs/reports/CAPACITY_TOKENIZER_REPORT.md.
 
 Mirrors experiments/sweep.py as closely as possible (same corpus/split via
 babble.trainer, same optimiser loop, same early-stop-off + keep-best-val

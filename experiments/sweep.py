@@ -234,7 +234,7 @@ def main() -> int:
     # token is one byte, so this is close to a formality -- but computing it
     # the same way (total nats / raw Unicode char count of the held-out text)
     # as experiments/tokenizer_sweep.py does is what makes this run's number
-    # and a BPE/word run's number sit on the same axis. See CAPACITY_TOKENIZER_REPORT.md.
+    # and a BPE/word run's number sit on the same axis. See docs/reports/CAPACITY_TOKENIZER_REPORT.md.
     best_val_nats, _ = full_loss_stats(model, val_examples)
     best_val_bpc = bits_per_char(best_val_nats, char_count(split.val))
     samples = {}

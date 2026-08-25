@@ -438,7 +438,7 @@ approximately nothing — and measured on the live corpus, the original settings
 did real damage on the way there: 38 pairs fine-tuned at the pretrain LR
 shipped a checkpoint whose held-out corpus loss was **+1.15 nats worse** than
 the pretrain it started from
-([the revamp report](PIPELINE_REVAMP_2026-08-20.md) has the numbers). Note
+([the revamp report](docs/reports/PIPELINE_REVAMP_2026-08-20.md) has the numbers). Note
 also that the bot *serves* plain continuations, not the `<sep>` pair layout —
 so what post-train teaches is never directly exercised at inference, and the
 damage to the continuation ability is the whole effect the served bot sees.
@@ -534,7 +534,7 @@ tokenizer instead of hardcoding `babble.tokenizer`'s raw bytes.
 Full writeup — dataset/model-size/tokenizer justification, measured
 throughput, the exact SSH-facing command, cost estimates, and what "done"
 looks like once a real checkpoint comes back — lives in
-[HF_PRETRAIN_PIPELINE.md](HF_PRETRAIN_PIPELINE.md).
+[HF_PRETRAIN_PIPELINE.md](docs/reports/HF_PRETRAIN_PIPELINE.md).
 
 ## Synthetic correction pairs
 

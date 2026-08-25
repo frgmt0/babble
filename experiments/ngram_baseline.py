@@ -124,7 +124,7 @@ def main() -> int:
     # experiments/tokenizer_sweep.py's BPE/word numbers: `val_loss` above is
     # nats *per byte* (this baseline is byte-level), which is not quite the
     # same as nats per Unicode character whenever the corpus has any non-ASCII
-    # text. See CAPACITY_TOKENIZER_REPORT.md for the full normalisation note.
+    # text. See docs/reports/CAPACITY_TOKENIZER_REPORT.md for the full normalisation note.
     val_chars = sum(len(row.text) for row in split.val)
     val_nats_total = val_loss * sum(1 for tokens, mask in val_streams for i in range(1, len(tokens)) if mask[i])
     val_bits_per_char = (val_nats_total / max(val_chars, 1)) / math.log(2)

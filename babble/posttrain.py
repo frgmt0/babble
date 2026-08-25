@@ -866,7 +866,7 @@ def post_train_from_checkpoint(
 ) -> PostTrainResult:
     """Stage 2 against an EXTERNALLY supplied pretrain checkpoint -- e.g. one
     `pretrain_hf.py` produced on a GPU we don't have (see
-    `HF_PRETRAIN_PIPELINE.md`), rather than the checkpoint `babble train`
+    `docs/reports/HF_PRETRAIN_PIPELINE.md`), rather than the checkpoint `babble train`
     wrote locally.
 
     Same guardrails as `post_train()`: post-train's own (lower) learning
