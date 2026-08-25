@@ -1261,9 +1261,15 @@ so the next scheduled check finds a clean tree and can keep doing its job.
   line to it. Both clear automatically on the next clean run. Unconfigured
   webhook is silent, same convention as the rest of the repo.
 - `deploy/update-live.sh --check` prints the same state in one greppable,
-  network-free line -- `status=clean|dirty behind=<n> last_action=<...>
-  consecutive_failures=<n> checked_at=<...>` -- and exits `0` clean / `1`
-  dirty, instead of requiring a `git status` on the box.
+  network-free line -- `status=clean|dirty behind=<n> ahead=<n> last_action=<...>
+  consecutive_failures=<n> checked_at=<...>` -- and exits `0` only when the
+  tree is clean *and* HEAD is not ahead of origin (divergence is as loud as
+  dirtiness), instead of requiring a `git status` on the box.
+- A checkout that cannot fast-forward -- HEAD has commits origin does not --
+  is refused with `last_action=skipped_diverged` on the same first-then-every-
+  Nth alert path as `skipped_dirty`. The 2026-08-25 live box had five local-only
+  commits and the updater failed every five minutes with
+  `Not possible to fast-forward` while looking no louder than a dirty tree.
 
 ### Installing the timer
 
@@ -1320,7 +1326,7 @@ into the box:
 babble summary                              # last line: running commit vs origin/main
 babble logs -n 20                           # recent update.* events, interleaved with everything else
 cat ~/babble-live/data/update_state.json    # exactly what the last check decided, and when
-deploy/update-live.sh --check               # one greppable line: clean/dirty, commits behind, last action
+deploy/update-live.sh --check               # one greppable line: clean/dirty, behind, ahead, last action
 ```
 
 `babble summary`'s `code` line reports the commit actually running (read
