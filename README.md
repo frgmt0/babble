@@ -1142,6 +1142,7 @@ The knobs that decide what the bot sounds like:
 | `BABBLE_POST_MIN_PAIRS` | `100` | below this many trainable pairs post-train refuses to run (`--force` overrides) |
 | `BABBLE_POST_GATE_MARGIN` | `0.05` | [promotion gate](#post-training-on-the-correction-pairs): a candidate worse than the pretrain snapshot by more than this on held-out corpus val is not written to `latest.pt`; negative disables |
 | `BABBLE_POST_LAYOUT` | `continuation` | what post-train teaches: `continuation` (the layout serving actually uses) or `pair` (the historical `<bos> prompt <sep> response` layout) |
+| `BABBLE_SERVE_LAYOUT` | `continuation` | what decode layout `CheckpointGenerator` actually serves with: `continuation` (`generate.best_continuation`) or `pair` (`generate.best_of`) -- see below |
 | `BABBLE_BEST_OF` | `4` | [candidates drawn per reply](#best-of-n); `1` turns it off |
 | `BABBLE_TRAIN_THREADS` | `2` | CPU threads for **training** |
 | `BABBLE_INFER_THREADS` | `4` | CPU threads for decode (8 is slower; see `CPU_INFERENCE.md`) |
@@ -1149,6 +1150,15 @@ The knobs that decide what the bot sounds like:
 | `BABBLE_TORCH_COMPILE` | off | set `1` to `torch.compile` the model (slow first forward) |
 | `BABBLE_VAL_FRACTION` | `0.2` | [share of corpus rows held out](#validation) |
 | `BABBLE_VAL_MIN_ROWS` | `20` | corpus size below which validation is skipped |
+
+`BABBLE_SERVE_LAYOUT` does not auto-detect: the checkpoint file itself carries
+no flag saying which layout it was trained on, so a checkpoint SFT'd on
+prompt/response pairs (e.g. SSH's booper-chat, SFT'd on
+`mookiezi/Discord-Dialogues`) must be served with `BABBLE_SERVE_LAYOUT=pair`,
+or it keeps writing more of the user's message instead of answering it. **The
+live install currently sets `BABBLE_SERVE_LAYOUT=pair`** for exactly that
+checkpoint. An ordinary pretrained/`continuation`-post-trained checkpoint
+needs no override -- the default already matches what it was trained on.
 
 `correction_weight` and `approval_weight` still exist in `config.py` and are
 still written into the `weight` field of stored correction rows, but **nothing
@@ -1240,6 +1250,20 @@ so the next scheduled check finds a clean tree and can keep doing its job.
 - Logs every action, and every no-op decision, to the same `logs/babble.log` /
   `logs/babble.jsonl` the bot writes, and records the outcome of the last
   check in `data/update_state.json`.
+- **A refusal or failure is never just a failed systemd unit.** The
+  2026-08-22 incident above repeated identically every five minutes for two
+  days with nothing surfacing it outside a log line nobody was tailing --
+  `data/update_state.json` now also tracks `consecutive_failures` and
+  `commits_behind`, and on the first failure, then every
+  `BABBLE_UPDATE_ALERT_EVERY_N`-th one after that (default `5`), the script
+  drops a `data/UPDATE_FAILING` marker and, if `BABBLE_LOG_WEBHOOK_URL` (the
+  same webhook the [training feed](#training-feed) uses) is set, posts one
+  line to it. Both clear automatically on the next clean run. Unconfigured
+  webhook is silent, same convention as the rest of the repo.
+- `deploy/update-live.sh --check` prints the same state in one greppable,
+  network-free line -- `status=clean|dirty behind=<n> last_action=<...>
+  consecutive_failures=<n> checked_at=<...>` -- and exits `0` clean / `1`
+  dirty, instead of requiring a `git status` on the box.
 
 ### Installing the timer
 
@@ -1272,6 +1296,7 @@ environment variable rather than hardcoded, so the same script runs anywhere:
 | `BABBLE_UPDATE_BRANCH` | `main` | branch to track |
 | `BABBLE_BOT_UNIT` | `babble-bot` | the systemd `--user` unit to restart |
 | `BABBLE_UPDATE_RESTART_TIMEOUT` | `90` | seconds to wait for `bot.ready` after a restart |
+| `BABBLE_UPDATE_ALERT_EVERY_N` | `5` | alert on the 1st consecutive failure, then every Nth after that |
 | `BABBLE_TRAIN_SUBCOMMANDS` | `train post-train` | space-separated `babble` subcommands that count as "training in flight" |
 
 The timer runs on a wall-clock schedule (`OnCalendar=*:0/5`, every 5 minutes)
@@ -1288,13 +1313,14 @@ daemon-reload && systemctl --user restart babble-update.timer`.
 
 ### Checking whether it's actually current
 
-Three ways to answer "is booper running the latest code?" without shelling
+Four ways to answer "is booper running the latest code?" without shelling
 into the box:
 
 ```bash
 babble summary                              # last line: running commit vs origin/main
 babble logs -n 20                           # recent update.* events, interleaved with everything else
 cat ~/babble-live/data/update_state.json    # exactly what the last check decided, and when
+deploy/update-live.sh --check               # one greppable line: clean/dirty, commits behind, last action
 ```
 
 `babble summary`'s `code` line reports the commit actually running (read
