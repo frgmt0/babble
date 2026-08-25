@@ -189,3 +189,115 @@ def test_can_cache_when_new_tokens_would_overflow_block():
     assert generate._can_cache(model, context_len=8, max_new_tokens=10_000)
     assert not generate._can_cache(model, context_len=TINY.block_size, max_new_tokens=1)
 
+
+def test_int8_head_quantizes_only_the_head():
+    """Head-only int8: blocks stay plain fp32 Linear, lm_head is quantized."""
+    from babble.cpu_runtime import quantize_int8_head
+
+    torch.manual_seed(0)
+    model = Babbler(TINY)
+    model.eval()
+    tied_before = model.tok_emb.weight.detach().clone()
+    n_params = model.num_params()
+    q = quantize_int8_head(model)
+    # Every block Linear is still a plain fp32 nn.Linear.
+    for block in q.blocks:
+        assert isinstance(block.attn.qkv, torch.nn.Linear)
+        assert isinstance(block.attn.proj, torch.nn.Linear)
+        assert block.attn.qkv.weight.dtype == torch.float32
+    # The head is not a plain Linear any more, and the embedding is untouched.
+    assert not type(q.lm_head) is torch.nn.Linear
+    assert q.tok_emb.weight.dtype == torch.float32
+    assert torch.equal(q.tok_emb.weight, tied_before)
+    assert q.num_params() == n_params
+    text = continue_text(q, "hi", max_new_tokens=8, temperature=0.0)
+    assert isinstance(text, str) and len(text) > 0
+
+
+def test_int8_head_logits_stay_close_to_fp32():
+    """Only one matmul is quantized, so logits must track fp32 closely."""
+    from babble.cpu_runtime import quantize_int8_head
+
+    torch.manual_seed(0)
+    model = Babbler(TINY)
+    model.eval()
+    idx = torch.randint(0, TINY.vocab_size, (1, 16))
+    with torch.inference_mode():
+        ref = model(idx)
+    q = quantize_int8_head(model)
+    with torch.inference_mode():
+        got = q(idx)
+    assert torch.allclose(ref, got, atol=0.05)
+
+
+def test_prepare_for_cpu_infer_head_mode(monkeypatch):
+    from babble.cpu_runtime import prepare_for_cpu_infer, quantize_mode_from_env
+
+    monkeypatch.setenv("BABBLE_QUANTIZE", "head")
+    assert quantize_mode_from_env() == "head"
+    model = prepare_for_cpu_infer(Babbler(TINY))
+    assert not type(model.lm_head) is torch.nn.Linear
+    assert isinstance(model.blocks[0].attn.qkv, torch.nn.Linear)
+
+    monkeypatch.setenv("BABBLE_QUANTIZE", "1")
+    assert quantize_mode_from_env() == "all"
+    monkeypatch.setenv("BABBLE_QUANTIZE", "0")
+    assert quantize_mode_from_env() == "off"
+    monkeypatch.delenv("BABBLE_QUANTIZE")
+    assert quantize_mode_from_env() == "off"
+
+
+def test_low_precision_kv_cache_decodes_and_stays_close():
+    """A bf16/fp16 KV cache must decode and roughly agree with fp32."""
+    torch.manual_seed(0)
+    model = Babbler(TINY)
+    model.eval()
+    idx = torch.randint(0, TINY.vocab_size, (1, 12))
+    with torch.inference_mode():
+        ref = model(idx)[:, -1]
+        for dtype in (torch.bfloat16, torch.float16):
+            cache = model.new_cache(1, max_len=16, dtype=dtype)
+            assert cache.k[0].dtype == dtype
+            got = model(idx, cache=cache)[:, -1]
+            assert got.dtype == torch.float32
+            # Loose tolerance: attention ran in half precision on purpose.
+            assert torch.allclose(ref, got, atol=0.1)
+            # And a cached single-token step still works.
+            step = torch.randint(0, TINY.vocab_size, (1, 1))
+            out = model(step, cache=cache)
+            assert out.shape[-1] == TINY.vocab_size
+
+
+def test_kv_dtype_from_env(monkeypatch):
+    from babble.cpu_runtime import kv_dtype_from_env
+
+    monkeypatch.delenv("BABBLE_KV_DTYPE", raising=False)
+    assert kv_dtype_from_env() is None
+    monkeypatch.setenv("BABBLE_KV_DTYPE", "bf16")
+    assert kv_dtype_from_env() is torch.bfloat16
+    monkeypatch.setenv("BABBLE_KV_DTYPE", "fp16")
+    assert kv_dtype_from_env() is torch.float16
+    monkeypatch.setenv("BABBLE_KV_DTYPE", "nonsense")
+    assert kv_dtype_from_env() is None
+
+
+def test_bench_int4_linear_matches_fp32_within_group_quant_noise():
+    torch.manual_seed(0)
+    if not hasattr(torch.ops.aten, "_weight_int4pack_mm_for_cpu"):
+        import pytest
+
+        pytest.skip("no int4 CPU kernel in this torch build")
+    from bench.cpu_matrix import Int4Linear
+
+    lin = torch.nn.Linear(64, 96, bias=False)
+    lin.weight.data.mul_(0.02)
+    q = Int4Linear(lin, group_size=32)
+    x = torch.randn(3, 64)
+    with torch.inference_mode():
+        ref = lin(x)
+        got = q(x)
+    assert got.shape == ref.shape
+    # int4 group quantization noise, not kernel bugs: stays within ~5% of
+    # the output scale.
+    assert (got - ref).abs().max() <= 0.05 * ref.abs().max() + 1e-3
+

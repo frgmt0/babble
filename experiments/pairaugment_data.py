@@ -4,9 +4,9 @@
 install (`~/babble-live`) is off-limits for this run (build + measure only,
 no promotion, no touching the live data). So this is not ro's real 50
 corrections -- it is 50 hand-written pairs in the same register the real
-corpus is documented to have (`PIPELINE_REVAMP_2026-08-20.md`: lowercase,
+corpus is documented to have (`docs/reports/PIPELINE_REVAMP_2026-08-20.md`: lowercase,
 short, Discord cadence, slang) and in the same rough size class, so the
-measurement in `PAIR_AUGMENT_REPORT.md` exercises the real code path on data
+measurement in `docs/reports/PAIR_AUGMENT_REPORT.md` exercises the real code path on data
 that is honest about not being the real thing. See that report's methodology
 section for the caveat this implies.
 """

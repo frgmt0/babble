@@ -3,7 +3,7 @@
 # default (3.3M params) toward genuinely tiny, 3 seeds per config, fixed
 # lr/dropout/cosine at the current defaults (config.py) so only capacity
 # varies. Never writes to checkpoints/ -- results land in
-# experiments/results/capacity/. See CAPACITY_TOKENIZER_REPORT.md.
+# experiments/results/capacity/. See docs/reports/CAPACITY_TOKENIZER_REPORT.md.
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 PY=.venv/bin/python

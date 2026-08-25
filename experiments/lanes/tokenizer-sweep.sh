@@ -3,7 +3,7 @@
 # word-level, all at the same architecture and step budget, 3 seeds each.
 # Off the production path -- babble/subword.py, never imported by core.py /
 # generate.py / trainer.py / bot.py. Never writes to checkpoints/ -- results
-# land in experiments/results/tokenizer/. See CAPACITY_TOKENIZER_REPORT.md.
+# land in experiments/results/tokenizer/. See docs/reports/CAPACITY_TOKENIZER_REPORT.md.
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 PY=.venv/bin/python

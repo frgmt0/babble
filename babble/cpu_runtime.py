@@ -126,6 +126,49 @@ def _env_flag(name: str, default: bool) -> bool:
     return raw not in {"0", "false", "no", "off"}
 
 
+def _untie_lm_head(model: nn.Module) -> None:
+    """Give a tied `lm_head` its own Parameter so it can be quantized alone.
+
+    The clone is decode-only and is never written back to a checkpoint.
+    """
+    lm_head = getattr(model, "lm_head", None)
+    tok_emb = getattr(model, "tok_emb", None)
+    if (
+        isinstance(lm_head, nn.Linear)
+        and tok_emb is not None
+        and lm_head.weight.data_ptr() == tok_emb.weight.data_ptr()
+    ):
+        lm_head.weight = nn.Parameter(tok_emb.weight.detach().clone())
+
+
+def quantize_int8_head(model: nn.Module) -> nn.Module:
+    """Dynamic int8 on the `lm_head` only; every block Linear stays fp32.
+
+    Measured on the i7-4790 deploy box (AVX2, 8 MiB L3), the 512→16384
+    output head is the majority of fp32 decode time, and dynamic int8 makes
+    that one GEMM ~8x faster — while the same quantization makes the small
+    per-block linears *slower* than fp32 at decode shapes. Quantizing only
+    the head therefore keeps most of the int8 throughput win while leaving
+    all eight transformer blocks bit-exact fp32, which bounds the quality
+    cost to logit rounding in a single matmul. See
+    docs/reports/CPU_L3_EXTREME_OPTIMIZATION_REPORT_2026-08-25.md and its
+    follow-up for the numbers.
+    """
+    prior = None
+    if hasattr(model, "num_params"):
+        try:
+            prior = int(model.num_params())
+        except Exception:
+            prior = None
+    _untie_lm_head(model)
+    model = torch.ao.quantization.quantize_dynamic(
+        model, {"lm_head"}, dtype=torch.qint8
+    )
+    if prior is not None:
+        model._params_before_quant = prior
+    return model
+
+
 def quantize_dynamic_linears(model: nn.Module) -> nn.Module:
     """Dynamic int8 on every `nn.Linear`. Embeddings stay fp32.
 
@@ -144,14 +187,7 @@ def quantize_dynamic_linears(model: nn.Module) -> nn.Module:
             prior = int(model.num_params())
         except Exception:
             prior = None
-    lm_head = getattr(model, "lm_head", None)
-    tok_emb = getattr(model, "tok_emb", None)
-    if (
-        isinstance(lm_head, nn.Linear)
-        and tok_emb is not None
-        and lm_head.weight.data_ptr() == tok_emb.weight.data_ptr()
-    ):
-        lm_head.weight = nn.Parameter(tok_emb.weight.detach().clone())
+    _untie_lm_head(model)
     model = torch.ao.quantization.quantize_dynamic(
         model, {nn.Linear}, dtype=torch.qint8
     )
@@ -160,10 +196,43 @@ def quantize_dynamic_linears(model: nn.Module) -> nn.Module:
     return model
 
 
+def quantize_mode_from_env() -> str:
+    """`BABBLE_QUANTIZE` as one of `off` / `all` / `head`.
+
+    Truthy values (`1`, `true`, …) keep their historical meaning: dynamic
+    int8 on every Linear. The new `head` value quantizes only `lm_head`
+    (see `quantize_int8_head`). Default is off — serving quality must not
+    change by default.
+    """
+    raw = os.environ.get("BABBLE_QUANTIZE", "").strip().lower()
+    if raw == "head":
+        return "head"
+    if not raw or raw in {"0", "false", "no", "off"}:
+        return "off"
+    return "all"
+
+
+def kv_dtype_from_env() -> torch.dtype | None:
+    """Opt-in low-precision KV cache dtype from `BABBLE_KV_DTYPE`.
+
+    Returns None (model dtype, i.e. fp32) unless the env names `bf16`
+    (`bfloat16`) or `fp16` (`float16`, `half`). Halving the K/V buffers
+    sounds cache-friendly, but on the AVX2-only deploy CPU the low-precision
+    SDPA paths measured *slower* than fp32 — so this exists for measurement
+    and for future hardware, not as a recommendation.
+    """
+    raw = os.environ.get("BABBLE_KV_DTYPE", "").strip().lower()
+    if raw in {"bf16", "bfloat16"}:
+        return torch.bfloat16
+    if raw in {"fp16", "float16", "half"}:
+        return torch.float16
+    return None
+
+
 def prepare_for_cpu_infer(
     model: nn.Module,
     *,
-    quantize: bool | None = None,
+    quantize: bool | str | None = None,
     compile_model: bool | None = None,
 ) -> nn.Module:
     """Serving-time transforms. Never used on the training path.
@@ -174,17 +243,24 @@ def prepare_for_cpu_infer(
     and this project's bar (set by the #26 repetition-quality work landing
     alongside this) is that serving quality must not regress by default.
     Opt in with `BABBLE_QUANTIZE=1` if the speed is worth that tradeoff for
-    your deployment. `torch.compile` stays off: the inductor tax on first
-    forward is tens of seconds for a chatbot that must answer immediately
-    after load.
+    your deployment, or `BABBLE_QUANTIZE=head` for the head-only variant
+    (most of the speedup, fp32 blocks — see `quantize_int8_head`).
+    `torch.compile` stays off: the inductor tax on first forward is tens of
+    seconds for a chatbot that must answer immediately after load.
     """
     if quantize is None:
-        quantize = _env_flag("BABBLE_QUANTIZE", False)
+        mode = quantize_mode_from_env()
+    elif isinstance(quantize, str):
+        mode = quantize if quantize in {"off", "all", "head"} else "off"
+    else:
+        mode = "all" if quantize else "off"
     if compile_model is None:
         compile_model = _env_flag("BABBLE_TORCH_COMPILE", False)
     model.eval()
-    if quantize:
+    if mode == "all":
         model = quantize_dynamic_linears(model)
+    elif mode == "head":
+        model = quantize_int8_head(model)
     if compile_model:
         model = maybe_compile(model, enabled=True)
     return model

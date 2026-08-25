@@ -34,7 +34,7 @@ payloads and a companion `tokenizer.json` (just the ordered merge list --
 `BPETokenizer.vocab` is fully determined by replaying merges over the 256 raw
 bytes, so nothing else needs to round-trip) that `babble.subword.BPETokenizer`
 and `babble.model.Babbler`/`ModelConfig` load directly, no translation step.
-See `HF_PRETRAIN_PIPELINE.md` for the full design writeup, dataset choice,
+See `docs/reports/HF_PRETRAIN_PIPELINE.md` for the full design writeup, dataset choice,
 model-size justification, and cost/wall-clock estimates.
 """
 
@@ -73,7 +73,7 @@ class PretrainConfig:
     # example's opening <bos>) to consume before stopping. This is the knob
     # that bounds "a large amount but not an insane amount" -- streamed, so
     # raising it never changes how much lands on disk, only how long the job
-    # runs. See HF_PRETRAIN_PIPELINE.md for the token budget vs model size
+    # runs. See docs/reports/HF_PRETRAIN_PIPELINE.md for the token budget vs model size
     # (Chinchilla-style) reasoning behind each preset's default.
     token_budget: int = 600_000_000
     val_docs: int = 512

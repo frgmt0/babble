@@ -27,7 +27,12 @@ import torch.nn.functional as F
 
 from .config import Settings
 from .core import Generation
-from .cpu_runtime import configure_cpu, force_cpu_device, prepare_for_cpu_infer
+from .cpu_runtime import (
+    configure_cpu,
+    force_cpu_device,
+    kv_dtype_from_env,
+    prepare_for_cpu_infer,
+)
 from .logs import EventLog, NullLog
 from .model import Babbler, KVCache, ModelConfig, config_from_settings, per_token_loss
 from .subword import BPETokenizer, ByteTokenizer, Tokenizer
@@ -282,7 +287,9 @@ def _decode_from(
         remaining = max_new_tokens
         if use_cache:
             cache: KVCache | None = model.new_cache(
-                1, max_len=min(model.config.block_size, len(context) + max_new_tokens)
+                1,
+                max_len=min(model.config.block_size, len(context) + max_new_tokens),
+                dtype=kv_dtype_from_env(),
             )
             logits = model(seen, cache=cache)[:, -1]
             step = torch.empty((1, 1), dtype=torch.long)
@@ -390,7 +397,9 @@ def _decode_many_from(
 
         if use_cache:
             cache: KVCache | None = model.new_cache(
-                n, max_len=min(model.config.block_size, len(context) + max_new_tokens)
+                n,
+                max_len=min(model.config.block_size, len(context) + max_new_tokens),
+                dtype=kv_dtype_from_env(),
             )
             logits = model(tokens, cache=cache)[:, -1]
             step = torch.empty((n, 1), dtype=torch.long)

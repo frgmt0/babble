@@ -85,7 +85,7 @@ def build_shuffled_control() -> list[AugmentedPair]:
     """Same generated variants, word order destroyed within each half --
     same size, same vocabulary, no corpus/paraphraser word order. If
     dilution/regularisation is the whole story here too (the corpus-level
-    generator's finding, PIPELINE_REVAMP_2026-08-20.md §7.2), this should
+    generator's finding, docs/reports/PIPELINE_REVAMP_2026-08-20.md §7.2), this should
     match or beat the real-order variants."""
     real = AugmentedPairStore(REAL_DATA / "augmented_pairs.jsonl").all()
     rng = random.Random(1234)
