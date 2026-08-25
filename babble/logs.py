@@ -51,6 +51,10 @@ URGENT = frozenset(
         "export.run",
         "export.push",
         "export.blocked",
+        "post.done",
+        "post_from_ckpt.done",
+        "post.serve_layout_mismatch",
+        "post_from_ckpt.serve_layout_mismatch",
     }
 )
 

@@ -14,7 +14,14 @@ from babble.consent import ConsentStore
 from babble.cpu_runtime import force_cpu_device
 from babble.model import Babbler, ModelConfig, config_from_settings
 from babble.post_state import post_trigger
-from babble.posttrain import AutoPostTrigger, post_train, post_train_from_checkpoint
+from babble.posttrain import (
+    AutoPostTrigger,
+    LiveScore,
+    decide_promotion,
+    post_train,
+    post_train_from_checkpoint,
+    score_live_checkpoint,
+)
 from babble.subword import BPETokenizer
 from babble.store import CORRECTION, Interaction, InteractionStore, make_row_id
 from babble.trainer import _build_optimizer, save_checkpoint
@@ -826,3 +833,428 @@ def test_post_train_from_checkpoint_refuses_below_the_min_pairs_floor(settings, 
 
     assert not result.ran and result.reason == "too_few_pairs"
     assert not settings.latest_checkpoint.exists()
+
+
+# --- live-checkpoint promotion gate ----------------------------------------
+
+
+def test_decide_promotion_candidate_better_than_live_promotes():
+    promoted, reason = decide_promotion(
+        corpus_val_before=3.0,
+        corpus_val_after=2.2,
+        live_corpus_val=2.5,
+        live_compare_reason=None,
+        lineage_margin=0.05,
+        live_margin=0.05,
+        force_promote=False,
+        candidate_layout="continuation",
+        live_layout="continuation",
+    )
+    assert promoted and reason == "cleared_live"
+
+
+def test_decide_promotion_worse_than_live_by_more_than_margin_refuses():
+    promoted, reason = decide_promotion(
+        corpus_val_before=4.0,
+        corpus_val_after=3.2,
+        live_corpus_val=2.3,
+        live_compare_reason=None,
+        lineage_margin=0.05,
+        live_margin=0.05,
+        force_promote=False,
+        candidate_layout="continuation",
+        live_layout="continuation",
+    )
+    assert not promoted and reason == "worse_than_live"
+
+
+def test_decide_promotion_worse_than_live_within_margin_promotes():
+    promoted, reason = decide_promotion(
+        corpus_val_before=3.0,
+        corpus_val_after=2.54,
+        live_corpus_val=2.50,
+        live_compare_reason=None,
+        lineage_margin=0.05,
+        live_margin=0.05,
+        force_promote=False,
+        candidate_layout="continuation",
+        live_layout="continuation",
+    )
+    assert promoted and reason == "cleared_live"
+
+
+def test_decide_promotion_force_promote_overrides_live_refusal():
+    promoted, reason = decide_promotion(
+        corpus_val_before=4.0,
+        corpus_val_after=3.2,
+        live_corpus_val=2.3,
+        live_compare_reason=None,
+        lineage_margin=0.05,
+        live_margin=0.05,
+        force_promote=True,
+        candidate_layout="continuation",
+        live_layout="continuation",
+    )
+    assert promoted and reason == "force_promote"
+
+
+def test_decide_promotion_incomparable_live_does_not_refuse():
+    promoted, reason = decide_promotion(
+        corpus_val_before=3.0,
+        corpus_val_after=2.2,
+        live_corpus_val=None,
+        live_compare_reason="vocab_mismatch",
+        lineage_margin=0.05,
+        live_margin=0.05,
+        force_promote=False,
+        candidate_layout="continuation",
+        live_layout="pair",
+    )
+    assert promoted and reason == "vocab_mismatch"
+
+
+def test_decide_promotion_cross_layout_does_not_refuse_on_corpus_val():
+    """Tonight's hole: 2.33 continuation vs 3.14 pair is not a regression."""
+    promoted, reason = decide_promotion(
+        corpus_val_before=3.4,
+        corpus_val_after=3.14,
+        live_corpus_val=2.33,
+        live_compare_reason=None,
+        lineage_margin=0.05,
+        live_margin=0.05,
+        force_promote=False,
+        candidate_layout="pair",
+        live_layout="continuation",
+    )
+    assert promoted and reason == "layout_mismatch"
+
+
+def test_decide_promotion_unknown_live_layout_does_not_refuse_on_corpus_val():
+    promoted, reason = decide_promotion(
+        corpus_val_before=3.0,
+        corpus_val_after=3.2,
+        live_corpus_val=2.0,
+        live_compare_reason=None,
+        lineage_margin=0.5,
+        live_margin=0.05,
+        force_promote=False,
+        candidate_layout="continuation",
+        live_layout=None,
+    )
+    assert promoted and reason == "layout_unknown"
+
+
+def test_decide_promotion_still_requires_the_lineage_gate():
+    promoted, reason = decide_promotion(
+        corpus_val_before=2.0,
+        corpus_val_after=3.0,
+        live_corpus_val=4.0,
+        live_compare_reason=None,
+        lineage_margin=0.05,
+        live_margin=0.05,
+        force_promote=False,
+        candidate_layout="continuation",
+        live_layout="continuation",
+    )
+    assert not promoted and reason == "worse_than_start"
+
+
+def test_score_live_checkpoint_missing(settings):
+    scored = score_live_checkpoint(
+        settings, [], candidate_vocab=260, eval_fn=lambda model, examples: 1.0
+    )
+    assert scored.corpus_val is None and scored.skip_reason == "live_missing"
+
+
+def test_score_live_checkpoint_vocab_mismatch(settings):
+    _seed_pretrain(settings)
+    live_vocab = torch.load(settings.latest_checkpoint, map_location="cpu", weights_only=True)["config"][
+        "vocab_size"
+    ]
+    scored = score_live_checkpoint(
+        settings, [], candidate_vocab=live_vocab + 1, eval_fn=lambda model, examples: 1.0
+    )
+    assert scored.corpus_val is None and scored.skip_reason == "vocab_mismatch"
+    assert scored.layout == "continuation"
+
+
+def _assert_done_log_has_live_picture(settings, event_name):
+    events = [
+        json.loads(line)
+        for line in (settings.log_dir / "babble.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    (done,) = [e for e in events if e["event"] == event_name]
+    for key in (
+        "corpus_val_before",
+        "corpus_val_after",
+        "post_gate_margin",
+        "post_live_gate_margin",
+        "gate_reason",
+        "promoted",
+    ):
+        assert key in done
+    assert "live_corpus_val" in done or "live_compare_reason" in done
+    return done
+
+
+def test_post_train_refuses_when_worse_than_live(settings, ids, monkeypatch):
+    from babble.logs import EventLog
+
+    _seed_corpus_rows(settings, ids)
+    _seed_pretrain(settings)
+    latest_before = settings.latest_checkpoint.read_bytes()
+    _seed_pairs(settings, ids, PAIRS)
+    settings.post_gate_margin = 10.0
+    settings.post_live_gate_margin = 0.05
+    monkeypatch.setattr(
+        "babble.posttrain.score_live_checkpoint",
+        lambda *args, **kwargs: LiveScore(corpus_val=1.0, layout="continuation"),
+    )
+    log = EventLog(settings, ids, component="post")
+    result = post_train(settings, force=True, steps=2, echo=False, ids=ids, log=log)
+    log.close()
+
+    assert result.ran and result.gated and not result.promoted
+    assert result.gate_reason == "worse_than_live"
+    assert result.live_corpus_val == 1.0
+    assert result.corpus_val_after is not None
+    assert result.corpus_val_after > 1.0 + settings.post_live_gate_margin
+    assert settings.latest_checkpoint.read_bytes() == latest_before
+    done = _assert_done_log_has_live_picture(settings, "post.done")
+    assert done["promoted"] is False
+    assert done["live_corpus_val"] == 1.0
+    assert done["gate_reason"] == "worse_than_live"
+
+
+def test_post_train_promotes_when_better_than_live(settings, ids, monkeypatch):
+    from babble.logs import EventLog
+
+    _seed_corpus_rows(settings, ids)
+    _seed_pretrain(settings)
+    latest_before = settings.latest_checkpoint.read_bytes()
+    _seed_pairs(settings, ids, PAIRS)
+    settings.post_gate_margin = 10.0
+    monkeypatch.setattr(
+        "babble.posttrain.score_live_checkpoint",
+        lambda *args, **kwargs: LiveScore(corpus_val=100.0, layout="continuation"),
+    )
+    log = EventLog(settings, ids, component="post")
+    result = post_train(settings, force=True, steps=2, echo=False, ids=ids, log=log)
+    log.close()
+
+    assert result.promoted and not result.gated
+    assert result.live_corpus_val == 100.0
+    assert result.gate_reason == "cleared_live"
+    assert settings.latest_checkpoint.read_bytes() != latest_before
+    done = _assert_done_log_has_live_picture(settings, "post.done")
+    assert done["promoted"] is True
+    assert done["live_corpus_val"] == 100.0
+
+
+def test_post_train_force_promote_overrides_live_refusal(settings, ids, monkeypatch):
+    _seed_corpus_rows(settings, ids)
+    _seed_pretrain(settings)
+    latest_before = settings.latest_checkpoint.read_bytes()
+    _seed_pairs(settings, ids, PAIRS)
+    settings.post_gate_margin = 10.0
+    monkeypatch.setattr(
+        "babble.posttrain.score_live_checkpoint",
+        lambda *args, **kwargs: LiveScore(corpus_val=1.0, layout="continuation"),
+    )
+    result = post_train(
+        settings, force=True, force_promote=True, steps=2, echo=False, ids=ids
+    )
+    assert result.promoted and result.gate_reason == "force_promote"
+    assert settings.latest_checkpoint.read_bytes() != latest_before
+
+
+def test_post_train_incomparable_live_logs_skip_reason(settings, ids, monkeypatch):
+    from babble.logs import EventLog
+
+    _seed_corpus_rows(settings, ids)
+    _seed_pretrain(settings)
+    _seed_pairs(settings, ids, PAIRS)
+    settings.post_gate_margin = 10.0
+    monkeypatch.setattr(
+        "babble.posttrain.score_live_checkpoint",
+        lambda *args, **kwargs: LiveScore(skip_reason="vocab_mismatch", layout="pair"),
+    )
+    log = EventLog(settings, ids, component="post")
+    result = post_train(settings, force=True, steps=2, echo=False, ids=ids, log=log)
+    log.close()
+
+    assert result.promoted
+    assert result.live_compare_reason == "vocab_mismatch"
+    assert result.live_corpus_val is None
+    done = _assert_done_log_has_live_picture(settings, "post.done")
+    assert done["live_compare_reason"] == "vocab_mismatch"
+    assert "live_corpus_val" not in done
+    assert done["promoted"] is True
+
+
+def test_post_from_ckpt_refuses_when_worse_than_live(settings, ids, tmp_path, monkeypatch):
+    from babble.logs import EventLog
+
+    _seed_corpus_rows(settings, ids)
+    _seed_pairs(settings, ids, PAIRS)
+    checkpoint_path, tokenizer_path = _seed_external_pretrain(settings, tmp_path)
+    settings.post_gate_margin = 10.0
+    settings.post_live_gate_margin = 0.05
+    monkeypatch.setattr(
+        "babble.posttrain.score_live_checkpoint",
+        lambda *args, **kwargs: LiveScore(corpus_val=1.0, layout="pair"),
+    )
+    log = EventLog(settings, ids, component="post")
+    result = post_train_from_checkpoint(
+        settings, checkpoint_path, tokenizer_path, force=True, steps=2, echo=False, ids=ids, log=log
+    )
+    log.close()
+
+    assert result.ran and result.gated and not result.promoted
+    assert result.gate_reason == "worse_than_live"
+    assert not settings.latest_checkpoint.exists()
+    done = _assert_done_log_has_live_picture(settings, "post_from_ckpt.done")
+    assert done["promoted"] is False
+    assert done["gate_reason"] == "worse_than_live"
+    assert done["live_corpus_val"] == 1.0
+
+
+def test_post_from_ckpt_promotes_when_better_than_live(settings, ids, tmp_path, monkeypatch):
+    _seed_corpus_rows(settings, ids)
+    _seed_pairs(settings, ids, PAIRS)
+    checkpoint_path, tokenizer_path = _seed_external_pretrain(settings, tmp_path)
+    settings.post_gate_margin = 10.0
+    monkeypatch.setattr(
+        "babble.posttrain.score_live_checkpoint",
+        lambda *args, **kwargs: LiveScore(corpus_val=100.0, layout="pair"),
+    )
+    result = post_train_from_checkpoint(
+        settings, checkpoint_path, tokenizer_path, force=True, steps=2, echo=False, ids=ids
+    )
+    assert result.promoted and result.gate_reason == "cleared_live"
+    assert settings.latest_checkpoint.exists()
+
+
+def test_post_from_ckpt_incomparable_live_logs_skip_reason(settings, ids, tmp_path, monkeypatch):
+    from babble.logs import EventLog
+
+    _seed_corpus_rows(settings, ids)
+    _seed_pairs(settings, ids, PAIRS)
+    checkpoint_path, tokenizer_path = _seed_external_pretrain(settings, tmp_path)
+    settings.post_gate_margin = 10.0
+    monkeypatch.setattr(
+        "babble.posttrain.score_live_checkpoint",
+        lambda *args, **kwargs: LiveScore(skip_reason="live_missing"),
+    )
+    log = EventLog(settings, ids, component="post")
+    result = post_train_from_checkpoint(
+        settings, checkpoint_path, tokenizer_path, force=True, steps=2, echo=False, ids=ids, log=log
+    )
+    log.close()
+    assert result.promoted
+    assert result.live_compare_reason == "live_missing"
+    done = _assert_done_log_has_live_picture(settings, "post_from_ckpt.done")
+    assert done["live_compare_reason"] == "live_missing"
+
+
+def test_post_train_stamps_layout_on_promoted_checkpoint(settings, ids, monkeypatch):
+    _seed_corpus_rows(settings, ids)
+    _seed_pretrain(settings)
+    _seed_pairs(settings, ids, PAIRS)
+    settings.post_gate_margin = 10.0
+    monkeypatch.setattr(
+        "babble.posttrain.score_live_checkpoint",
+        lambda *args, **kwargs: LiveScore(corpus_val=100.0, layout="continuation"),
+    )
+    result = post_train(settings, force=True, steps=2, echo=False, ids=ids)
+    assert result.promoted
+    payload = torch.load(settings.latest_checkpoint, map_location="cpu", weights_only=True)
+    assert payload["layout"] == "continuation"
+
+
+def test_post_from_ckpt_stamps_pair_layout(settings, ids, tmp_path, monkeypatch):
+    _seed_corpus_rows(settings, ids)
+    _seed_pairs(settings, ids, PAIRS)
+    checkpoint_path, tokenizer_path = _seed_external_pretrain(settings, tmp_path)
+    settings.post_gate_margin = 10.0
+    monkeypatch.setattr(
+        "babble.posttrain.score_live_checkpoint",
+        lambda *args, **kwargs: LiveScore(corpus_val=100.0, layout="pair"),
+    )
+    result = post_train_from_checkpoint(
+        settings, checkpoint_path, tokenizer_path, force=True, steps=2, echo=False, ids=ids
+    )
+    assert result.promoted
+    payload = torch.load(settings.latest_checkpoint, map_location="cpu", weights_only=True)
+    assert payload["layout"] == "pair"
+
+
+def test_post_train_cross_layout_logs_and_does_not_refuse(settings, ids, monkeypatch):
+    from babble.logs import EventLog
+
+    _seed_corpus_rows(settings, ids)
+    _seed_pretrain(settings)
+    latest_before = settings.latest_checkpoint.read_bytes()
+    _seed_pairs(settings, ids, PAIRS)
+    settings.post_gate_margin = 10.0
+    settings.post_live_gate_margin = 0.05
+    monkeypatch.setattr(
+        "babble.posttrain.score_live_checkpoint",
+        lambda *args, **kwargs: LiveScore(corpus_val=1.0, layout="pair"),
+    )
+    log = EventLog(settings, ids, component="post")
+    result = post_train(settings, force=True, steps=2, echo=False, ids=ids, log=log)
+    log.close()
+
+    assert result.promoted
+    assert result.gate_reason == "layout_mismatch"
+    assert result.live_compare_reason == "layout_mismatch"
+    assert result.live_corpus_val == 1.0
+    assert result.candidate_layout == "continuation"
+    assert result.live_layout == "pair"
+    assert settings.latest_checkpoint.read_bytes() != latest_before
+    done = _assert_done_log_has_live_picture(settings, "post.done")
+    assert done["candidate_layout"] == "continuation"
+    assert done["live_layout"] == "pair"
+    assert done["live_compare_reason"] == "layout_mismatch"
+    assert done["live_corpus_val"] == 1.0
+    assert done["promoted"] is True
+
+
+def test_promotion_warns_when_layout_disagrees_with_serve_layout(settings, ids, monkeypatch):
+    from babble.logs import EventLog
+
+    _seed_corpus_rows(settings, ids)
+    _seed_pretrain(settings)
+    _seed_pairs(settings, ids, PAIRS)
+    settings.post_gate_margin = 10.0
+    settings.serve_layout = "pair"
+    monkeypatch.setattr(
+        "babble.posttrain.score_live_checkpoint",
+        lambda *args, **kwargs: LiveScore(corpus_val=100.0, layout="continuation"),
+    )
+    log = EventLog(settings, ids, component="post")
+    result = post_train(settings, force=True, steps=2, echo=False, ids=ids, log=log)
+    log.close()
+
+    assert result.promoted
+    assert result.serve_layout_mismatch is True
+    events = [
+        json.loads(line)
+        for line in (settings.log_dir / "babble.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    warnings = [e for e in events if e["event"] == "post.serve_layout_mismatch"]
+    assert len(warnings) == 1
+    assert warnings[0]["candidate_layout"] == "continuation"
+    assert warnings[0]["serve_layout"] == "pair"
+    done = _assert_done_log_has_live_picture(settings, "post.done")
+    assert done["serve_layout_mismatch"] is True
+
+
+def test_cli_force_promote_flag_is_wired():
+    args = build_parser().parse_args(["post-train", "--force-promote"])
+    assert args.force_promote is True
+    args = build_parser().parse_args(
+        ["post-train-from-checkpoint", "--checkpoint", "x.pt", "--tokenizer", "t.json", "--force-promote"]
+    )
+    assert args.force_promote is True

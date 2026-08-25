@@ -68,6 +68,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     post.add_argument("--force", action="store_true", help="run even if the +N-pair trigger is not due")
     post.add_argument(
+        "--force-promote",
+        action="store_true",
+        help="promote even if the lineage or live-checkpoint gate would refuse",
+    )
+    post.add_argument(
         "--steps", type=int, default=None,
         help="step CEILING, not a target -- the best-val checkpoint may win earlier (default: BABBLE_POST_STEPS)",
     )
@@ -99,6 +104,11 @@ def build_parser() -> argparse.ArgumentParser:
     post_ckpt.add_argument("--checkpoint", type=Path, required=True, help="pretrain checkpoint .pt (e.g. latest.pt from pretrain_hf.py)")
     post_ckpt.add_argument("--tokenizer", type=Path, required=True, help="tokenizer.json that shipped alongside --checkpoint")
     post_ckpt.add_argument("--force", action="store_true", help="run even below the BABBLE_POST_MIN_PAIRS floor")
+    post_ckpt.add_argument(
+        "--force-promote",
+        action="store_true",
+        help="promote even if the lineage or live-checkpoint gate would refuse",
+    )
     post_ckpt.add_argument(
         "--steps", type=int, default=None,
         help="step CEILING, not a target -- the best-val checkpoint may win earlier (default: BABBLE_POST_STEPS)",
@@ -326,7 +336,8 @@ def main(argv: list[str] | None = None) -> int:
         log = EventLog(settings, Pseudonymiser.load(settings), component="post", echo=not args.quiet)
         try:
             result = post_train(
-                settings, force=args.force, steps=args.steps, patience=args.patience,
+                settings, force=args.force, force_promote=args.force_promote,
+                steps=args.steps, patience=args.patience,
                 seed=args.seed, echo=not args.quiet, log=log,
                 include_synthetic=args.include_synthetic,
                 include_pair_augmentation=augment_pairs,
@@ -347,17 +358,29 @@ def main(argv: list[str] | None = None) -> int:
             )
             if result.gated:
                 print(
-                    f"NOT promoted: corpus val {result.corpus_val_after:.4f} vs pretrain "
-                    f"{result.corpus_val_before:.4f} (margin {settings.post_gate_margin}) — "
-                    f"latest.pt left untouched",
+                    f"NOT promoted ({result.gate_reason}): candidate corpus val {result.corpus_val_after:.4f} "
+                    f"vs live {result.live_corpus_val if result.live_corpus_val is not None else result.live_compare_reason} "
+                    f"(live margin {settings.post_live_gate_margin}); "
+                    f"own before/after {result.corpus_val_before:.4f} -> {result.corpus_val_after:.4f} "
+                    f"(lineage margin {settings.post_gate_margin}) — latest.pt left untouched",
                     flush=True,
                 )
             else:
                 gate_part = ""
-                if result.corpus_val_after is not None and result.corpus_val_before is not None:
+                if result.corpus_val_after is not None:
+                    live_s = (
+                        f"{result.live_corpus_val:.4f}"
+                        if result.live_corpus_val is not None
+                        else result.live_compare_reason or "n/a"
+                    )
+                    before_s = (
+                        f"{result.corpus_val_before:.4f}"
+                        if result.corpus_val_before is not None
+                        else "n/a"
+                    )
                     gate_part = (
-                        f" (corpus val {result.corpus_val_after:.4f} vs pretrain "
-                        f"{result.corpus_val_before:.4f})"
+                        f" (corpus val {result.corpus_val_after:.4f} vs live {live_s}, "
+                        f"own before {before_s}, {result.gate_reason})"
                     )
                 print(f"promoted{gate_part} -> {result.path}", flush=True)
         elif result.reason == "too_few_pairs":
@@ -389,6 +412,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             result = post_train_from_checkpoint(
                 settings, args.checkpoint, args.tokenizer, force=args.force,
+                force_promote=args.force_promote,
                 steps=args.steps, patience=args.patience, seed=args.seed, echo=not args.quiet, log=log,
             )
         finally:
@@ -404,17 +428,29 @@ def main(argv: list[str] | None = None) -> int:
             )
             if result.gated:
                 print(
-                    f"NOT promoted: corpus val {result.corpus_val_after:.4f} vs the supplied checkpoint's "
-                    f"{result.corpus_val_before:.4f} (margin {settings.post_gate_margin}) — "
-                    f"latest.pt left untouched",
+                    f"NOT promoted ({result.gate_reason}): candidate corpus val {result.corpus_val_after:.4f} "
+                    f"vs live {result.live_corpus_val if result.live_corpus_val is not None else result.live_compare_reason} "
+                    f"(live margin {settings.post_live_gate_margin}); "
+                    f"own before/after {result.corpus_val_before:.4f} -> {result.corpus_val_after:.4f} "
+                    f"(lineage margin {settings.post_gate_margin}) — latest.pt left untouched",
                     flush=True,
                 )
             else:
                 gate_part = ""
-                if result.corpus_val_after is not None and result.corpus_val_before is not None:
+                if result.corpus_val_after is not None:
+                    live_s = (
+                        f"{result.live_corpus_val:.4f}"
+                        if result.live_corpus_val is not None
+                        else result.live_compare_reason or "n/a"
+                    )
+                    before_s = (
+                        f"{result.corpus_val_before:.4f}"
+                        if result.corpus_val_before is not None
+                        else "n/a"
+                    )
                     gate_part = (
-                        f" (corpus val {result.corpus_val_after:.4f} vs supplied checkpoint "
-                        f"{result.corpus_val_before:.4f})"
+                        f" (corpus val {result.corpus_val_after:.4f} vs live {live_s}, "
+                        f"own before {before_s}, {result.gate_reason})"
                     )
                 print(f"promoted{gate_part} -> {result.path}", flush=True)
         elif result.reason == "too_few_pairs":
