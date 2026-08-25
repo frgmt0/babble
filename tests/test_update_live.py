@@ -516,6 +516,7 @@ def test_check_reports_clean_and_current(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert "status=clean" in result.stdout
     assert "behind=0" in result.stdout
+    assert "ahead=0" in result.stdout
     assert not (live / "data").exists(), "--check must not create update_state.json's directory"
 
 
@@ -537,5 +538,87 @@ def test_check_reports_dirty_and_behind_and_last_action(tmp_path: Path) -> None:
     assert result.returncode == 1
     assert "status=dirty" in result.stdout
     assert "behind=1" in result.stdout
+    assert "ahead=0" in result.stdout
     assert "last_action=skipped_dirty" in result.stdout
     assert "consecutive_failures=1" in result.stdout
+
+
+def _local_only_commit(live: Path, message: str = "local-only") -> None:
+    """A commit on the live clone that is never pushed -- the shape that
+    makes `git merge --ff-only origin/main` fail with 'Not possible to
+    fast-forward'."""
+    _git("config", "user.email", "test@example.com", cwd=live)
+    _git("config", "user.name", "test", cwd=live)
+    with (live / "file.txt").open("a") as fh:
+        fh.write(f"{message}\n")
+    _git("commit", "-aq", "-m", message, cwd=live)
+
+
+def test_diverged_tree_refuses_to_merge_and_alerts_like_dirty(tmp_path: Path) -> None:
+    """Local-only commits plus origin moving is the 2026-08-25 live-box
+    failure: ff-only cannot proceed, and that must be as loud as dirtiness
+    (`skipped_diverged`, consecutive_failures, first-tick marker)."""
+    origin, live = _init_origin_and_clone(tmp_path)
+    _local_only_commit(live)
+    _advance_origin(tmp_path)
+
+    result = _run(tmp_path, live, origin)
+
+    assert result.returncode != 0
+    assert "diverged" in result.stderr
+    state = _state(live)
+    assert state["last_action"] == "skipped_diverged"
+    assert state["up_to_date"] is False
+    assert state["consecutive_failures"] == 1
+    assert state["commits_behind"] == 1
+    assert (live / "data" / "UPDATE_FAILING").exists()
+    assert "update.alert" in _log_text(live)
+    assert "reason=skipped_diverged" in _log_text(live)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=live, capture_output=True, text=True
+    ).stdout.strip()
+    assert head == state["local_commit"]
+    assert "update.merged" not in _log_text(live)
+
+
+def test_diverged_repeats_alert_first_then_every_fifth(tmp_path: Path) -> None:
+    origin, live = _init_origin_and_clone(tmp_path)
+    _local_only_commit(live)
+    _advance_origin(tmp_path)
+    marker = live / "data" / "UPDATE_FAILING"
+
+    for i in range(1, 6):
+        if marker.exists():
+            marker.unlink()
+        result = _run(tmp_path, live, origin)
+        assert result.returncode != 0
+        state = _state(live)
+        assert state["last_action"] == "skipped_diverged"
+        assert state["consecutive_failures"] == i
+        if i in (1, 5):
+            assert marker.exists(), f"expected an alert marker on failure #{i}"
+        else:
+            assert not marker.exists(), f"did not expect an alert marker on failure #{i}"
+
+
+def test_check_reports_ahead_and_exits_nonzero_when_diverged(tmp_path: Path) -> None:
+    origin, live = _init_origin_and_clone(tmp_path)
+    _local_only_commit(live)
+    _advance_origin(tmp_path)
+    # --check never fetches; the clone still has origin/main at the first
+    # commit until a real run (or we fetch here). Point origin/main at what
+    # a previous fetch would have recorded.
+    _git("fetch", "-q", "origin", "main", cwd=live)
+
+    result = subprocess.run(
+        ["bash", str(SCRIPT), "--check"],
+        cwd=live,
+        env={**os.environ, "BABBLE_LIVE_DIR": str(live)},
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 1
+    assert "status=clean" in result.stdout
+    assert "behind=1" in result.stdout
+    assert "ahead=1" in result.stdout

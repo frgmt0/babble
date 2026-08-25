@@ -29,9 +29,10 @@
 # run, so a resolved drift does not lie forever.
 #
 # `--check` prints a one-line, network-free status (clean/dirty, commits
-# behind origin/main, last update action, consecutive failures) and exits 0
-# if clean or 1 if dirty -- so this is greppable in one command instead of
-# requiring a `git status` on the box.
+# behind *and* ahead of origin/main, last update action, consecutive
+# failures) and exits 0 if the tree is clean *and* not diverged, or 1 if
+# dirty or if HEAD has commits that are not on origin -- so this is
+# greppable in one command instead of requiring a `git status` on the box.
 #
 # Every path below is overridable by env var so this runs from any checkout,
 # not just this box:
@@ -165,6 +166,16 @@ commits_behind() {
   printf '%s' "${n:-null}"
 }
 
+commits_ahead() {
+  local loc=$1 rem=$2 n
+  if [ -z "$rem" ]; then
+    printf 'null'
+    return
+  fi
+  n=$(git rev-list --count "$rem..$loc" 2>/dev/null) || n=""
+  printf '%s' "${n:-null}"
+}
+
 # First failure, then every ALERT_EVERY_N-th one after that -- the same
 # "first-then-every-fifth" shape as a rate-limited alarm, so a stuck update
 # is impossible to miss but does not spam every 5 minutes forever. Always
@@ -284,16 +295,23 @@ if [ "${1:-}" = "--check" ]; then
   status="clean"
   [ -n "$(git status --porcelain --untracked-files=no)" ] && status="dirty"
   behind="unknown"
+  ahead="unknown"
   if git rev-parse "origin/$BRANCH" >/dev/null 2>&1; then
     behind=$(git rev-list --count "HEAD..origin/$BRANCH" 2>/dev/null) || behind="unknown"
+    ahead=$(git rev-list --count "origin/$BRANCH..HEAD" 2>/dev/null) || ahead="unknown"
   fi
   last_action=$(state_field_str last_action unknown)
   consecutive=$(state_field_int consecutive_failures 0)
   checked_at=$(state_field_str checked_at never)
-  printf 'status=%s behind=%s last_action=%s consecutive_failures=%s checked_at=%s\n' \
-    "$status" "$behind" "$last_action" "$consecutive" "$checked_at"
-  [ "$status" = "clean" ]
-  exit $?
+  printf 'status=%s behind=%s ahead=%s last_action=%s consecutive_failures=%s checked_at=%s\n' \
+    "$status" "$behind" "$ahead" "$last_action" "$consecutive" "$checked_at"
+  [ "$status" = "clean" ] || exit 1
+  # Divergence is as loud as dirtiness: HEAD commits that origin does not
+  # have cannot be fast-forwarded away, so --check must not look "fine".
+  if [ "$ahead" != "unknown" ] && [ "$ahead" != "0" ]; then
+    exit 1
+  fi
+  exit 0
 fi
 
 mkdir -p "$DATA_DIR" "$LOG_DIR"
@@ -346,8 +364,18 @@ if training_in_flight; then
 fi
 
 # --- 5. fast-forward only. Never merge, never rebase, never force.
+# A checkout whose HEAD is not an ancestor of origin/$BRANCH cannot
+# fast-forward -- the 2026-08-25 live-box incident. Treat that the same
+# way as a dirty tree (own reason string, same fail_drift / first-then-
+# every-Nth alert path) instead of letting `git merge --ff-only` fail
+# with a generic "failed_merge".
+if ! git merge-base --is-ancestor "$local_sha" "$remote_sha"; then
+  ahead=$(commits_ahead "$local_sha" "$remote_sha")
+  fail_drift "$local_sha" "$remote_sha" "skipped_diverged" \
+    "git merge --ff-only origin/$BRANCH is not possible (local history has diverged; $ahead commit(s) on HEAD are not on origin/$BRANCH)"
+fi
 git merge --ff-only --quiet "origin/$BRANCH" || fail_drift "$local_sha" "$remote_sha" "failed_merge" \
-  "git merge --ff-only origin/$BRANCH failed (local history has diverged?)"
+  "git merge --ff-only origin/$BRANCH failed"
 new_sha=$(git rev-parse HEAD)
 log_event "merged" "from=${local_sha:0:12}" "to=${new_sha:0:12}"
 
