@@ -79,48 +79,34 @@ FOOTER_CORPUS_PENDING = (
     "`!babble consent`"
 )
 
-CONSENT_NOTICE = f"""**first time we've talked — here's the deal before we start.**
+PRIVACY_URL = "https://booper.frgmt.xyz/privacy"
 
-i'm a language model with **random weights**. i wasn't trained on the internet, on this server's \
-history, or on anything at all. everything i know comes from what people send me here.
+CONSENT_NOTICE = f"""**first time we've talked — quick heads up.**
 
-if you opt in, **the messages you send me** — @mentions, replies to me, DMs — get **stored, used \
-to train me, and published to a public HuggingFace dataset** that anyone can download. i learn \
-from them as plain text: there's no right answer attached, it's just a pool of real writing.
-
-what never leaves this machine: your discord id, your username, and **anything you say that isn't \
-addressed to me**. in the published data you are a salted hash like `u_9f2c…`.
-
-**nothing of yours is stored until you say yes.**
-
-teaching me is explicit and still counts for something on its own: a reply that starts with \
-`{CORRECTION_MARKER}` is filed as a correction as well as going in the pool, and 👍 says the \
-answer was fine. the marker is stripped before anything is stored.
+if you opt in, the messages you send me (@mentions, replies, DMs) are stored, used to train me, \
+and published in a public dataset. never your discord id or username — you appear only as an \
+anonymous hash. nothing is kept until you say yes.
 
 **`!babble accept`** — opt in
-**`!babble decline`** — no thanks. i'll still reply, i just won't keep anything
-**`!babble all`** — later, in one channel: collect *everything you say there*, not just pings at \
-me. one person, one channel, `!babble pings` to undo
-**`!babble forget`** — any time: opt out *and* delete everything of yours i've kept"""
+**`!babble decline`** — no thanks (i'll still reply)
+**`!babble forget`** — any time: opt out *and* delete everything of yours
+
+-# full details: {PRIVACY_URL}"""
 
 # The re-ask. Anyone who said yes to the old notice said yes to something
 # narrower than this, so their existing corrections stand and their ordinary
 # messages wait here until they answer again.
 CORPUS_NOTICE = f"""**heads up — what i collect has changed.**
 
-you opted in back when the only thing i kept was **corrections**. i now keep **the messages you \
-send me** — @mentions, replies, DMs — as plain text, to train on and to publish in the same \
-public HuggingFace dataset.
-
-that's more than you agreed to, so **i'm not collecting your messages until you say yes again.** \
-the corrections you already gave me stay exactly as they are, under the consent you already gave.
+you opted in back when i only kept corrections. i now keep the messages you send me, to train on \
+and publish in a public dataset. that's more than you agreed to, so nothing new of yours is \
+collected until you say yes again. your existing corrections stay as they are.
 
 **`!babble accept`** — opt in to this
 **`!babble decline`** — no thanks
-**`!babble forget`** — opt out *and* delete everything of yours i've kept
+**`!babble forget`** — opt out *and* delete everything of yours
 
--# still the same rules underneath: no discord ids, no usernames, nothing you say that isn't \
-addressed to me, and you're a salted hash like `u_9f2c…` in anything published."""
+-# full details: {PRIVACY_URL}"""
 
 HELP_TEXT = f"""**babble** — a from-scratch model learning to talk from what you send it.
 

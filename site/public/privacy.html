@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>booper — privacy</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 42rem; margin: 3rem auto; padding: 0 1rem; line-height: 1.6; color: #222; background: #fff; }
+  h1 { font-size: 1.5rem; }
+  h2 { font-size: 1.1rem; margin-top: 2rem; }
+  code { background: #f2f2f2; padding: 0.1rem 0.3rem; border-radius: 3px; }
+  @media (prefers-color-scheme: dark) { body { color: #ddd; background: #111; } code { background: #2a2a2a; } }
+</style>
+</head>
+<body>
+<h1>booper privacy policy</h1>
+<p>booper (aka babble) is a language model that starts from random weights and learns only from what
+consenting people send it on Discord. Nothing of yours is stored until you explicitly opt in.</p>
+
+<h2>what is collected</h2>
+<p>If you opt in with <code>!babble accept</code>, the messages you address to the bot —
+@mentions, replies to it, and DMs — are stored as plain text. Replies that start with the
+correction marker are also filed as corrections. If you additionally run <code>!babble all</code>
+in a channel, everything <em>you</em> say in <em>that channel</em> is collected too; it never
+widens collection for anyone else, and <code>!babble pings</code> turns it back off.</p>
+
+<h2>what is published</h2>
+<p>Collected text is used to train the model and is published in a public HuggingFace dataset that
+anyone can download. In the published data you appear only as a salted hash (like
+<code>u_9f2c…</code>), never as your Discord id or username.</p>
+
+<h2>what is never collected</h2>
+<p>Your Discord id and username never leave the machine the bot runs on, and messages that are not
+addressed to the bot are never stored (unless you turned on <code>!babble all</code> for that
+channel). If you never opt in, the bot still replies to you, but nothing from the exchange is
+stored or trained on.</p>
+
+<h2>your choices</h2>
+<p><code>!babble accept</code> — opt in.
+<code>!babble decline</code> — don't opt in; the bot still replies.
+<code>!babble forget</code> — at any time, opt out <em>and</em> delete everything of yours that
+was kept.
+<code>!babble consent</code> — see what is stored and your current choice.</p>
+</body>
+</html>

@@ -1,0 +1,10 @@
+{
+  "name": "booper-site",
+  "compatibility_date": "2026-08-25",
+  "assets": {
+    "directory": "./public"
+  },
+  "routes": [
+    { "pattern": "booper.frgmt.xyz", "custom_domain": true }
+  ]
+}

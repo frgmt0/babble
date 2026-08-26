@@ -55,7 +55,8 @@ def test_first_time_pinger_gets_the_consent_notice(fake, brain):
     assert len(posted) == 1
     assert posted[0].kind == "consent"
     assert "!babble accept" in posted[0].content
-    assert "HuggingFace" in posted[0].content
+    # The notice is deliberately short; the full policy lives at the link.
+    assert "https://booper.frgmt.xyz/privacy" in posted[0].content
     # Nothing is generated and nothing is kept on first contact.
     assert brain.store.count() == 0
     assert brain.consent.decision(ALICE) == PENDING
@@ -419,7 +420,6 @@ def test_a_thumbs_up_still_works_without_any_marker(fake, brain, generator):
 def test_the_footer_and_help_both_teach_the_marker():
     assert CORRECTION_MARKER in FOOTER
     assert CORRECTION_MARKER in HELP_TEXT
-    assert CORRECTION_MARKER in CONSENT_NOTICE
 
 
 def test_marker_helpers_agree_on_what_counts():
