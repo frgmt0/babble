@@ -9,37 +9,75 @@
   h1 { font-size: 1.5rem; }
   h2 { font-size: 1.1rem; margin-top: 2rem; }
   code { background: #f2f2f2; padding: 0.1rem 0.3rem; border-radius: 3px; }
-  @media (prefers-color-scheme: dark) { body { color: #ddd; background: #111; } code { background: #2a2a2a; } }
+  nav { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #ccc; font-size: 0.9rem; }
+  @media (prefers-color-scheme: dark) { body { color: #ddd; background: #111; } code { background: #2a2a2a; } a { color: #8ab4f8; } nav { border-color: #333; } }
 </style>
 </head>
 <body>
 <h1>booper privacy policy</h1>
 <p>booper (aka babble) is a language model that starts from random weights and learns only from what
-consenting people send it on Discord. Nothing of yours is stored until you explicitly opt in.</p>
+consenting people send it on Discord. This page is the whole deal, in plain words. The short
+version: nothing of yours is stored until you explicitly say yes, you can take it all back at any
+time, and your data is never sold.</p>
 
 <h2>what is collected</h2>
 <p>If you opt in with <code>!babble accept</code>, the messages you address to the bot —
 @mentions, replies to it, and DMs — are stored as plain text. Replies that start with the
 correction marker are also filed as corrections. If you additionally run <code>!babble all</code>
 in a channel, everything <em>you</em> say in <em>that channel</em> is collected too; it never
-widens collection for anyone else, and <code>!babble pings</code> turns it back off.</p>
+widens collection for anyone else, and <code>!babble pings</code> turns it back off. That is the
+complete list. The bot does not scan channels, read history, or collect anything from people who
+haven't opted in.</p>
 
 <h2>what is published</h2>
 <p>Collected text is used to train the model and is published in a public HuggingFace dataset that
 anyone can download. In the published data you appear only as a salted hash (like
-<code>u_9f2c…</code>), never as your Discord id or username.</p>
+<code>u_9f2c…</code>), never as your Discord id or username. The salt never leaves the machine the
+bot runs on, so the hash cannot be reversed back to you.</p>
 
-<h2>what is never collected</h2>
-<p>Your Discord id and username never leave the machine the bot runs on, and messages that are not
-addressed to the bot are never stored (unless you turned on <code>!babble all</code> for that
-channel). If you never opt in, the bot still replies to you, but nothing from the exchange is
-stored or trained on.</p>
+<h2>what is never collected or shared</h2>
+<p>Your Discord id and username never leave the machine the bot runs on. Messages not addressed to
+the bot are never stored (unless you turned on <code>!babble all</code> for that channel). Server
+names, channel names, avatars, presence, and member lists are not collected at all. If you never
+opt in, the bot still replies to you, but nothing from the exchange is stored or trained on.</p>
 
-<h2>your choices</h2>
-<p><code>!babble accept</code> — opt in.
-<code>!babble decline</code> — don't opt in; the bot still replies.
-<code>!babble forget</code> — at any time, opt out <em>and</em> delete everything of yours that
-was kept.
-<code>!babble consent</code> — see what is stored and your current choice.</p>
+<h2>your data is never sold</h2>
+<p>Data collected through Discord is never sold, rented, licensed for advertising, or traded —
+full stop — and no such sale would ever happen without the express consent of Discord itself,
+which we do not intend to seek. No data used to train booper is ever sold. By the same token,
+booper is not a paid service and will stay free for as long as its corpus contains data collected
+through Discord, in keeping with Discord's terms on the resale of platform data.</p>
+
+<h2>deletion and your rights</h2>
+<p><code>!babble forget</code> deletes everything of yours — corpus rows, correction pairs, and
+your opt-in — immediately, and takes effect on the very next message. Your text is then excluded
+from every future training run and every future published version of the dataset. To be honest
+about the one limit: copies of the public dataset that other people already downloaded are out of
+our reach. <code>!babble consent</code> shows you what scopes you've granted at any time, and if
+you want to see what's stored about you, ask (see contact below) and we'll show you.</p>
+
+<h2>retention and security</h2>
+<p>Data lives on a single machine controlled by the operator, not in a third-party cloud, and only
+the operator has access. Consent records and the id-to-hash mapping are kept only as long as they
+are needed to enforce your choices. There is no analytics, no tracking, and no third-party
+processor beyond HuggingFace hosting the already-anonymised public dataset.</p>
+
+<h2>age</h2>
+<p>booper is only for people old enough to use Discord under Discord's own terms (13, or higher
+where local law says so). We do not knowingly collect text from anyone below that age; if we learn
+we have, it gets deleted the same way <code>!babble forget</code> deletes anything else.</p>
+
+<h2>discord</h2>
+<p>booper operates under the Discord Developer Terms of Service and Developer Policy. Everything
+above — explicit opt-in, no sale of platform data, honoring deletion, collecting the minimum — is
+how we hold ourselves to them.</p>
+
+<h2>changes and contact</h2>
+<p>If what we collect or publish ever materially changes, the bot re-asks you before any new
+collection happens — a policy change never silently widens your old yes. Questions, complaints, or
+data requests: open an issue at
+<a href="https://github.com/frgmt0/babble">github.com/frgmt0/babble</a>.</p>
+
+<nav><a href="/">home</a> · <a href="/terms">terms of service</a> · <a href="/aup">acceptable use</a></nav>
 </body>
 </html>
