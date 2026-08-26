@@ -80,18 +80,16 @@ FOOTER_CORPUS_PENDING = (
 )
 
 PRIVACY_URL = "https://booper.frgmt.xyz/privacy"
+TERMS_URL = "https://booper.frgmt.xyz/terms"
+AUP_URL = "https://booper.frgmt.xyz/aup"
 
-CONSENT_NOTICE = f"""**first time we've talked — quick heads up.**
-
-if you opt in, the messages you send me (@mentions, replies, DMs) are stored, used to train me, \
-and published in a public dataset. never your discord id or username — you appear only as an \
-anonymous hash. nothing is kept until you say yes.
+# The <> around each URL suppress Discord's embed previews.
+CONSENT_NOTICE = f"""please take the time to read:
+<{PRIVACY_URL}> · <{TERMS_URL}> · <{AUP_URL}>
+as they outline what data we do/don't collect. to proceed:
 
 **`!babble accept`** — opt in
-**`!babble decline`** — no thanks (i'll still reply)
-**`!babble forget`** — any time: opt out *and* delete everything of yours
-
--# full details: {PRIVACY_URL}"""
+**`!babble decline`** — no thanks (i'll still reply, nothing is stored)"""
 
 # The re-ask. Anyone who said yes to the old notice said yes to something
 # narrower than this, so their existing corrections stand and their ordinary
@@ -106,7 +104,7 @@ collected until you say yes again. your existing corrections stay as they are.
 **`!babble decline`** — no thanks
 **`!babble forget`** — opt out *and* delete everything of yours
 
--# full details: {PRIVACY_URL}"""
+-# full details: <{PRIVACY_URL}>"""
 
 HELP_TEXT = f"""**babble** — a from-scratch model learning to talk from what you send it.
 
