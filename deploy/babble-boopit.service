@@ -1,0 +1,12 @@
+[Unit]
+Description=boopit discord bot (side-by-side comparison model)
+
+[Service]
+WorkingDirectory=%h/babble-boopit
+EnvironmentFile=%h/babble-boopit/.env
+ExecStart=%h/babble-live/.venv/bin/babble bot
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
