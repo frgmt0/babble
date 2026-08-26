@@ -27,7 +27,7 @@ SALT_ENV = "BABBLE_HASH_SALT"
 CORRECTION_MARKER = ">>"
 
 
-def _env_path(name: str, default: Path) -> Path:
+def _env_path(name: str, default: Path | None) -> Path | None:
     raw = os.environ.get(name)
     return Path(raw).expanduser() if raw else default
 
@@ -179,6 +179,20 @@ class Settings:
     # checkpoint trained that way -- the checkpoint itself carries no flag
     # for this, so it is not auto-detected.
     serve_layout: str = "continuation"
+
+    # Which generator the bot serves with:
+    # "checkpoint" -- `generate.CheckpointGenerator` over `latest.pt`, the
+    # native Babbler path everything above describes.
+    # "hf" -- `hfserve.HFGenerator` over a local snapshot of a HuggingFace
+    # Transformers model (e.g. ProCreations/Booper-Big-Chat-INT8), pointed at
+    # by `hf_model_dir`. Always pair layout: these are chat-SFT models.
+    # Requires the `hf` extra (`pip install -e ".[hf]"`); the checkpoint
+    # backend never imports transformers.
+    serve_backend: str = "checkpoint"
+    # Local directory holding the HF model snapshot (config.json,
+    # model-int8.safetensors, tokenizer.json). Local-only on purpose: serving
+    # must never depend on the Hub being up.
+    hf_model_dir: Path | None = None
 
     # How much each kind of feedback is worth. These no longer touch training:
     # the objective is plain next-token prediction over unlabelled corpus text,
@@ -368,6 +382,8 @@ class Settings:
             max_new_tokens=_env_int("BABBLE_MAX_NEW_TOKENS", 256),
             best_of=_env_int("BABBLE_BEST_OF", 4),
             serve_layout=os.environ.get("BABBLE_SERVE_LAYOUT", "continuation"),
+            serve_backend=os.environ.get("BABBLE_SERVE_BACKEND", "checkpoint"),
+            hf_model_dir=_env_path("BABBLE_HF_MODEL_DIR", None),
             correction_boost=_env_float("BABBLE_CORRECTION_BOOST", 3.0),
             val_fraction=_env_float("BABBLE_VAL_FRACTION", 0.2),
             val_min_rows=_env_int("BABBLE_VAL_MIN_ROWS", 20),

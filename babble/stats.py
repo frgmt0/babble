@@ -15,7 +15,7 @@ from .config import REPO_ROOT, Settings
 from .consent import SCOPE_CORPUS, SCOPE_CORRECTIONS, ConsentStore, CorpusConsent
 from .corpus import CorpusStore
 from .post_state import post_trigger
-from .store import APPROVAL, CORRECTION, InteractionStore
+from .store import APPROVAL, CORRECTION, REJECTION, InteractionStore
 
 
 @dataclass
@@ -29,6 +29,7 @@ class Snapshot:
     stored_rows: int
     corrections: int
     approvals: int
+    rejections: int
     trainable_rows: int
     corpus_rows: int
     corpus_trainable: int
@@ -117,7 +118,13 @@ def snapshot(settings: Settings) -> Snapshot:
         gate = CorpusConsent(consent, ids)
         consented_users = len(gate)
         corpus_trainable = sum(1 for r in corpus if gate.allows(r))
-    trainable = sum(1 for r in rows if r.prompt_author in allowed and r.signal_author in allowed)
+    trainable = sum(
+        1
+        for r in rows
+        if r.signal in (CORRECTION, APPROVAL)
+        and r.prompt_author in allowed
+        and r.signal_author in allowed
+    )
 
     log_bytes = 0
     if settings.log_dir.exists():
@@ -148,6 +155,7 @@ def snapshot(settings: Settings) -> Snapshot:
         stored_rows=len(rows),
         corrections=tally.get(CORRECTION, 0),
         approvals=tally.get(APPROVAL, 0),
+        rejections=tally.get(REJECTION, 0),
         trainable_rows=trainable,
         corpus_rows=len(corpus),
         corpus_trainable=corpus_trainable,
@@ -184,7 +192,7 @@ def render_snapshot(snap: Snapshot, markdown: bool = True) -> str:
         f"{b}step{b} {snap.step:,} · {b}loss{b} {loss}{drift}\n"
         f"{b}corpus{b} {snap.corpus_rows} rows ({snap.corpus_trainable} training, "
         f"{snap.corpus_chars:,} chars) · {b}checkpoints{b} {snap.checkpoints}\n"
-        f"{b}corrections{b} {snap.corrections} · {b}👍{b} {snap.approvals} · "
+        f"{b}corrections{b} {snap.corrections} · {b}👍{b} {snap.approvals} · {b}👎{b} {snap.rejections} · "
         f"{b}trainable pairs{b} {snap.trainable_rows}\n"
         f"{b}post-train{b} {post_line}\n"
         f"{b}people opted in{b} {snap.consented_users} of {snap.known_users} asked"

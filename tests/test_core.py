@@ -17,9 +17,6 @@ from babble.consent import DECLINED, GRANTED, PENDING, SCOPE_CORPUS, SCOPE_CORRE
 from babble.core import (
     CONSENT_NOTICE,
     CORPUS_NOTICE,
-    FOOTER,
-    FOOTER_CORPUS_PENDING,
-    FOOTER_UNCONSENTED,
     HELP_TEXT,
     Babble,
     IncomingMessage,
@@ -34,7 +31,7 @@ from babble.corpus import (
     SOURCE_PROMPT,
     SOURCE_REPLY,
 )
-from babble.store import APPROVAL, CORRECTION
+from babble.store import APPROVAL, CORRECTION, REJECTION
 from conftest import FakeDiscord
 
 ALICE = "111111111111111111"
@@ -142,7 +139,6 @@ def test_declining_user_still_gets_replies_but_nothing_is_ever_stored(fake, brai
 
     answer = fake.ping(BOB, "hello there")[0]
     assert answer.kind == "generation"
-    assert FOOTER_UNCONSENTED in answer.content
 
     # Even trying to correct it stores nothing.
     fake.correct(BOB, "you should have said hi", reply_to=answer.id)
@@ -158,7 +154,6 @@ def test_user_who_ignores_the_notice_gets_replies_but_no_capture(fake, brain):
     answer = fake.ping(CAROL, "hello?")[0]
 
     assert answer.kind == "generation"
-    assert FOOTER_UNCONSENTED in answer.content
     fake.correct(CAROL, "wrong, say hi", reply_to=answer.id)
     assert brain.store.count() == 0
 
@@ -169,7 +164,6 @@ def test_user_who_ignores_the_notice_gets_replies_but_no_capture(fake, brain):
 def test_correction_lands_as_a_complete_triple(fake, brain, generator):
     fake.onboard(ALICE)
     answer = fake.ping(ALICE, "hello")[0]
-    assert FOOTER in answer.content
 
     ack = fake.correct(ALICE, "you should say: hey!", reply_to=answer.id)[0]
 
@@ -417,9 +411,43 @@ def test_a_thumbs_up_still_works_without_any_marker(fake, brain, generator):
     assert row.chosen == generator.text
 
 
-def test_the_footer_and_help_both_teach_the_marker():
-    assert CORRECTION_MARKER in FOOTER
+def test_a_thumbs_down_files_the_answer_as_rejected(fake, brain, generator):
+    fake.onboard(ALICE)
+    answer = fake.ping(ALICE, "hello")[0]
+
+    fake.react(ALICE, answer.id, emoji="👎")
+
+    (row,) = brain.store.all()
+    assert row.signal == REJECTION
+    assert row.rejected == generator.text
+    assert row.chosen == ""
+
+
+def test_a_thumbs_down_from_someone_unconsented_is_dropped(fake, brain):
+    fake.onboard(ALICE)
+    answer = fake.ping(ALICE, "hello")[0]
+
+    fake.react(BOB, answer.id, emoji="👎")  # BOB never opted in
+
+    assert brain.store.count() == 0
+
+
+def test_rejections_are_never_trainable_pairs(fake, brain, settings):
+    from babble.post_state import trainable_pairs
+
+    fake.onboard(ALICE)
+    answer = fake.ping(ALICE, "hello")[0]
+    fake.react(ALICE, answer.id, emoji="👎")
+    fake.react(ALICE, answer.id, emoji="👍")
+
+    assert brain.store.count() == 2
+    pairs = trainable_pairs(settings, ids=brain.ids)
+    assert [p.signal for p in pairs] == [APPROVAL]
+
+
+def test_help_teaches_the_marker_and_the_reactions():
     assert CORRECTION_MARKER in HELP_TEXT
+    assert "👍" in HELP_TEXT and "👎" in HELP_TEXT
 
 
 def test_marker_helpers_agree_on_what_counts():
@@ -484,7 +512,6 @@ def test_a_legacy_corrections_only_consenter_keeps_getting_answered_but_not_coll
 
     first = fake.ping(ALICE, "hello")
     assert [r.kind for r in first] == ["generation", "consent"]
-    assert FOOTER_CORPUS_PENDING in first[0].content
     assert first[1].content == CORPUS_NOTICE
     assert brain.corpus.count() == 0
 
@@ -691,7 +718,7 @@ def test_thumbs_up_with_a_variation_selector_still_counts(fake, brain):
     assert brain.store.count() == 1
 
 
-@pytest.mark.parametrize("emoji", ["👎", "🔥", "❤️"])
+@pytest.mark.parametrize("emoji", ["🎉", "🔥", "❤️"])
 def test_other_reactions_are_not_signals(fake, brain, emoji):
     fake.onboard(ALICE)
     answer = fake.ping(ALICE, "hello")[0]
@@ -797,16 +824,6 @@ def test_no_raw_discord_id_reaches_the_dataset_or_the_logs(fake, brain, settings
 # --- commands and copy --------------------------------------------------
 
 
-def test_every_generation_carries_the_feedback_footer(fake):
-    fake.onboard(ALICE)
-
-    content = fake.ping(ALICE, "hello")[0].content
-
-    assert "-#" in content
-    assert "👍" in content
-    assert CORRECTION_MARKER in content, "the footer must teach the correction format"
-
-
 def test_help_and_status_answer_without_touching_the_model(fake, generator):
     assert "!babble consent" in fake.say(ALICE, "!babble")[0].content
     assert "step" in fake.say(ALICE, "!babble status")[0].content
@@ -869,8 +886,8 @@ def test_every_message_the_bot_sends_fits_in_a_discord_message(fake):
         assert len(message.content) <= DISCORD_LIMIT, message.kind
 
 
-def test_a_rambling_generation_is_truncated_to_fit_with_its_footer(settings, log):
-    from babble.core import FOOTER, DISCORD_LIMIT, Babble
+def test_a_rambling_generation_is_truncated_to_fit(settings, log):
+    from babble.core import DISCORD_LIMIT, Babble
     from conftest import FakeDiscord
 
     brain = Babble(settings, generator=lambda p: "y" * 5000, log=log)
@@ -880,7 +897,6 @@ def test_a_rambling_generation_is_truncated_to_fit_with_its_footer(settings, log
     content = gw.ping(ALICE, "hello")[0].content
 
     assert len(content) <= DISCORD_LIMIT
-    assert content.endswith(FOOTER)
 
 
 def test_output_that_is_pure_control_bytes_still_produces_a_message(settings, log):

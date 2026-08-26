@@ -19,7 +19,7 @@ from .backfill import backfill_corpus
 from .config import TOKEN_ENV, Settings, discord_token
 from .core import Babble, IncomingMessage, ReactionEvent
 from .discord_feed import CollectionFeed
-from .generate import CheckpointGenerator
+from .hfserve import make_generator
 from .identity import Pseudonymiser
 from .logs import EventLog
 from .pairaugment import AutoAugmentTrigger
@@ -74,7 +74,7 @@ class BabbleClient(discord.Client):
             augment_trigger = AutoAugmentTrigger(settings, log)
             brain = Babble(
                 settings,
-                generator=CheckpointGenerator(settings, log),
+                generator=make_generator(settings, log),
                 log=log,
                 feed=self.feed,
                 publisher=publisher,

@@ -700,6 +700,32 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.command == "sample":
+        if settings.serve_backend == "hf":
+            # Sample through the exact generator the bot serves with, so this
+            # command stays a faithful preflight for the hf backend too.
+            import dataclasses
+
+            from .hfserve import HFGenerator
+
+            overrides = {
+                name: value
+                for name, value in (
+                    ("max_new_tokens", args.tokens or None),
+                    ("temperature", args.temperature),
+                    ("top_k", args.top_k),
+                    ("top_p", args.top_p),
+                    ("repetition_penalty", args.repetition_penalty),
+                    ("no_repeat_ngram_size", args.no_repeat_ngram_size),
+                )
+                if value is not None
+            }
+            generator = HFGenerator(dataclasses.replace(settings, **overrides))
+            print(f"# hf backend · {settings.hf_model_dir}", flush=True)
+            for _ in range(max(1, args.count)):
+                generation = generator(args.prompt)
+                print(f"{args.prompt!r} -> {generation.text!r} ({generation.ms:.0f}ms)", flush=True)
+            return 0
+
         from .generate import continue_text, load_model
 
         model, step = load_model(settings)
@@ -796,7 +822,7 @@ def main(argv: list[str] | None = None) -> int:
             f"wrote {result.rows} rows to {result.path}\n"
             f"  corpus       {result.corpus_rows} rows, {result.corpus_chars:,} chars\n"
             f"  corrections  {result.correction_rows} rows "
-            f"({result.corrections} corrections, {result.approvals} 👍)",
+            f"({result.corrections} corrections, {result.approvals} 👍, {result.rejections} 👎)",
             flush=True,
         )
         for label, consent_dropped, leaky, blocked in (

@@ -50,7 +50,7 @@ from .corpus import (
 from .exchanges import Exchange, ExchangeLog
 from .identity import Pseudonymiser
 from .logs import EventLog, NullLog
-from .store import APPROVAL, CORRECTION, Interaction, InteractionStore, make_row_id
+from .store import APPROVAL, CORRECTION, REJECTION, Interaction, InteractionStore, make_row_id
 from .util import truncate, utcnow_iso
 
 BLOCKED_OUTPUT = "*…(that one didn't clear the content filter — regenerate by pinging me again)*"
@@ -58,26 +58,12 @@ BLOCKED_OUTPUT = "*…(that one didn't clear the content filter — regenerate b
 DISCORD_LIMIT = 2000
 COMMAND_PREFIX = "!babble"
 THUMBS_UP = "👍"
+THUMBS_DOWN = "👎"
 
 # --- copy ----------------------------------------------------------------
-
-FOOTER = (
-    f"-# what you send me goes into the corpus i learn from. react 👍 if this one was fine, or "
-    f"teach me something specific by replying with `{CORRECTION_MARKER} what i should have said`."
-)
-
-FOOTER_UNCONSENTED = (
-    "-# you haven't opted in, so nothing from this exchange is stored or trained on. "
-    "`!babble consent` for the details."
-)
-
-# Shown to someone who opted in under the old corrections-only notice. They are
-# still a full participant for corrections; their ordinary messages are simply
-# not being collected until they answer the new one.
-FOOTER_CORPUS_PENDING = (
-    "-# i keep more than corrections now, and i'm not keeping yours until you say so. "
-    "`!babble consent`"
-)
+# Replies carry no appended footer: feedback is 👍/👎 reactions on the bot's
+# message (see `handle_reaction`), and consent state is explained by the
+# notices and `!babble consent` rather than restated under every answer.
 
 PRIVACY_URL = "https://booper.frgmt.xyz/privacy"
 TERMS_URL = "https://booper.frgmt.xyz/terms"
@@ -112,6 +98,9 @@ ping me and i'll carry on from whatever you said. it will be nonsense for a long
 
 everything you send me goes into an unlabelled corpus, and that corpus is the whole
 of my training data. there's no right answer attached to any of it.
+
+**react 👍 or 👎 on any of my replies:** 👍 reinforces that answer, 👎 flags it as one
+to fix. both are recorded with the exchange they're about.
 
 **to teach me something specific, start your reply with `{CORRECTION_MARKER}`:**
 > `{CORRECTION_MARKER} hey, what's up`
@@ -295,10 +284,6 @@ def clean_for_discord(text: str, limit: int = DISCORD_LIMIT) -> str:
     return truncate(cleaned, limit)
 
 
-def compose(body: str, footer: str) -> str:
-    return f"{clean_for_discord(body, DISCORD_LIMIT - len(footer) - 1)}\n{footer}"
-
-
 def _as_generation(result: Generation | str) -> Generation:
     return result if isinstance(result, Generation) else Generation(text=str(result))
 
@@ -407,12 +392,22 @@ class Babble:
         return []
 
     def handle_reaction(self, evt: ReactionEvent) -> list[Reply]:
-        if evt.user_is_bot or _normalise_emoji(evt.emoji) != THUMBS_UP:
+        """A 👍 or 👎 on one of the bot's remembered replies.
+
+        👍 files the exchange as an approval -- "that answer was right", a
+        positive pair post-training can reinforce. 👎 files it as a rejection:
+        the same pair with the bot's reply on the `rejected` side and nothing
+        chosen, which is never trained on as a target but tells us (and the
+        published dataset) which answers people flagged as bad.
+        """
+        emoji = _normalise_emoji(evt.emoji)
+        if evt.user_is_bot or emoji not in (THUMBS_UP, THUMBS_DOWN):
             return []
+        signal = APPROVAL if emoji == THUMBS_UP else REJECTION
 
         exchange = self.exchanges.get(evt.message_id)
         if exchange is None:
-            # A 👍 on some older or unremembered message. Nothing to attach it to.
+            # A reaction on some older or unremembered message. Nothing to attach it to.
             self.log.event(
                 "reaction.ignored",
                 user=self.log.user(evt.user_id),
@@ -425,38 +420,55 @@ class Babble:
         if not self.consent.may_capture(
             evt.user_id, exchange.prompt_author_id, scope=SCOPE_CORRECTIONS
         ):
-            self._log_skip(APPROVAL, evt.user_id, exchange.prompt_author_id)
+            self._log_skip(signal, evt.user_id, exchange.prompt_author_id)
             return []
 
         if self.blocklist.matches(exchange.prompt, exchange.response):
-            self._log_blocked("approval", exchange.prompt, exchange.response, evt.user_id)
+            self._log_blocked(signal, exchange.prompt, exchange.response, evt.user_id)
             return []
 
-        row = Interaction(
-            id=make_row_id(
-                APPROVAL,
-                exchange.prompt,
-                exchange.response,
-                self.ids.user(exchange.prompt_author_id),
-                self.ids.user(evt.user_id),
-            ),
-            signal=APPROVAL,
-            prompt=exchange.prompt,
-            rejected=None,
-            chosen=exchange.response,
-            prompt_author=self.ids.user(exchange.prompt_author_id),
-            signal_author=self.ids.user(evt.user_id),
-            weight=self.settings.approval_weight,
-            created_at=utcnow_iso(),
+        # The id is content-addressed on the response text for both signals, so
+        # two 👎s on different bad answers to the same prompt stay two rows.
+        row_id = make_row_id(
+            signal,
+            exchange.prompt,
+            exchange.response,
+            self.ids.user(exchange.prompt_author_id),
+            self.ids.user(evt.user_id),
         )
+        if signal == APPROVAL:
+            row = Interaction(
+                id=row_id,
+                signal=APPROVAL,
+                prompt=exchange.prompt,
+                rejected=None,
+                chosen=exchange.response,
+                prompt_author=self.ids.user(exchange.prompt_author_id),
+                signal_author=self.ids.user(evt.user_id),
+                weight=self.settings.approval_weight,
+                created_at=utcnow_iso(),
+            )
+        else:
+            row = Interaction(
+                id=row_id,
+                signal=REJECTION,
+                prompt=exchange.prompt,
+                rejected=exchange.response,
+                chosen="",
+                prompt_author=self.ids.user(exchange.prompt_author_id),
+                signal_author=self.ids.user(evt.user_id),
+                # Metadata only: a rejection has no chosen text to weight.
+                weight=1.0,
+                created_at=utcnow_iso(),
+            )
         fresh = self.store.append(row)
         self.log.event(
-            "capture.approval",
+            f"capture.{signal}",
             row=row.id,
             user=self.log.user(evt.user_id),
             weight=row.weight,
             duplicate=None if fresh else True,
-            chars=len(row.chosen),
+            chars=len(exchange.response),
             total_rows=self.store.count(),
         )
         return []
@@ -594,7 +606,7 @@ class Babble:
         allowed = corrections_state in CAPTURE_OK
         prompt = self._message_text(msg)
         generation = _as_generation(self.generator(prompt))
-        body = clean_for_discord(generation.text, DISCORD_LIMIT - len(FOOTER) - 1)
+        body = clean_for_discord(generation.text, DISCORD_LIMIT)
 
         # The model can emit anything, including a blocked term. Catch it here,
         # before it is ever sent, not after -- this is the one send site every
@@ -647,15 +659,9 @@ class Babble:
             if allowed and not blocked
             else None
         )
-        if not allowed:
-            footer = FOOTER_UNCONSENTED
-        elif corpus_state in CAPTURE_OK:
-            footer = FOOTER
-        else:
-            footer = FOOTER_CORPUS_PENDING
         replies = [
             Reply(
-                f"{body}\n{footer}",
+                body,
                 reply_to=msg.message_id,
                 kind="generation",
                 exchange=exchange,

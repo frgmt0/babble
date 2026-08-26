@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 
 from babble.consent import ConsentStore
-from babble.core import FOOTER, Babble
+from babble.core import Babble
 from babble.export_hf import CORPUS_FILE, DATA_FILE, build_export
 from babble.generate import CheckpointGenerator
 from babble.store import CORRECTION
@@ -66,11 +66,9 @@ def test_ping_correct_train_reload_export(settings, log):
     published = json.loads((export.path / DATA_FILE).read_text(encoding="utf-8").strip())
     assert published["prompt"] == "hello"
     assert published["chosen"] == "hey!"
-    # The stored `rejected` is the body the bot posted, footer removed. Strip
-    # the footer rather than taking the first line: a random model happily
-    # emits newlines, and this is asserting what was published, not how many
-    # lines it happened to come out as.
-    assert published["rejected"] == answer.content[: -(len(FOOTER) + 1)]
+    # The stored `rejected` is exactly the body the bot posted -- replies no
+    # longer carry a footer.
+    assert published["rejected"] == answer.content
     assert ALICE not in json.dumps(published)
 
     corpus_body = (export.path / CORPUS_FILE).read_text(encoding="utf-8")

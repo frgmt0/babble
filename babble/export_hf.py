@@ -35,7 +35,7 @@ from .consent import SCOPE_CORRECTIONS, ConsentStore, CorpusConsent
 from .corpus import CorpusRow, CorpusStore
 from .identity import Pseudonymiser
 from .logs import EventLog, NullLog
-from .store import APPROVAL, CORRECTION, Interaction, InteractionStore
+from .store import APPROVAL, CORRECTION, REJECTION, Interaction, InteractionStore
 
 PSEUDONYM = re.compile(r"^u_[0-9a-f]{16}$")
 MENTION = re.compile(r"<@[!&]?\d+>")
@@ -78,6 +78,7 @@ class ExportResult:
     dropped_blocklist: int
     corrections: int
     approvals: int
+    rejections: int
     contributors: int
 
 
@@ -260,6 +261,7 @@ def build_export(
 
     corrections = sum(1 for r in rows if r.signal == CORRECTION)
     approvals = sum(1 for r in rows if r.signal == APPROVAL)
+    rejections = sum(1 for r in rows if r.signal == REJECTION)
     contributors = len(
         {r.signal_author for r in rows} | {r.prompt_author for r in rows} | {c.author for c in corpus}
     )
@@ -281,6 +283,7 @@ def build_export(
         dropped_blocklist=dropped_blocklist,
         corrections=corrections,
         approvals=approvals,
+        rejections=rejections,
         contributors=contributors,
     )
     (out_dir / "README.md").write_text(dataset_card(result), encoding="utf-8")
@@ -296,6 +299,7 @@ def build_export(
         correction_rows=result.correction_rows,
         corrections=corrections,
         approvals=approvals,
+        rejections=rejections,
         contributors=contributors,
         excluded_no_consent=excluded,
         dropped_leaky=dropped_leaky,
@@ -387,8 +391,10 @@ model's training data — plain next-token prediction over these rows.
 
 ### `corrections` — the pairs ({result.correction_rows} rows)
 
-The older artifact: {result.corrections} corrections and {result.approvals}
-approvals. Someone pinged the bot, the bot answered badly, and a human replied
+The older artifact: {result.corrections} corrections, {result.approvals}
+approvals, and {result.rejections} rejections (a 👎 on an answer: `rejected`
+filled in, `chosen` empty — flagged as bad, with no replacement supplied).
+Someone pinged the bot, the bot answered badly, and a human replied
 with what it should have said. These are **no longer what the model trains on**
 — they are kept and published because they are a real record of people teaching
 a model, and because the text in them is also in the corpus above.

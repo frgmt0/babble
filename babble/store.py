@@ -3,7 +3,11 @@
 A row is `(prompt, rejected, chosen)` -- what someone said, what the bot got
 wrong, and what it should have said. Approvals reuse the same shape with
 `rejected = None` and `chosen` being the bot's own answer, because a 👍 means
-"that one was already right".
+"that one was already right". Rejections (a 👎) are the mirror image: the bot's
+answer on the `rejected` side and `chosen` empty -- "that one was wrong, and
+nobody has said yet what would have been right". They are never trained on as
+a target (`post_state.trainable_pairs` excludes them); they exist to tell us,
+and the published dataset, which answers people flagged.
 
 Authors appear only as salted hashes. There is no code path that writes a raw
 Discord id into this file, which is what makes the export guard cheap to trust.
@@ -21,12 +25,13 @@ from .util import atomic_write_text, utcnow_iso
 
 CORRECTION = "correction"
 APPROVAL = "approval"
+REJECTION = "rejection"
 
 
 @dataclass(frozen=True)
 class Interaction:
     id: str
-    signal: str  # CORRECTION | APPROVAL
+    signal: str  # CORRECTION | APPROVAL | REJECTION
     prompt: str
     rejected: str | None
     chosen: str

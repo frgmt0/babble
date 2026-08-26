@@ -18,7 +18,7 @@ from .blocklist import Blocklist
 from .config import Settings
 from .consent import SCOPE_CORRECTIONS, ConsentStore
 from .identity import Pseudonymiser
-from .store import Interaction, InteractionStore
+from .store import APPROVAL, CORRECTION, Interaction, InteractionStore
 from .util import atomic_write_text, utcnow_iso
 
 
@@ -69,7 +69,10 @@ def trainable_pairs(
     trainable = [
         r
         for r in rows
-        if r.prompt_author in allowed
+        # A rejection has no chosen text -- it marks a bad answer, it does not
+        # supply a good one, so it must never become a training target.
+        if r.signal in (CORRECTION, APPROVAL)
+        and r.prompt_author in allowed
         and r.signal_author in allowed
         and not blocklist.matches(r.prompt, r.chosen)
     ]

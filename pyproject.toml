@@ -29,6 +29,11 @@ dev = ["pytest>=7"]
 # PEP 723 `# /// script` header for `uv run`/`hf jobs uv run` -- this extra
 # exists so `pip install -e .[pretrain]` also works for local development.
 pretrain = ["datasets>=2.19,<3", "pyarrow>=14"]
+# Only needed when serving a HuggingFace Transformers model instead of a
+# native checkpoint (`BABBLE_SERVE_BACKEND=hf`, `babble/hfserve.py` -- e.g.
+# the promoted ProCreations/Booper-Big-Chat-INT8). The checkpoint backend
+# never imports any of this.
+hf = ["transformers>=4.55", "safetensors>=0.4", "tokenizers>=0.19"]
 
 [project.scripts]
 babble = "babble.cli:main"

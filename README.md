@@ -84,10 +84,11 @@ people said.
 2. **What you wrote goes into the corpus.** That is the whole collection
    mechanism. Not the reply — the model's own output is never stored; a corpus
    of what a random model emitted is not a corpus of human writing.
-3. **Every reply carries a footer** telling you how to grade it, if you want to.
-4. **You react 👍** — a weak "that was fine", still recorded as a correction-side
-   signal.
-5. **Or you reply starting with `>>`** — filed as a correction *and* added to the
+3. **You react 👍 or 👎 on the reply** — 👍 is a weak "that was fine", recorded
+   as a correction-side approval; 👎 files the answer as rejected, never trained
+   on as a target, so we know which answers to fix. Replies deliberately carry
+   no footer — the help text and consent notice teach the protocol instead.
+4. **Or you reply starting with `>>`** — filed as a correction *and* added to the
    corpus as your own writing:
 
    ```
@@ -158,11 +159,10 @@ So a correction has to say it is one:
   rather than silently swallowed. (Not `bot.dropped` — nothing was dropped; the
   reply was answered.)
 - `>>` **on its own** is rejected, with a short reply showing the format.
-- **👍 reactions are unaffected.** This is a reply-path rule only.
+- **👍/👎 reactions are unaffected.** This is a reply-path rule only.
 
 The marker is `CORRECTION_MARKER` in `babble/config.py` — change it in that one
-place and the footer, the help text, the consent notice and the parser all
-follow.
+place and the help text and the parser both follow.
 
 Each correction is kept as a triple:
 
@@ -1172,7 +1172,7 @@ not a deployment setting somebody can flip on for a whole server at once.
 
 The [correction marker](#why-corrections-need-the--marker) is `CORRECTION_MARKER`
 in `babble/config.py` rather than an environment variable — it is part of the
-protocol people are taught in the footer, not a per-deployment tuning knob.
+protocol people are taught in the help text, not a per-deployment tuning knob.
 
 ## Running it for real
 
