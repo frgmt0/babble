@@ -1,9 +1,16 @@
 {
   "name": "booper-site",
   "compatibility_date": "2026-08-25",
+  "main": "./worker.js",
   "assets": {
-    "directory": "./public"
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*"]
   },
+  "kv_namespaces": [
+    // create with: npx wrangler kv namespace create RUNS   (paste the id here)
+    { "binding": "RUNS", "id": "REPLACE_WITH_KV_NAMESPACE_ID" }
+  ],
   "routes": [
     { "pattern": "booper.frgmt.xyz", "custom_domain": true }
   ]
