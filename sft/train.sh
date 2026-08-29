@@ -6,8 +6,8 @@ cd "$(dirname "$0")/.."
 name="${1:?usage: sft/train.sh <run-name> [args]}"; shift
 mkdir -p "runs/$name"
 # One training process per machine: a second run on a 16GB laptop pages it to death.
-if pgrep -f "sft_longform.py" >/dev/null; then
-  echo "refusing: an SFT run is already alive:"; pgrep -fl "sft_longform.py"; echo "stop it with: sft/stop.sh"; exit 1
+if pgrep -f "python.*sft/sft_longform.py" >/dev/null; then
+  echo "refusing: an SFT run is already alive:"; pgrep -fl "python.*sft/sft_longform.py"; echo "stop it with: sft/stop.sh"; exit 1
 fi
 [ -f .env.sft ] && set -a && . ./.env.sft && set +a   # BABBLE_RUNS_URL / BABBLE_RUNS_TOKEN
 py=.venv/bin/python

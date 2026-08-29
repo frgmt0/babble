@@ -442,7 +442,9 @@ def main():
     torch.manual_seed(args.seed)
     # Bound the MPS allocator to a fraction of unified memory so a leak fails
     # loudly instead of paging the whole machine (default 1.0 = "everything").
-    os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.6")
+    # Both must be set: PyTorch's default LOW is 1.4 and it rejects HIGH < LOW.
+    os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.7")
+    os.environ.setdefault("PYTORCH_MPS_LOW_WATERMARK_RATIO", "0.5")
     device = torch.device(args.device or ("mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu"))
     dtype = torch.bfloat16 if device.type != "cpu" else torch.float32
     log(f"device={device} autocast={dtype}")
