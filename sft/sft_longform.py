@@ -322,6 +322,43 @@ def export_int8(model, config, tok_path: Path, src_dir: Path, out: Path, log):
     log("export: round-trip load through babble.hfserve._load_int8 OK")
 
 
+def push_export(run_dir: Path, repo: str, log):
+    """Upload runs/<name>/export (plus a model card built from metrics.jsonl) to the Hub."""
+    from huggingface_hub import HfApi
+
+    export = run_dir / "export"
+    recs = [json.loads(l) for l in (run_dir / "metrics.jsonl").open()] if (run_dir / "metrics.jsonl").exists() else []
+    start = next((r for r in recs if r.get("event") == "start"), {})
+    evals = [r for r in recs if "val" in r]
+    trains = [r for r in recs if "loss" in r]
+    samples = evals[-1].get("samples", []) if evals else []
+    card = [
+        "---", "license: apache-2.0", "language: [en]", "library_name: transformers", "pipeline_tag: text-generation",
+        f"base_model: {INT8_REPO}", "tags: [moe, booper, int8, sft, long-form]", "---", "",
+        f"# {repo.split('/')[-1]}", "",
+        f"Long-form SFT of `{INT8_REPO}` (Mixtral MoE, 150M total / ~50M active, vocab 16384) so booper answers",
+        "story/long-answer requests instead of one-liners. Trained with `sft/sft_longform.py` from",
+        "https://github.com/frgmt0/babble in the pair layout `<bos> prompt <sep> response <eos>` (loss on the response).", "",
+        "## Data mix", "",
+        *(f"- {k}: {v} examples" for k, v in (start.get("counts") or {}).items()),
+        "", "## Training", "",
+        f"- steps: {trains[-1]['step'] if trains else '?'}, tokens: {trains[-1]['tokens']:,}" if trains else "- (no train records)",
+        f"- val loss: {evals[0]['val']:.4f} -> {evals[-1]['val']:.4f}" if len(evals) > 1 else "",
+        f"- device: {start.get('device', '?')}, lr {start.get('args', {}).get('lr')}, seq len {start.get('args', {}).get('seq_len')}",
+        "", "## Samples (temperature 0.8)", "",
+        *(f"**{s['prompt']}**\n\n> {s['reply'].replace(chr(10), chr(10) + '> ')}\n" for s in samples),
+        "", "## Loading", "",
+        "Same INT8 layout as the base: `load_int8.py` in this repo, or `babble.hfserve` with `BABBLE_HF_MODEL_DIR` pointed at a snapshot.",
+    ]
+    (export / "README.md").write_text("\n".join(c for c in card if c is not None))
+    shutil.copy(run_dir / "metrics.jsonl", export / "metrics.jsonl")
+    api = HfApi()
+    api.create_repo(repo, exist_ok=True)
+    log(f"push: uploading {export} -> https://huggingface.co/{repo}")
+    api.upload_folder(folder_path=str(export), repo_id=repo, commit_message=f"SFT run {run_dir.name}")
+    log(f"push: done https://huggingface.co/{repo}")
+
+
 # ------------------------------------------------------------ training ---
 
 
@@ -425,6 +462,7 @@ def main():
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--export", action="store_true", help="only re-pack runs/<name>/ckpt to INT8")
     ap.add_argument("--smoke", action="store_true", help="tiny run: 600 examples, 12 steps")
+    ap.add_argument("--push", default=None, metavar="NAMESPACE/REPO", help="after export, upload runs/<name>/export to this HF repo (uses the cached HF login)")
     args = ap.parse_args()
     if args.smoke:
         args.examples, args.tokens, args.log_every, args.eval_every, args.ckpt_every = 600, 12 * args.tokens_per_batch * args.accum, 2, 6, 6
@@ -462,6 +500,8 @@ def main():
         step, tokens = load_ckpt(model, ckpt_dir, device)
         log(f"export from step {step} ({tokens:,} tokens)")
         export_int8(model, config, tok_path, base, run_dir / "export", log)
+        if args.push:
+            push_export(run_dir, args.push, log)
         return
 
     train, val, counts = build_examples(tok, args, log)
@@ -501,7 +541,7 @@ def main():
             n_tgt = int((labels[:, 1:] != -100).sum())
             loss = F.cross_entropy(logits[:, :-1].reshape(-1, logits.size(-1)), labels[:, 1:].reshape(-1), ignore_index=-100)
             (loss / args.accum).backward()
-            loss_acc += float(loss)
+            loss_acc += float(loss.detach())
             del logits, loss
             loss_n += 1
             tokens_seen += int(ids.numel())
@@ -539,6 +579,8 @@ def main():
     report({"step": step, "val": v, "samples": s, "event": "done"})
     log(f"done: step {step} val {v:.4f}")
     export_int8(model, config, tok_path, base, run_dir / "export", log)
+    if args.push:
+        push_export(run_dir, args.push, log)
 
 
 if __name__ == "__main__":

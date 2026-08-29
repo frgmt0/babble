@@ -7,7 +7,8 @@ sft/train.sh story-v1 --tokens 30e6      # detached (nohup + caffeinate); one ru
 sft/monitor.sh story-v1                  # status line + follow train.log   (--status for one-shot)
 sft/stop.sh                              # stop the trainer; sft/train.sh story-v1 --resume continues
 sft/train.sh smoke --smoke               # 12-step end-to-end check first
-.venv/bin/python sft/sft_longform.py --name story-v1 --export   # re-pack runs/story-v1/ckpt -> runs/story-v1/export (INT8)
+.venv/bin/python sft/sft_longform.py --name story-v1 --export                     # re-pack ckpt -> export/ (INT8)
+.venv/bin/python sft/sft_longform.py --name story-v1 --export --push <your-hf-namespace>/booper-story-v1   # ...and publish it
 ```
 
 Live dashboard: put `BABBLE_RUNS_URL=https://booper.frgmt.xyz` and `BABBLE_RUNS_TOKEN=<the worker's RUNS_TOKEN secret>`
