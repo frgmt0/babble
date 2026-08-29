@@ -70,7 +70,8 @@ async function loadRun(name) {
     ["step", last ? `${last.step} / ${last.steps_total ?? "?"}` : "—"],
     ["train loss", fmt(last?.loss)], ["val loss", fmt(lastEv?.val)],
     ["tok/s", fmt(last?.tok_s, 0)], ["eta", done ? "done" : mins(last?.eta_s)],
-    ["tokens", last ? (last.tokens / 1e6).toFixed(1) + "M" : "—"],
+    ["tokens", last?.tokens != null ? (last.tokens / 1e6).toFixed(1) + "M" : "—"],
+    ["mem", last?.rss_gb != null ? fmt(last.rss_gb, 1) + " GB" : "—"],
     ["device", start?.device ?? "—"],
   ];
   $("#tiles").innerHTML = tiles.map(([k, v]) => `<div class="tile"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
@@ -93,16 +94,19 @@ async function loadRun(name) {
 function esc(s) { return String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c])); }
 
 function line(svg, series, dec = 3) {
-  const W = svg.clientWidth || 800, H = 220, m = { l: 48, r: 12, t: 8, b: 24 };
+  const W = svg.clientWidth || 800, H = 220;
   const all = series.flatMap((s) => s.pts).filter((p) => isFinite(p[1]));
   svg.innerHTML = "";
   if (!all.length) { svg.innerHTML = `<text x="${W / 2}" y="${H / 2}" text-anchor="middle">no data yet</text>`; return; }
   const xs = all.map((p) => p[0]), ys = all.map((p) => p[1]);
   const x0 = Math.min(...xs), x1 = Math.max(...xs, x0 + 1), y0 = Math.min(...ys), y1 = Math.max(...ys);
   const pad = (y1 - y0) * 0.08 || y1 * 0.1 || 1;
+  const yLabels = []; for (let i = 0; i <= 4; i++) yLabels.push(fmt(y0 - pad + (y1 - y0 + 2 * pad) * i / 4, dec));
+  // Left margin sized to fit the widest y-axis label (small lr values need more room than "3.633").
+  const m = { l: Math.max(40, 14 + Math.max(...yLabels.map((s) => s.length)) * 6.5), r: 12, t: 8, b: 24 };
   const X = (x) => m.l + (x - x0) / (x1 - x0) * (W - m.l - m.r), Y = (y) => m.t + (1 - (y - (y0 - pad)) / ((y1 + pad) - (y0 - pad))) * (H - m.t - m.b);
   let g = "";
-  for (let i = 0; i <= 4; i++) { const y = y0 - pad + (y1 - y0 + 2 * pad) * i / 4; g += `<line x1="${m.l}" x2="${W - m.r}" y1="${Y(y)}" y2="${Y(y)}" stroke="var(--grid)"/><text x="${m.l - 6}" y="${Y(y) + 4}" text-anchor="end">${fmt(y, dec)}</text>`; }
+  for (let i = 0; i <= 4; i++) { const y = y0 - pad + (y1 - y0 + 2 * pad) * i / 4; g += `<line x1="${m.l}" x2="${W - m.r}" y1="${Y(y)}" y2="${Y(y)}" stroke="var(--grid)"/><text x="${m.l - 6}" y="${Y(y) + 4}" text-anchor="end">${yLabels[i]}</text>`; }
   for (let i = 0; i <= 4; i++) { const x = x0 + (x1 - x0) * i / 4; g += `<text x="${X(x)}" y="${H - 6}" text-anchor="middle">${Math.round(x)}</text>`; }
   for (const s of series) {
     const pts = s.pts.filter((p) => isFinite(p[1]));
