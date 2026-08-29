@@ -43,10 +43,8 @@ sys.path.insert(0, str(ROOT))
 INT8_REPO = "ProCreations/Booper-Big-Chat-INT8"
 SAMPLE_PROMPTS = [
     "write me a short story about a dragon who is afraid of fire",
-    "can you write a story about two friends who find a map",
     "tell me a story",
     "hey booper whats up",
-    "what do you think about pineapple on pizza",
 ]
 STORY_TEMPLATES = [
     "write me a story about {summary}",
@@ -328,7 +326,20 @@ def export_int8(model, config, tok_path: Path, src_dir: Path, out: Path, log):
 
 
 @torch.no_grad()
-def sample(model, tok, device, max_new=200):
+def free_cache(device):
+    if device.type == "mps":
+        torch.mps.empty_cache()
+    elif device.type == "cuda":
+        torch.cuda.empty_cache()
+
+
+def rss_gb() -> float:
+    import resource
+
+    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024**3 if sys.platform == "darwin" else 1024**2)
+
+
+def sample(model, tok, device, max_new=120):
     bos, sep, eos, pad = (tok.token_to_id(t) for t in ("<bos>", "<sep>", "<eos>", "<pad>"))
     model.eval()
     outs = []
@@ -340,6 +351,8 @@ def sample(model, tok, device, max_new=200):
         )[0, ids.shape[1] :]
         keep = [int(t) for t in gen if int(t) not in (pad, eos)]
         outs.append({"prompt": p, "reply": tok.decode(keep, skip_special_tokens=True).strip(), "tokens": len(keep)})
+        del gen
+        free_cache(device)
     model.train()
     return outs
 
@@ -348,13 +361,15 @@ def sample(model, tok, device, max_new=200):
 def evaluate(model, val, device, pad, dtype):
     model.eval()
     tot, n = 0.0, 0
-    for ids, labels in batches(val, 8192, pad):
+    for ids, labels in batches(val, 2048, pad):
         ids, labels = ids.to(device), labels.to(device)
         with torch.autocast(device_type=device.type, dtype=dtype, enabled=dtype != torch.float32):
             logits = model(input_ids=ids, attention_mask=(ids != pad)).logits
-        loss = F.cross_entropy(logits[:, :-1].reshape(-1, logits.size(-1)).float(), labels[:, 1:].reshape(-1), ignore_index=-100, reduction="sum")
+        loss = F.cross_entropy(logits[:, :-1].reshape(-1, logits.size(-1)), labels[:, 1:].reshape(-1), ignore_index=-100, reduction="sum")
         tot += float(loss)
         n += int((labels[:, 1:] != -100).sum())
+        del logits, loss
+    free_cache(device)
     model.train()
     return tot / max(n, 1)
 
@@ -397,8 +412,8 @@ def main():
     ap.add_argument("--prompt-budget", type=int, default=256)
     ap.add_argument("--min-response", type=int, default=1)
     ap.add_argument("--val-examples", type=int, default=400)
-    ap.add_argument("--tokens-per-batch", type=int, default=8192)
-    ap.add_argument("--accum", type=int, default=4)
+    ap.add_argument("--tokens-per-batch", type=int, default=4096)
+    ap.add_argument("--accum", type=int, default=8)
     ap.add_argument("--lr", type=float, default=4e-5)
     ap.add_argument("--warmup", type=int, default=50)
     ap.add_argument("--log-every", type=int, default=10)
@@ -425,6 +440,9 @@ def main():
         logf.flush()
 
     torch.manual_seed(args.seed)
+    # Bound the MPS allocator to a fraction of unified memory so a leak fails
+    # loudly instead of paging the whole machine (default 1.0 = "everything").
+    os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.6")
     device = torch.device(args.device or ("mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu"))
     dtype = torch.bfloat16 if device.type != "cpu" else torch.float32
     log(f"device={device} autocast={dtype}")
@@ -466,8 +484,9 @@ def main():
     report = Reporter(run_dir, args.name)
     report({"event": "start", "steps_total": steps_total, "device": str(device), "counts": counts, "args": vars(args), "resumed_step": step})
     v = evaluate(model, val, device, pad, dtype)
-    log(f"step {step} val {v:.4f}")
+    log(f"step {step} val {v:.4f} rss {rss_gb():.1f}G")
     report({"step": step, "val": v, "samples": sample(model, tok, device)})
+    log(f"samples done rss {rss_gb():.1f}G")
 
     epoch = 0
     t_log, tok_log, loss_acc, loss_n = time.perf_counter(), 0, 0.0, 0
@@ -478,9 +497,10 @@ def main():
             with torch.autocast(device_type=device.type, dtype=dtype, enabled=dtype != torch.float32):
                 logits = model(input_ids=ids, attention_mask=(ids != pad)).logits
             n_tgt = int((labels[:, 1:] != -100).sum())
-            loss = F.cross_entropy(logits[:, :-1].reshape(-1, logits.size(-1)).float(), labels[:, 1:].reshape(-1), ignore_index=-100)
+            loss = F.cross_entropy(logits[:, :-1].reshape(-1, logits.size(-1)), labels[:, 1:].reshape(-1), ignore_index=-100)
             (loss / args.accum).backward()
             loss_acc += float(loss)
+            del logits, loss
             loss_n += 1
             tokens_seen += int(ids.numel())
             tok_log += int(ids.numel())
@@ -495,11 +515,12 @@ def main():
             step += 1
             if step % args.log_every == 0:
                 dt = time.perf_counter() - t_log
-                rec = {"step": step, "loss": loss_acc / loss_n, "lr": lr_at(step - 1), "grad_norm": float(gn), "tok_s": tok_log / dt, "tokens": tokens_seen, "steps_total": steps_total, "eta_s": (steps_total - step) * dt / args.log_every}
-                log(f"step {step}/{steps_total} loss {rec['loss']:.4f} lr {rec['lr']:.2e} gn {rec['grad_norm']:.2f} {rec['tok_s']:.0f} tok/s eta {rec['eta_s']/60:.0f}m")
+                rec = {"step": step, "loss": loss_acc / loss_n, "lr": lr_at(step - 1), "grad_norm": float(gn), "tok_s": tok_log / dt, "tokens": tokens_seen, "steps_total": steps_total, "eta_s": (steps_total - step) * dt / args.log_every, "rss_gb": rss_gb()}
+                log(f"step {step}/{steps_total} loss {rec['loss']:.4f} lr {rec['lr']:.2e} gn {rec['grad_norm']:.2f} {rec['tok_s']:.0f} tok/s rss {rec['rss_gb']:.1f}G eta {rec['eta_s']/60:.0f}m")
                 report(rec)
                 t_log, tok_log, loss_acc, loss_n = time.perf_counter(), 0, 0.0, 0
             if step % args.eval_every == 0:
+                free_cache(device)
                 v = evaluate(model, val, device, pad, dtype)
                 s = sample(model, tok, device)
                 log(f"step {step} val {v:.4f} | sample: {s[0]['reply'][:160]!r} ({s[0]['tokens']} tok)")
