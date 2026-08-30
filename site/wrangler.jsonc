@@ -1,9 +1,15 @@
 {
   "name": "booper-site",
   "compatibility_date": "2026-08-25",
+  "main": "./worker.js",
   "assets": {
-    "directory": "./public"
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*"]
   },
+  "kv_namespaces": [
+    { "binding": "RUNS", "id": "c9c94c4c950243ec8b2010bd040a071e" }
+  ],
   "routes": [
     { "pattern": "booper.frgmt.xyz", "custom_domain": true }
   ]

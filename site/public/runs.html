@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>booper · runs</title>
+<style>
+  :root { --ink:#222; --ink2:#666; --muted:#999; --bg:#fff; --surface:#fcfcfb; --grid:#e6e5e2; --s1:#2a78d6; --s2:#d6612a; --s3:#3a9a6a; }
+  @media (prefers-color-scheme: dark) { :root { --ink:#ddd; --ink2:#aaa; --muted:#777; --bg:#111; --surface:#1a1a19; --grid:#2e2e2c; --s1:#6fa8e8; --s2:#e8945f; --s3:#5fbf8a; } a { color:#8ab4f8; } }
+  body { font-family: system-ui, sans-serif; max-width: 60rem; margin: 3rem auto; padding: 0 1rem; line-height: 1.6; color: var(--ink); background: var(--bg); }
+  h1 { margin-bottom: .2rem } h1 a { color: inherit; text-decoration: none }
+  .sub { color: var(--ink2); margin-top: 0 }
+  .bar { display:flex; gap:1rem; align-items:center; flex-wrap:wrap; margin: 1rem 0 }
+  select, button { font: inherit; padding: .3rem .5rem; background: var(--surface); color: var(--ink); border: 1px solid var(--grid); border-radius: 6px }
+  .tiles { display:grid; grid-template-columns: repeat(auto-fit, minmax(9rem,1fr)); gap:.75rem; margin: 1rem 0 }
+  .tile { background: var(--surface); border:1px solid var(--grid); border-radius:8px; padding:.6rem .8rem }
+  .tile .k { color: var(--ink2); font-size:.8rem } .tile .v { font-size:1.4rem; font-variant-numeric: tabular-nums }
+  .chart { background: var(--surface); border:1px solid var(--grid); border-radius:8px; padding:.6rem .8rem 0; margin: 1rem 0; overflow-x:auto }
+  .chart h3 { margin:.2rem 0 .4rem; font-size:.95rem; font-weight:600 }
+  .legend { display:flex; gap:1rem; font-size:.8rem; color: var(--ink2) } .legend i { display:inline-block; width:14px; height:2px; vertical-align:middle; margin-right:.3rem }
+  svg { width:100%; height:220px; display:block } svg text { fill: var(--ink2); font-size:11px }
+  .tip { position:absolute; pointer-events:none; background: var(--bg); border:1px solid var(--grid); border-radius:6px; padding:.3rem .5rem; font-size:.8rem; display:none; white-space:nowrap }
+  .samples { display:grid; gap:.6rem } .sample { background: var(--surface); border:1px solid var(--grid); border-radius:8px; padding:.6rem .8rem }
+  .sample .p { color: var(--ink2); font-size:.85rem } .sample .r { white-space: pre-wrap; margin-top:.2rem }
+  .empty { color: var(--muted) }
+  details summary { cursor:pointer; color: var(--ink2) } table { border-collapse: collapse; font-size:.85rem; font-variant-numeric: tabular-nums } td,th { padding:.2rem .6rem; border-bottom:1px solid var(--grid); text-align:right }
+</style>
+</head>
+<body>
+<h1><a href="/">booper</a> · runs</h1>
+<p class="sub">live training runs — each point is a step the trainer reported. refreshes every 15s.</p>
+<div class="bar">
+  <label>run <select id="run"></select></label>
+  <span id="state" class="sub"></span>
+  <button id="refresh">refresh</button>
+</div>
+<div id="tiles" class="tiles"></div>
+<div class="chart"><h3>loss <span class="legend"><span><i style="background:var(--s1)"></i>train</span><span><i style="background:var(--s2)"></i>val</span></span></h3><svg id="loss"></svg></div>
+<div class="chart"><h3>throughput (tokens / s)</h3><svg id="tps"></svg></div>
+<div class="chart"><h3>learning rate</h3><svg id="lr"></svg></div>
+<h3>latest samples</h3>
+<div id="samples" class="samples"></div>
+<details><summary>eval table</summary><table id="table"></table></details>
+<div id="tip" class="tip"></div>
+<script>
+const $ = (s) => document.querySelector(s);
+const fmt = (x, d = 3) => x == null ? "—" : (Math.abs(x) >= 1000 ? Math.round(x).toLocaleString() : Number(x).toFixed(d));
+const mins = (s) => s == null ? "—" : s < 3600 ? `${Math.round(s / 60)}m` : `${(s / 3600).toFixed(1)}h`;
+let current = null;
+
+async function loadIndex() {
+  const runs = await fetch("/api/runs").then((r) => r.json()).catch(() => []);
+  const sel = $("#run");
+  const prev = sel.value || location.hash.slice(1);
+  sel.innerHTML = runs.map((r) => `<option value="${r.name}">${r.name}${r.done ? " ✓" : ""}</option>`).join("");
+  if (!runs.length) { $("#state").textContent = "no runs reported yet"; return; }
+  sel.value = runs.some((r) => r.name === prev) ? prev : runs[0].name;
+  await loadRun(sel.value);
+}
+
+async function loadRun(name) {
+  current = name; location.hash = name;
+  const recs = await fetch(`/api/runs/${name}`).then((r) => r.json()).catch(() => []);
+  const tr = recs.filter((r) => "loss" in r), ev = recs.filter((r) => "val" in r);
+  const last = tr[tr.length - 1], lastEv = ev[ev.length - 1], start = recs.find((r) => r.event === "start");
+  const done = recs.some((r) => r.event === "done");
+  const stale = last && Date.now() / 1000 - (recs[recs.length - 1].t || 0) > 600;
+  $("#state").textContent = done ? "finished" : stale ? "no report in >10 min (stalled?)" : last ? "running" : "starting";
+  const tiles = [
+    ["step", last ? `${last.step} / ${last.steps_total ?? "?"}` : "—"],
+    ["train loss", fmt(last?.loss)], ["val loss", fmt(lastEv?.val)],
+    ["tok/s", fmt(last?.tok_s, 0)], ["eta", done ? "done" : mins(last?.eta_s)],
+    ["tokens", last?.tokens != null ? (last.tokens / 1e6).toFixed(1) + "M" : "—"],
+    ["mem", last?.rss_gb != null ? fmt(last.rss_gb, 1) + " GB" : "—"],
+    ["device", start?.device ?? "—"],
+  ];
+  $("#tiles").innerHTML = tiles.map(([k, v]) => `<div class="tile"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
+  line($("#loss"), [
+    { name: "train", color: "var(--s1)", pts: tr.map((r) => [r.step, r.loss]) },
+    { name: "val", color: "var(--s2)", pts: ev.map((r) => [r.step, r.val]), dots: true },
+  ]);
+  line($("#tps"), [{ name: "tok/s", color: "var(--s3)", pts: tr.map((r) => [r.step, r.tok_s]) }], 0);
+  line($("#lr"), [{ name: "lr", color: "var(--s1)", pts: tr.map((r) => [r.step, r.lr]) }], 6);
+  const s = lastEv?.samples || [];
+  $("#samples").innerHTML = s.length
+    ? `<p class="sub">at step ${lastEv.step}</p>` + s.map((x) => `<div class="sample"><div class="p">${esc(x.prompt)}</div><div class="r">${esc(x.reply) || "<i>(empty)</i>"}</div><div class="p">${x.tokens} tokens</div></div>`).join("")
+    : `<p class="empty">no samples yet</p>`;
+  $("#table").innerHTML = `<tr><th>step</th><th>val</th><th>train</th></tr>` + ev.map((e) => {
+    const t = tr.filter((r) => r.step <= e.step).pop();
+    return `<tr><td>${e.step}</td><td>${fmt(e.val, 4)}</td><td>${fmt(t?.loss, 4)}</td></tr>`;
+  }).join("");
+}
+
+function esc(s) { return String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c])); }
+
+function line(svg, series, dec = 3) {
+  const W = svg.clientWidth || 800, H = 220;
+  const all = series.flatMap((s) => s.pts).filter((p) => isFinite(p[1]));
+  svg.innerHTML = "";
+  if (!all.length) { svg.innerHTML = `<text x="${W / 2}" y="${H / 2}" text-anchor="middle">no data yet</text>`; return; }
+  const xs = all.map((p) => p[0]), ys = all.map((p) => p[1]);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs, x0 + 1), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  const pad = (y1 - y0) * 0.08 || y1 * 0.1 || 1;
+  const yLabels = []; for (let i = 0; i <= 4; i++) yLabels.push(fmt(y0 - pad + (y1 - y0 + 2 * pad) * i / 4, dec));
+  // Left margin sized to fit the widest y-axis label (small lr values need more room than "3.633").
+  const m = { l: Math.max(40, 14 + Math.max(...yLabels.map((s) => s.length)) * 6.5), r: 12, t: 8, b: 24 };
+  const X = (x) => m.l + (x - x0) / (x1 - x0) * (W - m.l - m.r), Y = (y) => m.t + (1 - (y - (y0 - pad)) / ((y1 + pad) - (y0 - pad))) * (H - m.t - m.b);
+  let g = "";
+  for (let i = 0; i <= 4; i++) { const y = y0 - pad + (y1 - y0 + 2 * pad) * i / 4; g += `<line x1="${m.l}" x2="${W - m.r}" y1="${Y(y)}" y2="${Y(y)}" stroke="var(--grid)"/><text x="${m.l - 6}" y="${Y(y) + 4}" text-anchor="end">${yLabels[i]}</text>`; }
+  for (let i = 0; i <= 4; i++) { const x = x0 + (x1 - x0) * i / 4; g += `<text x="${X(x)}" y="${H - 6}" text-anchor="middle">${Math.round(x)}</text>`; }
+  for (const s of series) {
+    const pts = s.pts.filter((p) => isFinite(p[1]));
+    if (!pts.length) continue;
+    g += `<path d="${pts.map((p, i) => (i ? "L" : "M") + X(p[0]).toFixed(1) + " " + Y(p[1]).toFixed(1)).join(" ")}" fill="none" stroke="${s.color}" stroke-width="2" stroke-linejoin="round"/>`;
+    if (s.dots) g += pts.map((p) => `<circle cx="${X(p[0])}" cy="${Y(p[1])}" r="3.5" fill="${s.color}" stroke="var(--surface)" stroke-width="2"/>`).join("");
+  }
+  g += `<line id="xh" x1="0" x2="0" y1="${m.t}" y2="${H - m.b}" stroke="var(--muted)" stroke-dasharray="3 3" visibility="hidden"/>`;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`); svg.innerHTML = g;
+  const tip = $("#tip"), xh = svg.querySelector("#xh");
+  svg.onmousemove = (e) => {
+    const r = svg.getBoundingClientRect(), x = x0 + ((e.clientX - r.left) - m.l) / (W - m.l - m.r) * (x1 - x0);
+    const rows = series.map((s) => { const p = s.pts.reduce((a, b) => Math.abs(b[0] - x) < Math.abs(a[0] - x) ? b : a, s.pts[0] || [x, null]); return p && p[1] != null ? `${s.name} ${fmt(p[1], dec)} @ ${p[0]}` : null; }).filter(Boolean);
+    if (!rows.length) return;
+    xh.setAttribute("x1", X(Math.round(x))); xh.setAttribute("x2", X(Math.round(x))); xh.setAttribute("visibility", "visible");
+    tip.style.display = "block"; tip.innerHTML = rows.join("<br>"); tip.style.left = e.pageX + 12 + "px"; tip.style.top = e.pageY - 10 + "px";
+  };
+  svg.onmouseleave = () => { tip.style.display = "none"; xh.setAttribute("visibility", "hidden"); };
+}
+
+$("#run").onchange = (e) => loadRun(e.target.value);
+$("#refresh").onclick = () => current ? loadRun(current) : loadIndex();
+loadIndex(); setInterval(() => current && loadRun(current), 15000);
+</script>
+</body>
+</html>
