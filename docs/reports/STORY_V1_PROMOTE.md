@@ -40,7 +40,24 @@ a76eb9459f850e5cd8c0e312719540b6d2f303c0b7db2551d0e6f37a3a056d6a  config.json
 ```
 BABBLE_HF_MODEL_DIR=/home/jason/babble-live/artifacts/hf-booper-story-v1
 BABBLE_MAX_NEW_TOKENS=512        # new; was the 256 default, which cut stories mid-sentence
+BABBLE_NO_REPEAT_NGRAM_SIZE=4    # new (added ~20 min after promotion, see below)
 ```
+
+### Follow-up: sentence loops (same evening)
+
+First real ping ("tell me a story") produced a story that fell into
+`"You can pretend to be a doll."` repeated to the token cap. On the hf backend
+only `repetition_penalty` and `no_repeat_ngram_size` reach `generate` (the
+native path's `frequency_penalty` does not apply). Measured on
+"tell me a story", two samples each:
+
+| setting | result |
+| --- | --- |
+| `no_repeat_ngram_size=4`, rp 1.15 | full stories, no loops, prose intact |
+| `no_repeat_ngram_size=6`, rp 1.15 | no loops, but shorter, more clipped |
+| `repetition_penalty=1.3`, ngram off | model bails: "Idk what you mean" |
+
+Shipped `BABBLE_NO_REPEAT_NGRAM_SIZE=4`; `bot.ready` again at 2026-08-30T04:27:39Z.
 
 Code in `~/babble-live` unchanged (`a10f9a4`); training triggers stay zeroed.
 
