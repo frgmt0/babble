@@ -432,7 +432,8 @@ class Reporter:
                 req = urllib.request.Request(
                     f"{self.url.rstrip('/')}/api/runs/{self.name}",
                     data=json.dumps(rec).encode(),
-                    headers={"content-type": "application/json", "authorization": f"Bearer {self.token}"},
+                    # Cloudflare's bot rules 403 the default "Python-urllib" agent.
+                    headers={"content-type": "application/json", "authorization": f"Bearer {self.token}", "user-agent": "babble-sft/1.0"},
                     method="POST",
                 )
                 urllib.request.urlopen(req, timeout=5).read()
