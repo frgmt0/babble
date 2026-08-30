@@ -226,7 +226,10 @@ def save_ckpt(model, config, tok_path: Path, out: Path, step: int, tokens: int, 
     if tmp.exists():
         shutil.rmtree(tmp)
     tmp.mkdir(parents=True)
-    state = {k: v.detach().to("cpu", torch.bfloat16).contiguous() for k, v in model.state_dict().items()}
+    # NOTE: `.to("cpu", torch.bfloat16)` in ONE call corrupts the source fp32
+    # tensor on MPS (torch 2.13) -- measured: val 2.33 -> 4.12 from that line
+    # alone. Copy to CPU first, cast second. Same in export_int8.
+    state = {k: v.detach().to("cpu").to(torch.bfloat16).contiguous() for k, v in model.state_dict().items()}
     if "lm_head.weight" in state and getattr(config, "tie_word_embeddings", False):
         del state["lm_head.weight"]  # tied; re-tied on load
     save_file(state, str(tmp / "model.safetensors"))
@@ -258,7 +261,7 @@ def export_int8(model, config, tok_path: Path, src_dir: Path, out: Path, log):
     from safetensors.torch import save_file
 
     out.mkdir(parents=True, exist_ok=True)
-    sd = {k: v.detach().to("cpu", torch.float32) for k, v in model.state_dict().items()}
+    sd = {k: v.detach().to("cpu").to(torch.float32) for k, v in model.state_dict().items()}
     fused = any(".mlp.experts.gate_up_proj" in k for k in sd)
     packed: dict[str, torch.Tensor] = {}
     report: dict[str, dict] = {}
