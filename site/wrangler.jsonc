@@ -8,8 +8,7 @@
     "run_worker_first": ["/api/*"]
   },
   "kv_namespaces": [
-    // create with: npx wrangler kv namespace create RUNS   (paste the id here)
-    { "binding": "RUNS", "id": "REPLACE_WITH_KV_NAMESPACE_ID" }
+    { "binding": "RUNS", "id": "c9c94c4c950243ec8b2010bd040a071e" }
   ],
   "routes": [
     { "pattern": "booper.frgmt.xyz", "custom_domain": true }
