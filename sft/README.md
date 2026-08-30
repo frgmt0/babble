@@ -4,6 +4,8 @@ Everything runs from the repo root with `.venv` set up (`uv venv --python 3.12 &
 
 ```bash
 sft/train.sh story-v1 --tokens 30e6      # detached (nohup + caffeinate); one run per machine
+sft/train.sh story-v2 --base runs/story-v1/export --tokens 40e6 \
+    --mix-story 0.25 --mix-wp 0.25 --mix-norobots 0.10 --repeat-norobots 2 --mix-smoltalk 0.10 --mix-discord 0.30   # v2 mix, continue from v1
 sft/monitor.sh story-v1                  # status line + follow train.log   (--status for one-shot)
 sft/stop.sh                              # stop the trainer; sft/train.sh story-v1 --resume continues
 sft/train.sh smoke --smoke               # 12-step end-to-end check first

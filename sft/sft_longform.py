@@ -43,7 +43,7 @@ sys.path.insert(0, str(ROOT))
 INT8_REPO = "ProCreations/Booper-Big-Chat-INT8"
 SAMPLE_PROMPTS = [
     "write me a short story about a dragon who is afraid of fire",
-    "tell me a story",
+    "write a short story about a detective in a city that never sleeps",
     "hey booper whats up",
 ]
 STORY_TEMPLATES = [
@@ -104,6 +104,50 @@ def _no_robots_records(split: str):
             yield msgs[0]["content"].strip(), msgs[1]["content"].strip()
 
 
+_WP_FIXES = [
+    (r"\s+([,.!?;:%])", r"\1"), (r"\s+'\s*(s|t|re|ve|ll|d|m)\b", r"'\1"), (r"\bn't\b", "n't"),
+    (r"``\s*", '"'), (r"\s*''", '"'), (r"\(\s+", "("), (r"\s+\)", ")"), (r"\s+n't", "n't"),
+    (r"([\"])\s+([^\"]*?)\s+([\"])", r"\1\2\3"), (r" {2,}", " "),
+]
+
+
+def _wp_clean(text: str) -> str:
+    """Undo writingprompts' PTB-style tokenisation ("You 've", "`` quote '')."""
+    import re
+
+    text = re.sub(r"^\s*\[\s*[A-Z]{2,3}\s*\]\s*", "", text)  # [ WP ] / [ EU ] / [ TT ] tags
+    for pat, rep in _WP_FIXES:
+        text = re.sub(pat, rep, text)
+    return text.strip()
+
+
+def _writingprompts_records(split: str, max_chars: int = 3500):
+    """r/WritingPrompts prompt -> story, adult register. Long ones are skipped, not cut."""
+    from datasets import load_dataset
+
+    ds = load_dataset("euclaise/writingprompts", split=split, streaming=True)
+    for row in ds:
+        story = row["story"]
+        if len(story) > max_chars or len(story) < 200:
+            continue
+        prompt = _wp_clean(row["prompt"])
+        if not prompt:
+            continue
+        yield prompt, _wp_clean(story)
+
+
+def _smoltalk_records(split: str, configs=("smol-magpie-ultra", "everyday-conversations")):
+    """First user->assistant turn of SmolTalk's general-assistant subsets."""
+    from datasets import load_dataset
+
+    for cfg in configs:
+        ds = load_dataset("HuggingFaceTB/smoltalk", cfg, split=split, streaming=True)
+        for row in ds:
+            msgs = [m for m in row["messages"] if m["role"] in ("user", "assistant")]
+            if len(msgs) >= 2 and msgs[0]["role"] == "user" and msgs[1]["role"] == "assistant":
+                yield msgs[0]["content"].strip(), msgs[1]["content"].strip()
+
+
 def _discord_records(split: str):
     """Last user->assistant pair of each Discord-Dialogues conversation."""
     from datasets import load_dataset
@@ -124,9 +168,17 @@ def _discord_records(split: str):
 def build_examples(tok, args, log):
     """Tokenize a mixed, shuffled list of (ids, n_prompt) pairs plus a val slice."""
     bos, sep, eos = (tok.token_to_id(t) for t in ("<bos>", "<sep>", "<eos>"))
+    def repeated(gen, times):
+        def run():
+            for _ in range(times):
+                yield from gen()
+        return run
+
     sources = [
         ("tinystories", args.mix_story, lambda: _tinystories_records("train", args.seed)),
-        ("no_robots", args.mix_norobots, lambda: _no_robots_records("train")),
+        ("writingprompts", args.mix_wp, lambda: _writingprompts_records("train")),
+        ("no_robots", args.mix_norobots, repeated(lambda: _no_robots_records("train"), args.repeat_norobots)),
+        ("smoltalk", args.mix_smoltalk, lambda: _smoltalk_records("train")),
         ("discord", args.mix_discord, lambda: _discord_records("train")),
     ]
     total = sum(w for _, w, _ in sources)
@@ -446,9 +498,12 @@ def main():
     ap.add_argument("--name", required=True)
     ap.add_argument("--tokens", type=float, default=30e6, help="training-token budget (input tokens incl. prompt)")
     ap.add_argument("--examples", type=int, default=120_000, help="examples to tokenize across the mix")
-    ap.add_argument("--mix-story", type=float, default=0.45)
-    ap.add_argument("--mix-norobots", type=float, default=0.15)
-    ap.add_argument("--mix-discord", type=float, default=0.40)
+    ap.add_argument("--mix-story", type=float, default=0.45, help="roneneldan/TinyStoriesInstruct")
+    ap.add_argument("--mix-wp", type=float, default=0.0, help="euclaise/writingprompts (adult-register fiction)")
+    ap.add_argument("--mix-norobots", type=float, default=0.15, help="HuggingFaceH4/no_robots")
+    ap.add_argument("--repeat-norobots", type=int, default=1, help="no_robots is only ~8.4k pairs; epochs to upsample it")
+    ap.add_argument("--mix-smoltalk", type=float, default=0.0, help="HuggingFaceTB/smoltalk general subsets")
+    ap.add_argument("--mix-discord", type=float, default=0.40, help="mookiezi/Discord-Dialogues rehearsal")
     ap.add_argument("--seq-len", type=int, default=1024)
     ap.add_argument("--prompt-budget", type=int, default=256)
     ap.add_argument("--min-response", type=int, default=1)
