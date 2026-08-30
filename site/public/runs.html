@@ -35,7 +35,7 @@
   <button id="refresh">refresh</button>
 </div>
 <div id="tiles" class="tiles"></div>
-<div class="chart"><h3>loss <span class="legend"><span><i style="background:var(--s1)"></i>train</span><span><i style="background:var(--s2)"></i>val</span></span></h3><svg id="loss"></svg></div>
+<div class="chart"><h3>loss <span class="legend"><span><i style="background:var(--s1);opacity:.35"></i>train</span><span><i style="background:var(--s1)"></i>train (avg 5)</span><span><i style="background:var(--s2)"></i>val</span></span></h3><svg id="loss"></svg></div>
 <div class="chart"><h3>throughput (tokens / s)</h3><svg id="tps"></svg></div>
 <div class="chart"><h3>learning rate</h3><svg id="lr"></svg></div>
 <h3>latest samples</h3>
@@ -75,8 +75,10 @@ async function loadRun(name) {
     ["device", start?.device ?? "—"],
   ];
   $("#tiles").innerHTML = tiles.map(([k, v]) => `<div class="tile"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
+  const ma = (pts, n = 5) => pts.map((p, i) => { const w = pts.slice(Math.max(0, i - n + 1), i + 1); return [p[0], w.reduce((a, q) => a + q[1], 0) / w.length]; });
   line($("#loss"), [
-    { name: "train", color: "var(--s1)", pts: tr.map((r) => [r.step, r.loss]) },
+    { name: "train", color: "var(--s1)", pts: tr.map((r) => [r.step, r.loss]), faint: true },
+    { name: "train (avg 5)", color: "var(--s1)", pts: ma(tr.map((r) => [r.step, r.loss])) },
     { name: "val", color: "var(--s2)", pts: ev.map((r) => [r.step, r.val]), dots: true },
   ]);
   line($("#tps"), [{ name: "tok/s", color: "var(--s3)", pts: tr.map((r) => [r.step, r.tok_s]) }], 0);
@@ -111,7 +113,7 @@ function line(svg, series, dec = 3) {
   for (const s of series) {
     const pts = s.pts.filter((p) => isFinite(p[1]));
     if (!pts.length) continue;
-    g += `<path d="${pts.map((p, i) => (i ? "L" : "M") + X(p[0]).toFixed(1) + " " + Y(p[1]).toFixed(1)).join(" ")}" fill="none" stroke="${s.color}" stroke-width="2" stroke-linejoin="round"/>`;
+    g += `<path d="${pts.map((p, i) => (i ? "L" : "M") + X(p[0]).toFixed(1) + " " + Y(p[1]).toFixed(1)).join(" ")}" fill="none" stroke="${s.color}" stroke-width="${s.faint ? 1 : 2}" stroke-opacity="${s.faint ? 0.35 : 1}" stroke-linejoin="round"/>`;
     if (s.dots) g += pts.map((p) => `<circle cx="${X(p[0])}" cy="${Y(p[1])}" r="3.5" fill="${s.color}" stroke="var(--surface)" stroke-width="2"/>`).join("");
   }
   g += `<line id="xh" x1="0" x2="0" y1="${m.t}" y2="${H - m.b}" stroke="var(--muted)" stroke-dasharray="3 3" visibility="hidden"/>`;
