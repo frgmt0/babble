@@ -437,12 +437,16 @@ def sample(model, tok, device, max_new=120):
     outs = []
     for p in SAMPLE_PROMPTS:
         ids = torch.tensor([[bos, *tok.encode(p, add_special_tokens=False).ids, sep]], device=device)
+        # Two draws at a cooler temperature than serving (0.5 vs 0.8) so a
+        # sample says something about the weights, not the dice; no_repeat_ngram
+        # matches what live serves.
         gen = model.generate(
-            ids, do_sample=True, temperature=0.8, top_p=0.95, max_new_tokens=max_new,
-            eos_token_id=eos, pad_token_id=pad, repetition_penalty=1.1,
-        )[0, ids.shape[1] :]
-        keep = [int(t) for t in gen if int(t) not in (pad, eos)]
-        outs.append({"prompt": p, "reply": tok.decode(keep, skip_special_tokens=True).strip(), "tokens": len(keep)})
+            ids, do_sample=True, temperature=0.5, top_p=0.95, max_new_tokens=max_new, num_return_sequences=2,
+            eos_token_id=eos, pad_token_id=pad, repetition_penalty=1.1, no_repeat_ngram_size=4,
+        )[:, ids.shape[1] :]
+        for row in gen:
+            keep = [int(t) for t in row if int(t) not in (pad, eos)]
+            outs.append({"prompt": p, "reply": tok.decode(keep, skip_special_tokens=True).strip(), "tokens": len(keep)})
         del gen
         free_cache(device)
     model.train()
