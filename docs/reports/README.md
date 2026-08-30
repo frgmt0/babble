@@ -7,6 +7,7 @@ inference tuning), see [`BENCHMARKS.md`](../../BENCHMARKS.md) and
 [`CPU_INFERENCE.md`](../../CPU_INFERENCE.md) at the repo root.
 
 - [BOOPER_REGRESSION_2026_08_20.md](BOOPER_REGRESSION_2026_08_20.md) (2026-08-20) — root-cause investigation into an apparent quality regression in booper's samples, traced to the corpus-only pretrain pivot rather than "more data made it worse."
+- [STORY_V1_PROMOTE.md](STORY_V1_PROMOTE.md) (2026-08-29) — promotion record for typer-org/booper-story-v1 (long-form SFT of Big-Chat) going live on jason's box, with data mix, val curve, sha256s, .env changes, rollback.
 - [BIG_CHAT_INT8_PROMOTE.md](BIG_CHAT_INT8_PROMOTE.md) (2026-08-26) — promotion record for ProCreations/Booper-Big-Chat-INT8 going live on jason's box via the new hf serving backend, with sha256s, .env changes, and rollback.
 - [CAPACITY_TOKENIZER_REPORT.md](CAPACITY_TOKENIZER_REPORT.md) (2026-08-21) — capacity sweep (shrinking the model) plus a byte-vs-BPE-vs-word tokenizer swap; shrinking didn't help but switching to BPE beat the trigram baseline.
 - [HF_PRETRAIN_PIPELINE.md](HF_PRETRAIN_PIPELINE.md) — design and status writeup for `pretrain_hf.py`, the Hugging Face Jobs GPU pretrain script and its Discord post-train follow-on, including model-size/token-budget presets and tokenizer change.
