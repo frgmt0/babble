@@ -156,6 +156,7 @@ def test_untracked_files_do_not_block_a_merge(tmp_path: Path) -> None:
     assert _state(live)["up_to_date"] is True
 
 
+@pytest.mark.skipif(not Path("/proc/self/cmdline").exists(), reason="Linux procfs integration test")
 def test_training_in_flight_skips_the_restart(tmp_path: Path) -> None:
     origin, live = _init_origin_and_clone(tmp_path)
     _advance_origin(tmp_path)
@@ -192,6 +193,7 @@ def test_training_in_flight_skips_the_restart(tmp_path: Path) -> None:
     assert local_sha == state["local_commit"]
 
 
+@pytest.mark.skipif(not Path("/proc/self/cmdline").exists(), reason="Linux procfs integration test")
 def test_post_train_in_flight_skips_the_restart(tmp_path: Path) -> None:
     """`post-train` must count as "training in flight" under the default
     BABBLE_TRAIN_SUBCOMMANDS just like `train` does -- it's the stage-2 fine-tune
@@ -407,6 +409,7 @@ def test_recovering_clears_consecutive_failures_and_marker(tmp_path: Path) -> No
     assert "update.recovered" in _log_text(live)
 
 
+@pytest.mark.skipif(not Path("/proc/self/cmdline").exists(), reason="Linux procfs integration test")
 def test_training_in_flight_does_not_change_consecutive_failures(tmp_path: Path) -> None:
     origin, live = _init_origin_and_clone(tmp_path)
     _advance_origin(tmp_path)

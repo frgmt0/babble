@@ -8,7 +8,7 @@
 # `babble logs`. See the README's "Keeping the live install current" section.
 #
 # Refuses, loudly (non-zero exit), to:
-#   - touch a repo whose 'origin' isn't actually kowo-co/babble (never
+#   - touch a repo whose 'origin' isn't actually frgmt0/babble (never
 #     auto-repoints it -- a wrong remote should be noisy, not "fixed")
 #   - merge over uncommitted tracked changes
 #   - merge, rebase or force anything -- only `git merge --ff-only`
@@ -38,7 +38,7 @@
 # not just this box:
 #   BABBLE_LIVE_DIR             the live checkout (default: $HOME/babble-live)
 #   BABBLE_UPDATE_REMOTE        the origin url that must be configured
-#                                (default: https://github.com/kowo-co/babble.git)
+#                                (default: https://github.com/frgmt0/babble.git)
 #   BABBLE_UPDATE_BRANCH        branch to track (default: main)
 #   BABBLE_BOT_UNIT              systemd --user unit name (default: babble-bot)
 #   BABBLE_DATA_DIR              where update_state.json is written
@@ -58,7 +58,7 @@
 set -euo pipefail
 
 LIVE_DIR="${BABBLE_LIVE_DIR:-$HOME/babble-live}"
-EXPECTED_REMOTE="${BABBLE_UPDATE_REMOTE:-https://github.com/kowo-co/babble.git}"
+EXPECTED_REMOTE="${BABBLE_UPDATE_REMOTE:-https://github.com/frgmt0/babble.git}"
 BRANCH="${BABBLE_UPDATE_BRANCH:-main}"
 BOT_UNIT="${BABBLE_BOT_UNIT:-babble-bot}"
 DATA_DIR="${BABBLE_DATA_DIR:-$LIVE_DIR/data}"
@@ -279,8 +279,7 @@ normalize_remote() {
   u=${u#git@github.com:}
   u=${u#https://github.com/}
   u=${u#http://github.com/}
-  u=${u,,}
-  printf '%s' "$u"
+  printf '%s' "$u" | tr '[:upper:]' '[:lower:]'
 }
 
 # --- --check: a network-free, one-line status query. Reads whatever

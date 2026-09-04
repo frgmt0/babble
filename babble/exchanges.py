@@ -16,6 +16,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from .conversation import ConversationTurn
 from .util import atomic_write_text, utcnow_iso
 
 
@@ -26,6 +27,12 @@ class Exchange:
     prompt_author_id: str  # raw id: needed to re-check consent at capture time
     created_at: str = ""
     step: int = 0
+    # Context used to produce this response. The current prompt/response remain
+    # separate so correction and corpus paths never mistake model history for
+    # a new piece of human writing.
+    history: tuple[ConversationTurn, ...] = ()
+    channel_id: str = ""
+    guild_id: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -34,16 +41,30 @@ class Exchange:
             "prompt_author_id": self.prompt_author_id,
             "created_at": self.created_at or utcnow_iso(),
             "step": self.step,
+            "history": [turn.to_dict() for turn in self.history],
+            "channel_id": self.channel_id,
+            "guild_id": self.guild_id,
         }
 
     @classmethod
     def from_dict(cls, raw: dict) -> "Exchange":
+        raw_history = raw.get("history", ())
+        if not isinstance(raw_history, (list, tuple)):
+            raw_history = ()
+        history = tuple(
+            turn
+            for item in raw_history
+            if (turn := ConversationTurn.from_dict(item)) is not None
+        )
         return cls(
             prompt=raw.get("prompt", ""),
             response=raw.get("response", ""),
             prompt_author_id=str(raw.get("prompt_author_id", "")),
             created_at=raw.get("created_at", ""),
             step=int(raw.get("step", 0)),
+            history=history,
+            channel_id=str(raw.get("channel_id", "")),
+            guild_id=(str(raw["guild_id"]) if raw.get("guild_id") is not None else None),
         )
 
 

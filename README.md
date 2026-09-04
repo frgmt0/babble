@@ -48,7 +48,7 @@ that works, use a chatbot that works.
 No Discord token needed for any of this.
 
 ```bash
-git clone https://github.com/kowo-co/babble && cd babble
+git clone https://github.com/frgmt0/babble && cd babble
 uv venv && uv pip install -e ".[dev]"      # or: python -m venv .venv && pip install -e ".[dev]"
 source .venv/bin/activate
 
@@ -76,6 +76,37 @@ correction pairs is described under
 
 Delete `data/` before going live, or the fake rows will look like things real
 people said.
+
+## Inference benchmark and multi-turn checkpoints
+
+`/bench` runs a short inference-only benchmark against the bot's loaded HF
+model. It requires Manage Server permission, replies privately, and has a
+five-minute cooldown across the bot. It shares the generation lock with chat,
+uses a fixed synthetic prompt, and never reads the corpus or trains. Normal
+replies may wait briefly while the benchmark runs.
+
+The report distinguishes aggregate candidate throughput from selected-reply
+throughput, and includes first-token latency, decode speed, token counts,
+CPU use, memory, model identity and runtime versions. This is one short live
+measurement, not a statistically stable maximum. For the same measurement
+without Discord, use `babble bench` or `babble bench --json` with the serving
+backend/model environment configured. The native checkpoint backend does not
+yet expose the required token instrumentation and reports it as unavailable.
+
+Multi-turn training is described in [sft/README.md](sft/README.md). Only after
+promoting a checkpoint trained for that format, set
+`BABBLE_CONVERSATION_CONTEXT=1`, `BABBLE_CONVERSATION_MAX_TURNS=3`, and
+`BABBLE_CONVERSATION_MAX_TOKENS=512` to match the Mac preset. Existing story-v2
+must keep context mode off. In context mode, a reply to a remembered bot
+message can inherit that same user's conversation in the same channel and
+guild. Oldest complete turns are dropped to fit the budget. A new mention
+starts a new conversation; history is not guessed from nearby channel traffic.
+
+History follows the existing consent and forget rules. It is inference context,
+not new human corpus data. `>>` remains an explicit correction; existing
+correction exports remain single-turn and must not be used as transcript-format
+SFT data without a separate conversion. Automatic training remains disabled
+for promoted HF models.
 
 ## How the loop works
 
@@ -921,7 +952,7 @@ now 55 rows · 1,031 chars · 8 contributors
 ✅ u_9f2c… opted in — their messages now go into the corpus
 📡 u_9f2c… opened channel c_1a2b… with `!babble all` — everything they say there is now collected
 🗑️ u_9f2c… withdrew — purged 3 stored row(s) (2 corpus · 1 correction)
-📤 published 78 row(s) to https://huggingface.co/datasets/kowo-co/babble — corpus grew +10 rows / +240 chars since the last publish
+📤 published 78 row(s) to https://huggingface.co/datasets/frgmt0/babble — corpus grew +10 rows / +240 chars since the last publish
 ```
 
 - **A row arriving** shows the text collected (run through the [content
@@ -1039,7 +1070,7 @@ logged only for people who have opted in.
 
 ```bash
 babble export                                   # build ./export, push nothing
-babble export --push --repo kowo-co/babble-corrections   # needs HF_TOKEN
+babble export --push --repo frgmt0/babble-corrections   # needs HF_TOKEN
 ```
 
 `export` writes **two** files plus a dataset card, containing consented rows
@@ -1270,7 +1301,7 @@ checkout -- <file>` (or `git reset --hard origin/main`) before you leave it,
 so the next scheduled check finds a clean tree and can keep doing its job.
 
 - **Fails loudly**, never silently "fixes" anything, if `origin` isn't actually
-  `kowo-co/babble` — a wrong remote is the kind of bug that hides for weeks, so
+  `frgmt0/babble` — a wrong remote is the kind of bug that hides for weeks, so
   it gets a non-zero exit and a log line, not an auto-repoint.
 - Fetches `origin/main`; if the checkout is already current it exits `0` and
   touches nothing — no restart, one log line.
@@ -1334,7 +1365,7 @@ environment variable rather than hardcoded, so the same script runs anywhere:
 | variable | default | |
 | --- | --- | --- |
 | `BABBLE_LIVE_DIR` | `~/babble-live` | the checkout to keep current |
-| `BABBLE_UPDATE_REMOTE` | `https://github.com/kowo-co/babble.git` | the `origin` that must be configured |
+| `BABBLE_UPDATE_REMOTE` | `https://github.com/frgmt0/babble.git` | the `origin` that must be configured |
 | `BABBLE_UPDATE_BRANCH` | `main` | branch to track |
 | `BABBLE_BOT_UNIT` | `babble-bot` | the systemd `--user` unit to restart |
 | `BABBLE_UPDATE_RESTART_TIMEOUT` | `90` | seconds to wait for `bot.ready` after a restart |

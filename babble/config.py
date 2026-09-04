@@ -194,6 +194,22 @@ class Settings:
     # must never depend on the Hub being up.
     hf_model_dir: Path | None = None
 
+    # Multi-turn prompting is a checkpoint format switch, not merely a UI
+    # feature. Existing checkpoints (including story-v2) were trained on one
+    # raw prompt and must keep that byte-for-byte input until a checkpoint
+    # trained on the role transcript is promoted. Enable explicitly alongside
+    # that promotion with BABBLE_CONVERSATION_CONTEXT=1.
+    conversation_context: bool = False
+    # Completed user/assistant turns retained before the current user message.
+    conversation_max_turns: int = 6
+    # Cap the serialized prompt at the context length the multi-turn SFT
+    # actually trained with. Backends also apply their architectural limit;
+    # the smaller budget wins.
+    conversation_max_tokens: int = 512
+    # Character guard before tokenizer-level truncation. 0 disables this cap;
+    # turn count still bounds persistent growth.
+    conversation_max_chars: int = 6_000
+
     # How much each kind of feedback is worth. These no longer touch training:
     # the objective is plain next-token prediction over unlabelled corpus text,
     # where there is no "chosen" answer to weight and every row counts the same.
@@ -384,6 +400,10 @@ class Settings:
             serve_layout=os.environ.get("BABBLE_SERVE_LAYOUT", "continuation"),
             serve_backend=os.environ.get("BABBLE_SERVE_BACKEND", "checkpoint"),
             hf_model_dir=_env_path("BABBLE_HF_MODEL_DIR", None),
+            conversation_context=_env_bool("BABBLE_CONVERSATION_CONTEXT", False),
+            conversation_max_turns=_env_int("BABBLE_CONVERSATION_MAX_TURNS", 6),
+            conversation_max_tokens=_env_int("BABBLE_CONVERSATION_MAX_TOKENS", 512),
+            conversation_max_chars=_env_int("BABBLE_CONVERSATION_MAX_CHARS", 6_000),
             correction_boost=_env_float("BABBLE_CORRECTION_BOOST", 3.0),
             val_fraction=_env_float("BABBLE_VAL_FRACTION", 0.2),
             val_min_rows=_env_int("BABBLE_VAL_MIN_ROWS", 20),
