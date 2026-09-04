@@ -25,6 +25,7 @@ from typing import Callable, Protocol, Sequence
 
 from .blocklist import Blocklist, row_fingerprint
 from .config import CORRECTION_MARKER, Settings
+from .conversation import ConversationTurn, bounded_history, conversation_prompt
 from .consent import (
     CAPTURE_OK,
     DECLINED,
@@ -605,7 +606,16 @@ class Babble:
 
         allowed = corrections_state in CAPTURE_OK
         prompt = self._message_text(msg)
-        generation = _as_generation(self.generator(prompt))
+        history = self._conversation_history(
+            msg,
+            # The historical corrections grant permits retaining an exchange
+            # long enough to grade it. Reusing earlier messages as chat context
+            # is part of the newer corpus-facing behavior and needs that grant
+            # too; legacy consent must not silently widen here.
+            allowed=allowed and corpus_state in CAPTURE_OK,
+        )
+        generation_prompt = self._generation_prompt(history, prompt)
+        generation = _as_generation(self.generator(generation_prompt))
         body = clean_for_discord(generation.text, DISCORD_LIMIT)
 
         # The model can emit anything, including a blocked term. Catch it here,
@@ -655,6 +665,9 @@ class Babble:
                 prompt_author_id=str(msg.author_id),
                 created_at=utcnow_iso(),
                 step=generation.step,
+                history=history,
+                channel_id=str(msg.channel_id),
+                guild_id=str(msg.guild_id) if msg.guild_id is not None else None,
             )
             if allowed and not blocked
             else None
@@ -670,6 +683,63 @@ class Babble:
         if reask:
             replies.append(Reply(CORPUS_NOTICE, reply_to=msg.message_id, kind="consent"))
         return replies
+
+    def _generation_prompt(
+        self, history: tuple[ConversationTurn, ...], current_user: str
+    ) -> str:
+        """Build either the historical raw prompt or a bounded transcript.
+
+        A real serving backend may expose ``conversation_prompt`` so it can
+        apply the shared format with its exact tokenizer budget. The fallback
+        keeps simple callable generators and tests backward compatible.
+        """
+
+        if not self.settings.conversation_context:
+            return current_user
+        kwargs = {
+            "max_turns": self.settings.conversation_max_turns,
+            "max_tokens": self.settings.conversation_max_tokens,
+            "max_chars": self.settings.conversation_max_chars,
+        }
+        backend_formatter = getattr(self.generator, "conversation_prompt", None)
+        if callable(backend_formatter):
+            return str(backend_formatter(history, current_user, **kwargs))
+        return conversation_prompt(
+            history,
+            current_user,
+            max_turns=kwargs["max_turns"],
+            max_chars=kwargs["max_chars"],
+        )
+
+    def _conversation_history(
+        self, msg: IncomingMessage, *, allowed: bool
+    ) -> tuple[ConversationTurn, ...]:
+        """Resolve the one branch this message explicitly replies to.
+
+        Discord message references make the chain unambiguous. History never
+        crosses authors, channels, or guilds, and is unavailable when the
+        current user is not eligible for retained exchanges. A legacy exchange
+        has no channel metadata, so it safely starts a new conversation.
+        """
+
+        if (
+            not self.settings.conversation_context
+            or not allowed
+            or not msg.reply_to_is_bot
+            or not msg.reply_to_message_id
+        ):
+            return ()
+        parent = self.exchanges.get(msg.reply_to_message_id)
+        if parent is None or parent.prompt_author_id != str(msg.author_id):
+            return ()
+        if not parent.channel_id or parent.channel_id != str(msg.channel_id):
+            return ()
+        guild_id = str(msg.guild_id) if msg.guild_id is not None else None
+        if parent.guild_id != guild_id:
+            return ()
+
+        turns = (*parent.history, ConversationTurn(parent.prompt, parent.response))
+        return bounded_history(turns, max_turns=self.settings.conversation_max_turns)
 
     def _handle_correction(self, msg: IncomingMessage, exchange: Exchange) -> list[Reply]:
         corrector = msg.author_id

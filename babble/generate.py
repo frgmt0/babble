@@ -26,6 +26,7 @@ import torch
 import torch.nn.functional as F
 
 from .config import Settings
+from .conversation import ConversationTurn, conversation_prompt_for_token_budget
 from .core import Generation
 from .cpu_runtime import configure_cpu, force_cpu_device, prepare_for_cpu_infer
 from .logs import EventLog, NullLog
@@ -930,4 +931,35 @@ class CheckpointGenerator:
             no_repeat_ngram_size=self.settings.no_repeat_ngram_size,
             max_new_tokens=self.settings.max_new_tokens,
             ms=(time.perf_counter() - started) * 1000,
+        )
+
+    def conversation_prompt(
+        self,
+        history: tuple[ConversationTurn, ...],
+        current_user: str,
+        *,
+        max_turns: int,
+        max_tokens: int,
+        max_chars: int,
+    ) -> str:
+        """Format a transcript inside this checkpoint's exact token budget."""
+
+        self._ensure_current()
+        assert self._model is not None
+        if self.settings.serve_layout != "pair":
+            raise ValueError(
+                "BABBLE_CONVERSATION_CONTEXT requires BABBLE_SERVE_LAYOUT=pair "
+                "for a checkpoint trained on '<bos> transcript <sep> response'"
+            )
+        tok = _serving_tokenizer(self._model)
+        reserved = max(1, self._model.config.block_size // 4)
+        model_budget = max(1, self._model.config.block_size - 3 - reserved)
+        prompt_budget = min(model_budget, max(1, int(max_tokens)))
+        return conversation_prompt_for_token_budget(
+            history,
+            current_user,
+            max_turns=max_turns,
+            max_chars=max_chars,
+            max_tokens=prompt_budget,
+            token_count=lambda text: len(tok.encode(text)),
         )

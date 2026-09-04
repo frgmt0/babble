@@ -227,6 +227,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("curve", help="print the loss curve")
     sub.add_parser("summary", help="step, loss, checkpoints, consent and row counts")
+    bench = sub.add_parser("bench", help="measure serving inference with a fixed synthetic prompt; never trains")
+    bench.add_argument("--json", action="store_true", help="print machine-readable benchmark measurements")
 
     logs = sub.add_parser("logs", help="read the event log (never modifies it)")
     logs.add_argument("-n", "--lines", type=int, default=40)
@@ -267,6 +269,20 @@ def main(argv: list[str] | None = None) -> int:
         from .bot import run_bot
 
         return run_bot(settings)
+
+    if args.command == "bench":
+        import json
+        from dataclasses import asdict, is_dataclass
+        from .benchmark import run_benchmark, format_benchmark
+        from .hfserve import make_generator
+
+        try:
+            result = run_benchmark(make_generator(settings))
+        except (ValueError, RuntimeError) as exc:
+            print(f"Benchmark unavailable: {exc}", file=sys.stderr)
+            return 1
+        print(json.dumps(asdict(result) if is_dataclass(result) else result, indent=2) if args.json else format_benchmark(result))
+        return 0
 
     if args.command == "train":
         from .identity import Pseudonymiser

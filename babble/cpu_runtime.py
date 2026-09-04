@@ -41,12 +41,14 @@ def configure_cpu(threads: int | None = None) -> dict[str, Any]:
 
     report: dict[str, Any] = {"device": "cpu", **_CPU_FLAGS}
 
-    # Never let an accidental CUDA build steal work — this project's uv source
-    # pins the CPU wheel, but a system torch can still report cuda.is_available.
+    # Torch defaults to CPU already, and every model/tensor boundary in babble
+    # uses an explicit CPU device. Installing the equivalent global
+    # ``set_default_device("cpu")`` mode adds a Python dispatch hook to every
+    # torch API call; remove a hook left by an earlier call instead.
     if hasattr(torch, "set_default_device"):
         try:
-            torch.set_default_device("cpu")
-            report["default_device"] = "cpu"
+            torch.set_default_device(None)
+            report["default_device"] = "cpu_native"
         except Exception:
             report["default_device"] = "unchanged"
 
@@ -139,6 +141,14 @@ def quantize_dynamic_linears(model: nn.Module) -> nn.Module:
     Requires a CPU torch build with a quantized engine (fbgemm / qnnpack).
     """
     prior = None
+    # Some macOS CPU wheels expose qnnpack but leave the selected engine at
+    # ``none``. Choose that supported CPU engine only in the unusable state;
+    # Linux x86/fbgemm selections are left untouched.
+    if (
+        getattr(torch.backends.quantized, "engine", "none") == "none"
+        and "qnnpack" in getattr(torch.backends.quantized, "supported_engines", ())
+    ):
+        torch.backends.quantized.engine = "qnnpack"
     if hasattr(model, "num_params"):
         try:
             prior = int(model.num_params())

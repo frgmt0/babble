@@ -24,6 +24,7 @@ Usage (from the repo root, venv active):
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -32,6 +33,8 @@ import shutil
 import sys
 import time
 import urllib.request
+from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 
 import torch
@@ -40,7 +43,17 @@ import torch.nn.functional as F
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from babble.conversation import (  # noqa: E402 - repo root is added above
+    ConversationTurn,
+    conversation_prompt_for_token_budget,
+)
+
 INT8_REPO = "ProCreations/Booper-Big-Chat-INT8"
+PROMPT_METADATA_KEYS = (
+    "babble_prompt_format",
+    "babble_history_turns",
+    "babble_prompt_budget",
+)
 SAMPLE_PROMPTS = [
     "write me a short story about a dragon who is afraid of fire",
     "write a short story about a detective in a city that never sleeps",
@@ -56,15 +69,37 @@ STORY_TEMPLATES = [
 ]
 
 
+@dataclass(frozen=True)
+class SFTRecord:
+    """One supervised response and the conversation it belongs to.
+
+    `group_id` is the split unit. Every assistant target derived from one
+    Discord conversation therefore stays wholly on train or validation.
+    """
+
+    source: str
+    group_id: str
+    current_user: str
+    response: str
+    history: tuple[ConversationTurn, ...] = ()
+    legacy_prompt: bool = False
+
+
+def _group_id(*parts: str) -> str:
+    """Content identity independent of source, preventing cross-source leaks."""
+    body = "\x1f".join(parts).encode("utf-8")
+    return hashlib.sha256(body).hexdigest()
+
+
 # ----------------------------------------------------------------- data ---
 
 
-def _tinystories_records(split: str, seed: int):
+def _tinystories_records(split: str, seed: int, revision: str | None = None):
     """Yield (prompt, story) from TinyStoriesInstruct's line-per-row layout."""
     from datasets import load_dataset
 
     rng = random.Random(seed)
-    ds = load_dataset("roneneldan/TinyStoriesInstruct", split=split, streaming=True)
+    ds = load_dataset("roneneldan/TinyStoriesInstruct", split=split, streaming=True, revision=revision)
     fields: dict[str, str] = {}
     story: list[str] = []
     in_story = False
@@ -94,10 +129,10 @@ def _tinystories_records(split: str, seed: int):
             fields[k.strip()] = v.strip()
 
 
-def _no_robots_records(split: str):
+def _no_robots_records(split: str, revision: str | None = None):
     from datasets import load_dataset
 
-    ds = load_dataset("HuggingFaceH4/no_robots", split=split)
+    ds = load_dataset("HuggingFaceH4/no_robots", split=split, revision=revision)
     for row in ds:
         msgs = row["messages"]
         if len(msgs) >= 2 and msgs[0]["role"] == "user" and msgs[1]["role"] == "assistant":
@@ -121,11 +156,11 @@ def _wp_clean(text: str) -> str:
     return text.strip()
 
 
-def _writingprompts_records(split: str, max_chars: int = 3500):
+def _writingprompts_records(split: str, max_chars: int = 3500, revision: str | None = None):
     """r/WritingPrompts prompt -> story, adult register. Long ones are skipped, not cut."""
     from datasets import load_dataset
 
-    ds = load_dataset("euclaise/writingprompts", split=split, streaming=True)
+    ds = load_dataset("euclaise/writingprompts", split=split, streaming=True, revision=revision)
     for row in ds:
         story = row["story"]
         if len(story) > max_chars or len(story) < 200:
@@ -136,73 +171,325 @@ def _writingprompts_records(split: str, max_chars: int = 3500):
         yield prompt, _wp_clean(story)
 
 
-def _smoltalk_records(split: str, configs=("smol-magpie-ultra", "everyday-conversations")):
+def _smoltalk_records(split: str, configs=("smol-magpie-ultra", "everyday-conversations"), revision: str | None = None):
     """First user->assistant turn of SmolTalk's general-assistant subsets."""
     from datasets import load_dataset
 
     for cfg in configs:
-        ds = load_dataset("HuggingFaceTB/smoltalk", cfg, split=split, streaming=True)
+        ds = load_dataset("HuggingFaceTB/smoltalk", cfg, split=split, streaming=True, revision=revision)
         for row in ds:
             msgs = [m for m in row["messages"] if m["role"] in ("user", "assistant")]
             if len(msgs) >= 2 and msgs[0]["role"] == "user" and msgs[1]["role"] == "assistant":
                 yield msgs[0]["content"].strip(), msgs[1]["content"].strip()
 
 
-def _discord_records(split: str):
-    """Last user->assistant pair of each Discord-Dialogues conversation."""
+def _chatml_turns(text: str) -> list[tuple[str, str]]:
+    """Parse the concrete ChatML layout used by Discord-Dialogues.
+
+    The dataset's actual `text` column is a sequence of
+    `<|im_start|>role\nbody<|im_end|>` blocks, optionally followed by
+    `<|end_of_text|>`. Unknown roles and empty bodies are ignored.
+    """
+    turns: list[tuple[str, str]] = []
+    for chunk in text.split("<|im_start|>")[1:]:
+        head, sep, rest = chunk.partition("\n")
+        if not sep:
+            continue
+        role = head.strip()
+        body = rest.split("<|im_end|>", 1)[0].strip()
+        if role in ("user", "assistant") and body:
+            turns.append((role, body))
+    return turns
+
+
+def _discord_group(raw: str, history_turns: int) -> list[SFTRecord]:
+    """Turn one ChatML conversation into chronological assistant targets."""
+    turns = _chatml_turns(raw)
+    history: list[ConversationTurn] = []
+    records: list[SFTRecord] = []
+    # Discord-Dialogues is documented as alternating two-author chains.
+    # Stay strict here: a malformed turn must not silently assign one
+    # person's words to the other role.
+    for i in range(0, len(turns) - 1, 2):
+        user_role, user_text = turns[i]
+        assistant_role, assistant_text = turns[i + 1]
+        if user_role != "user" or assistant_role != "assistant":
+            return []
+        records.append(
+            SFTRecord(
+                source="discord",
+                group_id=_group_id(raw),
+                current_user=user_text,
+                response=assistant_text,
+                history=tuple(history),
+            )
+        )
+        history.append(ConversationTurn(user=user_text, assistant=assistant_text))
+    return records
+
+
+def _discord_groups(split: str, history_turns: int, revision: str | None = None):
+    """Yield all chronological assistant targets, grouped by conversation."""
     from datasets import load_dataset
 
-    ds = load_dataset("mookiezi/Discord-Dialogues", split=split, streaming=True)
+    ds = load_dataset("mookiezi/Discord-Dialogues", split=split, streaming=True, revision=revision)
     for row in ds:
-        turns = []
-        for chunk in row["text"].split("<|im_start|>")[1:]:
-            role, _, body = chunk.partition("\n")
-            body = body.split("<|im_end|>")[0].strip()
-            turns.append((role.strip(), body))
-        for i in range(len(turns) - 1, 0, -1):
-            if turns[i][0] == "assistant" and turns[i - 1][0] == "user" and turns[i][1]:
-                yield turns[i - 1][1], turns[i][1]
-                break
+        records = _discord_group(row["text"], history_turns)
+        if records:
+            yield records
+
+
+def _single_record_groups(source: str, records):
+    for prompt, response in records:
+        yield [
+            SFTRecord(
+                source=source,
+                group_id=_group_id(prompt, response),
+                current_user=prompt,
+                response=response,
+            )
+        ]
+
+
+def _collect_groups(groups, want: int) -> list[SFTRecord]:
+    """Take whole groups until at least `want` examples have been collected."""
+    out: list[SFTRecord] = []
+    for group in groups:
+        out.extend(group)
+        if len(out) >= want:
+            break
+    return out
+
+
+def _split_grouped(
+    records: list[SFTRecord], val_examples: int, *, seed: int
+) -> tuple[list[SFTRecord], list[SFTRecord]]:
+    """Stable group split; related targets can never cross the boundary."""
+    grouped: dict[str, list[SFTRecord]] = defaultdict(list)
+    for record in records:
+        grouped[record.group_id].append(record)
+    ranked = sorted(
+        grouped,
+        key=lambda gid: hashlib.sha256(f"{seed}\x1f{gid}".encode()).digest(),
+    )
+    held: set[str] = set()
+    n_val = 0
+    for gid in ranked:
+        if n_val >= val_examples:
+            break
+        held.add(gid)
+        n_val += len(grouped[gid])
+    return (
+        [record for record in records if record.group_id not in held],
+        [record for record in records if record.group_id in held],
+    )
+
+
+def _dedupe_groups(
+    records: list[SFTRecord], seen_content: set[str]
+) -> tuple[list[SFTRecord], int]:
+    """Cull a whole group if any of its targets duplicates an earlier group."""
+    grouped: dict[str, list[SFTRecord]] = defaultdict(list)
+    for record in records:
+        grouped[record.group_id].append(record)
+    kept: list[SFTRecord] = []
+    dropped = 0
+    for group in grouped.values():
+        content_ids = {_group_id(r.current_user, r.response) for r in group}
+        if content_ids & seen_content:
+            dropped += 1
+            continue
+        kept.extend(group)
+        seen_content.update(content_ids)
+    return kept, dropped
+
+
+def _tokenize_records(tok, records: list[SFTRecord], args):
+    bos, sep, eos = (tok.token_to_id(t) for t in ("<bos>", "<sep>", "<eos>"))
+    examples: list[tuple[list[int], int]] = []
+    for record in records:
+        if record.legacy_prompt:
+            prompt = record.current_user
+        else:
+            prompt = conversation_prompt_for_token_budget(
+                record.history,
+                record.current_user,
+                max_turns=args.history_turns,
+                max_chars=0,
+                max_tokens=args.prompt_budget,
+                token_count=lambda text: len(tok.encode(text, add_special_tokens=False).ids),
+            )
+        p = tok.encode(prompt, add_special_tokens=False).ids
+        r = tok.encode(record.response, add_special_tokens=False).ids
+        if len(r) < args.min_response or len(p) + len(r) + 3 > args.seq_len:
+            continue
+        examples.append(([bos, *p, sep, *r, eos], len(p) + 2))
+    return examples
+
+
+def _source_gate(candidate: dict[str, float], baseline: dict[str, float], limit: float):
+    """Gate role-formatted candidates against the legacy base and role baseline.
+
+    ``*_single`` and ``*_legacy`` contain identical targets, so their
+    cross-format delta measures the actual migration the user will experience.
+    History-bearing views must improve, since learning follow-ups is the
+    objective of this run rather than an optional side effect of rehearsal.
+    """
+    complete = candidate.keys() == baseline.keys()
+    finite = all(math.isfinite(value) for value in (*candidate.values(), *baseline.values()))
+    primary = {
+        name: candidate.get(name, float("inf")) - value
+        for name, value in baseline.items()
+        if not name.endswith(("_single", "_legacy", "_multiturn"))
+    }
+    retention = {
+        name.removesuffix("_single"): candidate.get(name, float("inf"))
+        - baseline.get(name.removesuffix("_single") + "_legacy", float("-inf"))
+        for name in baseline
+        if name.endswith("_single")
+    }
+    multiturn = {
+        name.removesuffix("_multiturn"): candidate.get(name, float("inf")) - value
+        for name, value in baseline.items()
+        if name.endswith("_multiturn")
+    }
+    regressions = {
+        **{f"{name}_role": delta for name, delta in primary.items()},
+        **{f"{name}_migration": delta for name, delta in retention.items()},
+        **{f"{name}_multiturn": delta for name, delta in multiturn.items()},
+    }
+    passed = complete and finite and (
+        limit < 0
+        or (
+            all(delta <= limit for delta in primary.values())
+            and all(delta <= limit for delta in retention.values())
+            and all(delta < 0 for delta in multiturn.values())
+        )
+    )
+    return passed, regressions
 
 
 def build_examples(tok, args, log):
-    """Tokenize a mixed, shuffled list of (ids, n_prompt) pairs plus a val slice."""
-    bos, sep, eos = (tok.token_to_id(t) for t in ("<bos>", "<sep>", "<eos>"))
-    def repeated(gen, times):
-        def run():
-            for _ in range(times):
-                yield from gen()
-        return run
-
+    """Build a mixed train set and source-specific, group-held-out validation."""
     sources = [
-        ("tinystories", args.mix_story, lambda: _tinystories_records("train", args.seed)),
-        ("writingprompts", args.mix_wp, lambda: _writingprompts_records("train")),
-        ("no_robots", args.mix_norobots, repeated(lambda: _no_robots_records("train"), args.repeat_norobots)),
-        ("smoltalk", args.mix_smoltalk, lambda: _smoltalk_records("train")),
-        ("discord", args.mix_discord, lambda: _discord_records("train")),
+        ("tinystories", args.mix_story, 1, lambda: _single_record_groups("tinystories", _tinystories_records("train", args.seed, args.tinystories_revision))),
+        ("writingprompts", args.mix_wp, 1, lambda: _single_record_groups("writingprompts", _writingprompts_records("train", revision=args.writingprompts_revision))),
+        ("no_robots", args.mix_norobots, max(1, args.repeat_norobots), lambda: _single_record_groups("no_robots", _no_robots_records("train", args.no_robots_revision))),
+        ("smoltalk", args.mix_smoltalk, 1, lambda: _single_record_groups("smoltalk", _smoltalk_records("train", revision=args.smoltalk_revision))),
+        ("discord", args.mix_discord, 1, lambda: _discord_groups("train", args.history_turns, args.discord_revision)),
     ]
-    total = sum(w for _, w, _ in sources)
-    examples: list[tuple[list[int], int]] = []
-    counts = {}
-    for name, weight, gen in sources:
+    total = sum(w for _, w, _, _ in sources)
+    train_records: list[SFTRecord] = []
+    val_records: dict[str, list[SFTRecord]] = {}
+    counts: dict[str, dict[str, int]] = {}
+    seen_content: set[str] = set()
+    for source_i, (name, weight, repeat_train, groups) in enumerate(sources):
         if weight <= 0:
             continue
         want = int(args.examples * weight / total)
-        got = 0
-        for prompt, response in gen():
-            p = tok.encode(prompt, add_special_tokens=False).ids[-args.prompt_budget :]
-            r = tok.encode(response, add_special_tokens=False).ids
-            if len(r) < args.min_response or len(p) + len(r) + 3 > args.seq_len:
-                continue
-            examples.append(([bos, *p, sep, *r, eos], len(p) + 2))
-            got += 1
-            if got >= want:
-                break
-        counts[name] = got
-        log(f"data: {name} -> {got} examples")
-    random.Random(args.seed).shuffle(examples)
-    n_val = min(args.val_examples, len(examples) // 20)
-    return examples[n_val:], examples[:n_val], counts
+        want_val = max(1, round(args.val_examples * weight / total))
+        # Repetition is applied only after group splitting. In particular,
+        # no_robots' second pass can no longer leak exact duplicates into val.
+        unique_want = math.ceil(want / repeat_train) + want_val
+        unique = _collect_groups(groups(), unique_want)
+        unique, duplicate_groups = _dedupe_groups(unique, seen_content)
+        source_train, source_val = _split_grouped(
+            unique, want_val, seed=args.seed + source_i
+        )
+        repeated_train = (source_train * repeat_train)[:want]
+        train_records.extend(repeated_train)
+        val_records[name] = source_val
+        # Measure compatibility with the raw-prompt behavior Story-v2 serves
+        # outside the opt-in conversation mode. This is evaluation only: new
+        # training inputs all use the shared role transcript.
+        single = [
+            SFTRecord(
+                source=f"{name}_single",
+                group_id=record.group_id,
+                current_user=record.current_user,
+                response=record.response,
+            )
+            for record in source_val
+            if not record.history
+        ]
+        legacy = [
+            SFTRecord(
+                source=f"{name}_legacy",
+                group_id=record.group_id,
+                current_user=record.current_user,
+                response=record.response,
+                legacy_prompt=True,
+            )
+            for record in source_val
+            if not record.history
+        ]
+        multiturn = [
+            SFTRecord(
+                source=f"{name}_multiturn",
+                group_id=record.group_id,
+                current_user=record.current_user,
+                response=record.response,
+                history=record.history,
+            )
+            for record in source_val
+            if record.history
+        ]
+        if single:
+            val_records[f"{name}_single"] = single
+        if legacy:
+            val_records[f"{name}_legacy"] = legacy
+        if multiturn:
+            val_records[f"{name}_multiturn"] = multiturn
+        counts[name] = {
+            "train": len(repeated_train),
+            "val": len(source_val),
+            "groups": len({r.group_id for r in unique}),
+            "duplicate_groups_dropped": duplicate_groups,
+        }
+        log(
+            f"data: {name} -> {len(repeated_train)} train / "
+            f"{len(source_val)} val examples in {counts[name]['groups']} groups"
+        )
+    rng = random.Random(args.seed)
+    rng.shuffle(train_records)
+    train_by_source = {
+        name: _tokenize_records(tok, [r for r in train_records if r.source == name], args)
+        for name, weight, _, _ in sources
+        if weight > 0
+    }
+    empty_train = [name for name, examples in train_by_source.items() if not examples]
+    if empty_train:
+        raise RuntimeError(f"active sources produced no train examples after tokenization: {empty_train}")
+    train = [example for examples in train_by_source.values() for example in examples]
+    rng.shuffle(train)
+    val = {
+        name: _tokenize_records(tok, records, args)
+        for name, records in val_records.items()
+        if not name.endswith(("_single", "_legacy"))
+    }
+    # Keep the migration views exactly paired after tokenization. A long role
+    # prefix can make an example fail the sequence budget even when its raw
+    # legacy prompt fits; including only one side would invalidate the loss
+    # comparison.
+    for name, weight, _, _ in sources:
+        if weight <= 0:
+            continue
+        single_records = val_records.get(f"{name}_single", [])
+        legacy_records = val_records.get(f"{name}_legacy", [])
+        paired_single: list[tuple[list[int], int]] = []
+        paired_legacy: list[tuple[list[int], int]] = []
+        for single_record, legacy_record in zip(single_records, legacy_records, strict=True):
+            single_example = _tokenize_records(tok, [single_record], args)
+            legacy_example = _tokenize_records(tok, [legacy_record], args)
+            if single_example and legacy_example:
+                paired_single.extend(single_example)
+                paired_legacy.extend(legacy_example)
+        val[f"{name}_single"] = paired_single
+        val[f"{name}_legacy"] = paired_legacy
+    empty_val = [name for name, examples in val.items() if not examples]
+    if empty_val:
+        raise RuntimeError(f"active validation sources produced no examples after tokenization: {empty_val}")
+    return train, val, counts
 
 
 def batches(examples, tokens_per_batch, pad_id, shuffle_seed=None):
@@ -306,6 +593,16 @@ def load_ckpt(model, ckpt: Path, device, opt=None):
     if opt is not None and (ckpt / "optim.pt").exists():
         opt.load_state_dict(torch.load(ckpt / "optim.pt", map_location=device))
     return meta["step"], meta["tokens"]
+
+
+def _restore_prompt_metadata(config, ckpt: Path):
+    """Make exported prompt metadata match the saved weights exactly."""
+    saved = json.loads((ckpt / "config.json").read_text(encoding="utf-8"))
+    for key in PROMPT_METADATA_KEYS:
+        if key in saved:
+            setattr(config, key, saved[key])
+        elif hasattr(config, key):
+            delattr(config, key)
 
 
 def export_int8(model, config, tok_path: Path, src_dir: Path, out: Path, log):
@@ -431,17 +728,25 @@ def rss_gb() -> float:
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024**3 if sys.platform == "darwin" else 1024**2)
 
 
-def sample(model, tok, device, max_new=120):
+def sample(model, tok, device, max_new=120, draws=2, prompt_budget=512):
     bos, sep, eos, pad = (tok.token_to_id(t) for t in ("<bos>", "<sep>", "<eos>", "<pad>"))
     model.eval()
     outs = []
     for p in SAMPLE_PROMPTS:
-        ids = torch.tensor([[bos, *tok.encode(p, add_special_tokens=False).ids, sep]], device=device)
+        rendered = conversation_prompt_for_token_budget(
+            (),
+            p,
+            max_turns=0,
+            max_chars=0,
+            max_tokens=prompt_budget,
+            token_count=lambda text: len(tok.encode(text, add_special_tokens=False).ids),
+        )
+        ids = torch.tensor([[bos, *tok.encode(rendered, add_special_tokens=False).ids, sep]], device=device)
         # Two draws at a cooler temperature than serving (0.5 vs 0.8) so a
         # sample says something about the weights, not the dice; no_repeat_ngram
         # matches what live serves.
         gen = model.generate(
-            ids, do_sample=True, temperature=0.5, top_p=0.95, max_new_tokens=max_new, num_return_sequences=2,
+            ids, do_sample=True, temperature=0.5, top_p=0.95, max_new_tokens=max_new, num_return_sequences=draws,
             eos_token_id=eos, pad_token_id=pad, repetition_penalty=1.1, no_repeat_ngram_size=4,
         )[:, ids.shape[1] :]
         for row in gen:
@@ -470,6 +775,24 @@ def evaluate(model, val, device, pad, dtype):
     return tot / max(n, 1)
 
 
+def evaluate_sources(model, val_by_source, device, pad, dtype):
+    """Return aggregate and per-source loss over independent holdouts."""
+    per_source = {
+        name: evaluate(model, examples, device, pad, dtype)
+        for name, examples in val_by_source.items()
+        if examples
+    }
+    # Aggregate each target once. Suffixed views are diagnostic/gating slices
+    # of these same primary source holdouts.
+    combined = [
+        example
+        for name, examples in val_by_source.items()
+        if not name.endswith(("_single", "_legacy", "_multiturn"))
+        for example in examples
+    ]
+    return evaluate(model, combined, device, pad, dtype), per_source
+
+
 class Reporter:
     """Append to metrics.jsonl and optionally POST each record to the /runs endpoint."""
 
@@ -482,12 +805,12 @@ class Reporter:
     def __call__(self, rec: dict):
         rec = {"run": self.name, "t": time.time(), **rec}
         with self.path.open("a") as f:
-            f.write(json.dumps(rec) + "\n")
+            f.write(json.dumps(rec, default=str) + "\n")
         if self.url and self.token:
             try:
                 req = urllib.request.Request(
                     f"{self.url.rstrip('/')}/api/runs/{self.name}",
-                    data=json.dumps(rec).encode(),
+                    data=json.dumps(rec, default=str).encode(),
                     # Cloudflare's bot rules 403 the default "Python-urllib" agent.
                     headers={"content-type": "application/json", "authorization": f"Bearer {self.token}", "user-agent": "babble-sft/1.0"},
                     method="POST",
@@ -498,7 +821,10 @@ class Reporter:
 
 
 def main():
-    ap = argparse.ArgumentParser()
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--config", type=Path, help="JSON preset; explicit CLI flags override it")
+    known, _ = pre.parse_known_args()
+    ap = argparse.ArgumentParser(parents=[pre])
     ap.add_argument("--name", required=True)
     ap.add_argument("--tokens", type=float, default=30e6, help="training-token budget (input tokens incl. prompt)")
     ap.add_argument("--examples", type=int, default=120_000, help="examples to tokenize across the mix")
@@ -508,8 +834,14 @@ def main():
     ap.add_argument("--repeat-norobots", type=int, default=1, help="no_robots is only ~8.4k pairs; epochs to upsample it")
     ap.add_argument("--mix-smoltalk", type=float, default=0.0, help="HuggingFaceTB/smoltalk general subsets")
     ap.add_argument("--mix-discord", type=float, default=0.40, help="mookiezi/Discord-Dialogues rehearsal")
+    ap.add_argument("--tinystories-revision", default=None)
+    ap.add_argument("--writingprompts-revision", default=None)
+    ap.add_argument("--no-robots-revision", default=None)
+    ap.add_argument("--smoltalk-revision", default=None)
+    ap.add_argument("--discord-revision", default=None)
     ap.add_argument("--seq-len", type=int, default=1024)
     ap.add_argument("--prompt-budget", type=int, default=256)
+    ap.add_argument("--history-turns", type=int, default=3, help="completed exchanges retained before the current user turn")
     ap.add_argument("--min-response", type=int, default=1)
     ap.add_argument("--val-examples", type=int, default=400)
     ap.add_argument("--tokens-per-batch", type=int, default=4096)
@@ -526,9 +858,27 @@ def main():
     ap.add_argument("--export", action="store_true", help="only re-pack runs/<name>/ckpt to INT8")
     ap.add_argument("--smoke", action="store_true", help="tiny run: 600 examples, 12 steps")
     ap.add_argument("--push", default=None, metavar="NAMESPACE/REPO", help="after export, upload runs/<name>/export to this HF repo (uses the cached HF login)")
+    ap.add_argument(
+        "--max-source-val-regression",
+        type=float,
+        default=0.05,
+        help="maximum allowed loss increase for every source; negative disables the gate",
+    )
+    if known.config:
+        preset = json.loads(known.config.read_text(encoding="utf-8"))
+        valid = {action.dest for action in ap._actions}
+        unknown = sorted(set(preset) - valid)
+        if unknown:
+            ap.error(f"unknown config keys in {known.config}: {', '.join(unknown)}")
+        ap.set_defaults(**preset)
     args = ap.parse_args()
     if args.smoke:
-        args.examples, args.tokens, args.log_every, args.eval_every, args.ckpt_every = 600, 12 * args.tokens_per_batch * args.accum, 2, 6, 6
+        args.examples, args.tokens, args.val_examples = 600, 12 * args.tokens_per_batch * args.accum, 50
+        args.log_every, args.eval_every, args.ckpt_every = 2, 6, 6
+        args.max_source_val_regression = -1
+    sample_kwargs = {"prompt_budget": args.prompt_budget}
+    if args.smoke:
+        sample_kwargs.update({"max_new": 48, "draws": 1})
 
     run_dir = ROOT / "runs" / args.name
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -560,15 +910,44 @@ def main():
     ckpt_dir = run_dir / "ckpt"
 
     if args.export:
-        step, tokens = load_ckpt(model, ckpt_dir, device)
-        log(f"export from step {step} ({tokens:,} tokens)")
+        quality_path = run_dir / "quality.json"
+        export_ckpt = ckpt_dir
+        if quality_path.exists():
+            quality = json.loads(quality_path.read_text(encoding="utf-8"))
+            if int(quality.get("best_step", 0)) <= 0 or not (run_dir / "best").exists():
+                raise RuntimeError("quality gate has no passing checkpoint to export")
+            export_ckpt = run_dir / "best"
+        _restore_prompt_metadata(config, export_ckpt)
+        step, tokens = load_ckpt(model, export_ckpt, device)
+        log(f"export from passing step {step} ({tokens:,} tokens)")
         export_int8(model, config, tok_path, base, run_dir / "export", log)
         if args.push:
             push_export(run_dir, args.push, log)
         return
 
-    train, val, counts = build_examples(tok, args, log)
-    log(f"data: {len(train)} train / {len(val)} val examples, mean len {sum(len(e[0]) for e in train)/max(len(train),1):.0f}")
+    # Persist the input contract beside newly trained weights so promotion
+    # tooling can distinguish them from raw-prompt Story-v2 checkpoints.
+    config.babble_prompt_format = "role_transcript_v1"
+    config.babble_history_turns = args.history_turns
+    config.babble_prompt_budget = args.prompt_budget
+
+    train, val_by_source, counts = build_examples(tok, args, log)
+    n_val = sum(len(examples) for examples in val_by_source.values())
+    log(f"data: {len(train)} train / {n_val} val examples, mean len {sum(len(e[0]) for e in train)/max(len(train),1):.0f}")
+    data_provenance = {
+        "counts": counts,
+        "seed": args.seed,
+        "examples": args.examples,
+        "mix": {name: getattr(args, name) for name in ("mix_story", "mix_wp", "mix_norobots", "mix_smoltalk", "mix_discord")},
+        "revisions": {name: getattr(args, name) for name in ("tinystories_revision", "writingprompts_revision", "no_robots_revision", "smoltalk_revision", "discord_revision")},
+        "prompt_format": "role_transcript_v1",
+        "history_turns": args.history_turns,
+        "prompt_budget": args.prompt_budget,
+        "seq_len": args.seq_len,
+    }
+    data_signature = hashlib.sha256(
+        json.dumps(data_provenance, sort_keys=True).encode("utf-8")
+    ).hexdigest()
     steps_total = max(1, int(args.tokens // (args.tokens_per_batch * args.accum)))
 
     decay, no_decay = [], []
@@ -588,9 +967,59 @@ def main():
 
     report = Reporter(run_dir, args.name)
     report({"event": "start", "steps_total": steps_total, "device": str(device), "counts": counts, "args": vars(args), "resumed_step": step})
-    v = evaluate(model, val, device, pad, dtype)
-    log(f"step {step} val {v:.4f} rss {rss_gb():.1f}G")
-    report({"step": step, "val": v, "samples": sample(model, tok, device)})
+    v, source_val = evaluate_sources(model, val_by_source, device, pad, dtype)
+    quality_path = run_dir / "quality.json"
+    best_dir = run_dir / "best"
+    if args.resume and quality_path.exists():
+        quality = json.loads(quality_path.read_text(encoding="utf-8"))
+        if quality.get("data_signature") != data_signature:
+            raise RuntimeError("refusing to resume: dataset revisions, split, or prompt format changed")
+        baseline_val = float(quality["baseline_val"])
+        baseline_source_val = {k: float(v) for k, v in quality["baseline_source_val"].items()}
+        best_val = float(quality["best_val"])
+        best_step = int(quality["best_step"])
+    else:
+        baseline_val, baseline_source_val = v, source_val
+        best_val = float("inf") if args.max_source_val_regression < 0 else baseline_val
+        best_step = -1 if args.max_source_val_regression < 0 else 0
+
+    def write_quality():
+        quality_path.write_text(
+            json.dumps(
+                {
+                    "baseline_val": baseline_val,
+                    "baseline_source_val": baseline_source_val,
+                    "best_val": best_val,
+                    "best_step": best_step,
+                    "max_source_val_regression": args.max_source_val_regression,
+                    "data_signature": data_signature,
+                    "data_provenance": data_provenance,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    def consider_candidate(candidate_val, candidate_sources):
+        nonlocal best_val, best_step
+        source_ok, regressions = _source_gate(
+            candidate_sources,
+            baseline_source_val,
+            args.max_source_val_regression,
+        )
+        improved = candidate_val < best_val
+        if source_ok and improved and step > 0:
+            best_val, best_step = candidate_val, step
+            save_ckpt(model, config, tok_path, best_dir, step, tokens_seen)
+            write_quality()
+            log(f"best: step {step} val {candidate_val:.4f} source gate passed")
+        return source_ok, regressions
+
+    write_quality()
+    log(f"step {step} val {v:.4f} sources={source_val} rss {rss_gb():.1f}G")
+    report({"step": step, "val": v, "source_val": source_val, "samples": sample(model, tok, device, **sample_kwargs)})
     log(f"samples done rss {rss_gb():.1f}G")
 
     epoch = 0
@@ -626,10 +1055,11 @@ def main():
                 t_log, tok_log, loss_acc, loss_n = time.perf_counter(), 0, 0.0, 0
             if step % args.eval_every == 0:
                 free_cache(device)
-                v = evaluate(model, val, device, pad, dtype)
-                s = sample(model, tok, device)
+                v, source_val = evaluate_sources(model, val_by_source, device, pad, dtype)
+                source_ok, regressions = consider_candidate(v, source_val)
+                s = sample(model, tok, device, **sample_kwargs)
                 log(f"step {step} val {v:.4f} | sample: {s[0]['reply'][:160]!r} ({s[0]['tokens']} tok)")
-                report({"step": step, "val": v, "samples": s})
+                report({"step": step, "val": v, "source_val": source_val, "source_regression": regressions, "source_gate": source_ok, "samples": s})
             if step % args.ckpt_every == 0:
                 save_ckpt(model, config, tok_path, ckpt_dir, step, tokens_seen, opt)
                 log(f"ckpt saved at step {step}")
@@ -637,10 +1067,16 @@ def main():
                 break
         epoch += 1
     save_ckpt(model, config, tok_path, ckpt_dir, step, tokens_seen, opt)
-    v = evaluate(model, val, device, pad, dtype)
-    s = sample(model, tok, device)
-    report({"step": step, "val": v, "samples": s, "event": "done"})
-    log(f"done: step {step} val {v:.4f}")
+    v, source_val = evaluate_sources(model, val_by_source, device, pad, dtype)
+    source_ok, regressions = consider_candidate(v, source_val)
+    s = sample(model, tok, device, **sample_kwargs)
+    gated = best_step <= 0
+    report({"step": step, "val": v, "source_val": source_val, "source_regression": regressions, "source_gate": source_ok, "best_step": best_step, "best_val": best_val, "gated": gated, "samples": s, "event": "done"})
+    log(f"done: step {step} val {v:.4f}; best step {best_step} val {best_val:.4f}")
+    if gated:
+        log("export gated: no post-base checkpoint improved aggregate val while passing every source gate")
+        return
+    load_ckpt(model, best_dir, device)
     export_int8(model, config, tok_path, base, run_dir / "export", log)
     if args.push:
         push_export(run_dir, args.push, log)

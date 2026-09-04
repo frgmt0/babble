@@ -11,9 +11,11 @@ tested without a token.
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any, Callable
 
 import discord
+from discord import app_commands
 
 from .backfill import backfill_corpus
 from .config import TOKEN_ENV, Settings, discord_token
@@ -31,6 +33,7 @@ from .trainer import AutoTrainTrigger
 #: Shorter than the feed's window, so the last row of a trickle still posts a
 #: second or two after it lands rather than waiting for the next message.
 FEED_FLUSH_SECONDS = 1.0
+BENCH_COOLDOWN_SECONDS = 300.0
 
 
 class BabbleClient(discord.Client):
@@ -90,13 +93,75 @@ class BabbleClient(discord.Client):
         self.brain = brain
         # Generation and file writes are serialised: one brain, one thread at a time.
         self._lock = asyncio.Lock()
+        self._bench_running = False
+        self._bench_last_started: float | None = None
+        self.tree = app_commands.CommandTree(self)
+        command = app_commands.Command(
+            name="bench",
+            description="Measure this bot's inference speed, latency and resource use.",
+            callback=self._bench,
+        )
+        command.guild_only = True
+        command.default_permissions = discord.Permissions(manage_guild=True)
+        self.tree.add_command(command)
 
     async def setup_hook(self) -> None:
+        try:
+            commands = await self.tree.sync()
+            self.log.event("bot.commands_synced", commands=[c.name for c in commands])
+        except discord.HTTPException as exc:
+            self.log.event("bot.error", where="command_sync", error=f"{type(exc).__name__}: {exc}")
         # Drain the feed's coalescing buffer on a timer, so a lone row at the end
         # of a trickle still posts rather than waiting for the next capture. The
         # flush is best-effort and off the event loop, exactly like every post.
         if self.feed is not None and self.feed.enabled:
             self.loop.create_task(self._flush_feed_loop())
+
+    async def _bench(self, interaction: discord.Interaction) -> None:
+        """One bounded inference benchmark; never capture or train on its prompt."""
+        if interaction.guild is None or not interaction.permissions.manage_guild:
+            await interaction.response.send_message(
+                "You need Manage Server permission to run this benchmark.", ephemeral=True,
+            )
+            return
+        now = time.monotonic()
+        if self._bench_running or self._lock.locked():
+            await interaction.response.send_message(
+                "I'm busy generating a reply or running a benchmark. Try again shortly.", ephemeral=True,
+            )
+            return
+        if self._bench_last_started is not None and now - self._bench_last_started < BENCH_COOLDOWN_SECONDS:
+            remaining = int(BENCH_COOLDOWN_SECONDS - (now - self._bench_last_started)) + 1
+            await interaction.response.send_message(
+                f"Please wait {remaining} seconds before another benchmark.", ephemeral=True,
+            )
+            return
+        self._bench_running = True
+        try:
+            # Acquire before acknowledging: a chat request cannot slip ahead of
+            # the benchmark and leave its interaction waiting in a long queue.
+            async with self._lock:
+                await interaction.response.defer(thinking=True, ephemeral=True)
+                self._bench_last_started = now
+                from .benchmark import run_benchmark, format_benchmark
+
+                worker = asyncio.create_task(asyncio.to_thread(run_benchmark, self.brain.generator))
+                try:
+                    result = await asyncio.shield(worker)
+                except asyncio.CancelledError:
+                    # Cancelling the interaction cannot stop its Python worker.
+                    # Keep the model lock until inference and RNG restoration
+                    # finish, then let cancellation propagate.
+                    await worker
+                    raise
+            await interaction.followup.send(format_benchmark(result), ephemeral=True)
+            self.log.event("bot.bench", status="complete")
+        except Exception as exc:
+            self.log.event("bot.error", where="bench", error=f"{type(exc).__name__}: {exc}")
+            if interaction.response.is_done():
+                await interaction.followup.send("Benchmark failed; the error was recorded in the bot log.", ephemeral=True)
+        finally:
+            self._bench_running = False
 
     async def _flush_feed_loop(self) -> None:
         while True:
