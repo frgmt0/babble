@@ -49,6 +49,11 @@ from babble.conversation import (  # noqa: E402 - repo root is added above
 )
 
 INT8_REPO = "ProCreations/Booper-Big-Chat-INT8"
+PROMPT_METADATA_KEYS = (
+    "babble_prompt_format",
+    "babble_history_turns",
+    "babble_prompt_budget",
+)
 SAMPLE_PROMPTS = [
     "write me a short story about a dragon who is afraid of fire",
     "write a short story about a detective in a city that never sleeps",
@@ -323,14 +328,44 @@ def _tokenize_records(tok, records: list[SFTRecord], args):
 
 
 def _source_gate(candidate: dict[str, float], baseline: dict[str, float], limit: float):
-    """Require complete, finite metrics before applying the regression limit."""
-    regressions = {
-        name: candidate.get(name, float("inf")) - value
-        for name, value in baseline.items()
-    }
+    """Gate role-formatted candidates against the legacy base and role baseline.
+
+    ``*_single`` and ``*_legacy`` contain identical targets, so their
+    cross-format delta measures the actual migration the user will experience.
+    History-bearing views must improve, since learning follow-ups is the
+    objective of this run rather than an optional side effect of rehearsal.
+    """
     complete = candidate.keys() == baseline.keys()
     finite = all(math.isfinite(value) for value in (*candidate.values(), *baseline.values()))
-    passed = limit < 0 or (complete and finite and all(delta <= limit for delta in regressions.values()))
+    primary = {
+        name: candidate.get(name, float("inf")) - value
+        for name, value in baseline.items()
+        if not name.endswith(("_single", "_legacy", "_multiturn"))
+    }
+    retention = {
+        name.removesuffix("_single"): candidate.get(name, float("inf"))
+        - baseline.get(name.removesuffix("_single") + "_legacy", float("-inf"))
+        for name in baseline
+        if name.endswith("_single")
+    }
+    multiturn = {
+        name.removesuffix("_multiturn"): candidate.get(name, float("inf")) - value
+        for name, value in baseline.items()
+        if name.endswith("_multiturn")
+    }
+    regressions = {
+        **{f"{name}_role": delta for name, delta in primary.items()},
+        **{f"{name}_migration": delta for name, delta in retention.items()},
+        **{f"{name}_multiturn": delta for name, delta in multiturn.items()},
+    }
+    passed = complete and finite and (
+        limit < 0
+        or (
+            all(delta <= limit for delta in primary.values())
+            and all(delta <= limit for delta in retention.values())
+            and all(delta < 0 for delta in multiturn.values())
+        )
+    )
     return passed, regressions
 
 
@@ -367,6 +402,16 @@ def build_examples(tok, args, log):
         # Measure compatibility with the raw-prompt behavior Story-v2 serves
         # outside the opt-in conversation mode. This is evaluation only: new
         # training inputs all use the shared role transcript.
+        single = [
+            SFTRecord(
+                source=f"{name}_single",
+                group_id=record.group_id,
+                current_user=record.current_user,
+                response=record.response,
+            )
+            for record in source_val
+            if not record.history
+        ]
         legacy = [
             SFTRecord(
                 source=f"{name}_legacy",
@@ -378,8 +423,23 @@ def build_examples(tok, args, log):
             for record in source_val
             if not record.history
         ]
+        multiturn = [
+            SFTRecord(
+                source=f"{name}_multiturn",
+                group_id=record.group_id,
+                current_user=record.current_user,
+                response=record.response,
+                history=record.history,
+            )
+            for record in source_val
+            if record.history
+        ]
+        if single:
+            val_records[f"{name}_single"] = single
         if legacy:
             val_records[f"{name}_legacy"] = legacy
+        if multiturn:
+            val_records[f"{name}_multiturn"] = multiturn
         counts[name] = {
             "train": len(repeated_train),
             "val": len(source_val),
@@ -402,7 +462,30 @@ def build_examples(tok, args, log):
         raise RuntimeError(f"active sources produced no train examples after tokenization: {empty_train}")
     train = [example for examples in train_by_source.values() for example in examples]
     rng.shuffle(train)
-    val = {name: _tokenize_records(tok, records, args) for name, records in val_records.items()}
+    val = {
+        name: _tokenize_records(tok, records, args)
+        for name, records in val_records.items()
+        if not name.endswith(("_single", "_legacy"))
+    }
+    # Keep the migration views exactly paired after tokenization. A long role
+    # prefix can make an example fail the sequence budget even when its raw
+    # legacy prompt fits; including only one side would invalidate the loss
+    # comparison.
+    for name, weight, _, _ in sources:
+        if weight <= 0:
+            continue
+        single_records = val_records.get(f"{name}_single", [])
+        legacy_records = val_records.get(f"{name}_legacy", [])
+        paired_single: list[tuple[list[int], int]] = []
+        paired_legacy: list[tuple[list[int], int]] = []
+        for single_record, legacy_record in zip(single_records, legacy_records, strict=True):
+            single_example = _tokenize_records(tok, [single_record], args)
+            legacy_example = _tokenize_records(tok, [legacy_record], args)
+            if single_example and legacy_example:
+                paired_single.extend(single_example)
+                paired_legacy.extend(legacy_example)
+        val[f"{name}_single"] = paired_single
+        val[f"{name}_legacy"] = paired_legacy
     empty_val = [name for name, examples in val.items() if not examples]
     if empty_val:
         raise RuntimeError(f"active validation sources produced no examples after tokenization: {empty_val}")
@@ -510,6 +593,16 @@ def load_ckpt(model, ckpt: Path, device, opt=None):
     if opt is not None and (ckpt / "optim.pt").exists():
         opt.load_state_dict(torch.load(ckpt / "optim.pt", map_location=device))
     return meta["step"], meta["tokens"]
+
+
+def _restore_prompt_metadata(config, ckpt: Path):
+    """Make exported prompt metadata match the saved weights exactly."""
+    saved = json.loads((ckpt / "config.json").read_text(encoding="utf-8"))
+    for key in PROMPT_METADATA_KEYS:
+        if key in saved:
+            setattr(config, key, saved[key])
+        elif hasattr(config, key):
+            delattr(config, key)
 
 
 def export_int8(model, config, tok_path: Path, src_dir: Path, out: Path, log):
@@ -689,7 +782,14 @@ def evaluate_sources(model, val_by_source, device, pad, dtype):
         for name, examples in val_by_source.items()
         if examples
     }
-    combined = [example for examples in val_by_source.values() for example in examples]
+    # Aggregate each target once. Suffixed views are diagnostic/gating slices
+    # of these same primary source holdouts.
+    combined = [
+        example
+        for name, examples in val_by_source.items()
+        if not name.endswith(("_single", "_legacy", "_multiturn"))
+        for example in examples
+    ]
     return evaluate(model, combined, device, pad, dtype), per_source
 
 
@@ -807,11 +907,6 @@ def main():
     tok = Tokenizer.from_file(str(tok_path))
     pad = tok.token_to_id("<pad>")
     model, config = load_base(base, device, log)
-    # Persist the input contract beside the weights so promotion tooling can
-    # distinguish this checkpoint from raw-prompt Story-v2.
-    config.babble_prompt_format = "role_transcript_v1"
-    config.babble_history_turns = args.history_turns
-    config.babble_prompt_budget = args.prompt_budget
     ckpt_dir = run_dir / "ckpt"
 
     if args.export:
@@ -822,12 +917,19 @@ def main():
             if int(quality.get("best_step", 0)) <= 0 or not (run_dir / "best").exists():
                 raise RuntimeError("quality gate has no passing checkpoint to export")
             export_ckpt = run_dir / "best"
+        _restore_prompt_metadata(config, export_ckpt)
         step, tokens = load_ckpt(model, export_ckpt, device)
         log(f"export from passing step {step} ({tokens:,} tokens)")
         export_int8(model, config, tok_path, base, run_dir / "export", log)
         if args.push:
             push_export(run_dir, args.push, log)
         return
+
+    # Persist the input contract beside newly trained weights so promotion
+    # tooling can distinguish them from raw-prompt Story-v2 checkpoints.
+    config.babble_prompt_format = "role_transcript_v1"
+    config.babble_history_turns = args.history_turns
+    config.babble_prompt_budget = args.prompt_budget
 
     train, val_by_source, counts = build_examples(tok, args, log)
     n_val = sum(len(examples) for examples in val_by_source.values())

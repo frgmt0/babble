@@ -29,8 +29,9 @@ sft/train.sh multiturn-v1 --base runs/story-v2/export --config configs/sft/multi
 
 Validation is reported separately for every source. A checkpoint becomes the
 export candidate only when its aggregate validation loss improves on Story-v2
-and no source regresses by more than `0.05` nats. If no checkpoint clears both
-conditions, the run keeps its resumable checkpoint but creates no export. The
+and no source regresses by more than `0.05` nats. Held-out multi-turn loss must
+also improve. If no checkpoint clears these conditions, the run keeps its
+resumable checkpoint but creates no export. The
 best passing checkpoint, rather than the final step, is exported.
 
 The export records `babble_prompt_format=role_transcript_v1`,
@@ -44,10 +45,12 @@ BABBLE_CONVERSATION_MAX_TURNS=3
 BABBLE_CONVERSATION_MAX_TOKENS=512
 ```
 
-The validation report includes both role-transcript prompts and raw-prompt
-`*_legacy` views of the same held-out single-turn targets. The legacy views are
-part of the per-source export gate; aggregate validation alone is not evidence
-that old raw-prompt behavior was preserved.
+The validation report compares candidate `*_single` role-transcript prompts
+against Story-v2's raw-prompt `*_legacy` loss on the exact same retained
+single-turn targets. Examples that do not fit both tokenized forms are removed
+from both views. It also reports a separate `*_multiturn` view and applies the
+same regression ceiling. These paired views are part of the export gate;
+aggregate validation alone is not evidence that old behavior was preserved.
 
 At Story-v2's observed 2.6k input tokens/second, 12M tokens is about 77 minutes
 of gradient work. Source-specific evaluation and longer histories make roughly

@@ -1,4 +1,5 @@
 from babble.conversation import ConversationTurn, conversation_prompt
+import json
 from types import SimpleNamespace
 
 from sft.sft_longform import (
@@ -6,6 +7,7 @@ from sft.sft_longform import (
     _chatml_turns,
     _dedupe_groups,
     _discord_group,
+    _restore_prompt_metadata,
     _split_grouped,
     _source_gate,
     _tokenize_records,
@@ -114,7 +116,49 @@ def test_token_budget_keeps_role_boundary_instead_of_slicing_mid_history():
 
 
 def test_source_gate_fails_closed_on_missing_or_nonfinite_metrics():
-    baseline = {"discord": 1.0, "discord_legacy": 1.2}
+    baseline = {
+        "discord": 1.0,
+        "discord_single": 1.1,
+        "discord_legacy": 0.9,
+        "discord_multiturn": 1.2,
+    }
+    candidate = {
+        "discord": 1.01,
+        "discord_single": 0.94,
+        "discord_legacy": 0.91,
+        "discord_multiturn": 1.19,
+    }
     assert _source_gate({"discord": 0.9}, baseline, 0.05)[0] is False
-    assert _source_gate({"discord": 0.9, "discord_legacy": float("nan")}, baseline, 0.05)[0] is False
-    assert _source_gate({"discord": 0.9, "discord_legacy": 1.24}, baseline, 0.05)[0] is True
+    assert _source_gate({**candidate, "discord_legacy": float("nan")}, baseline, 0.05)[0] is False
+    passed, regressions = _source_gate(candidate, baseline, 0.05)
+    assert passed is True
+    assert regressions["discord_migration"] == candidate["discord_single"] - baseline["discord_legacy"]
+    assert _source_gate({**candidate, "discord_single": 0.96}, baseline, 0.05)[0] is False
+    assert _source_gate({**candidate, "discord_multiturn": 1.2}, baseline, 0.05)[0] is False
+
+
+def test_reexport_uses_saved_prompt_metadata_without_inventing_it(tmp_path):
+    config = SimpleNamespace(
+        babble_prompt_format="role_transcript_v1",
+        babble_history_turns=3,
+        babble_prompt_budget=512,
+    )
+    (tmp_path / "config.json").write_text(json.dumps({"model_type": "mixtral"}))
+    _restore_prompt_metadata(config, tmp_path)
+    assert not hasattr(config, "babble_prompt_format")
+    assert not hasattr(config, "babble_history_turns")
+    assert not hasattr(config, "babble_prompt_budget")
+
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "babble_prompt_format": "role_transcript_v1",
+                "babble_history_turns": 2,
+                "babble_prompt_budget": 384,
+            }
+        )
+    )
+    _restore_prompt_metadata(config, tmp_path)
+    assert config.babble_prompt_format == "role_transcript_v1"
+    assert config.babble_history_turns == 2
+    assert config.babble_prompt_budget == 384
