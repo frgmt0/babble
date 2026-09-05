@@ -6,6 +6,7 @@ at the time it was written. For current reference docs (benchmarks, CPU
 inference tuning), see [`BENCHMARKS.md`](../../BENCHMARKS.md) and
 [`CPU_INFERENCE.md`](../../CPU_INFERENCE.md) at the repo root.
 
+- [MULTITURN_V1_PROMOTE_2026-09-04.md](MULTITURN_V1_PROMOTE_2026-09-04.md) (2026-09-04) — multi-turn training, conversational review, live activation, artifact hashes, benchmark interpretation, and rollback.
 - [BOOPER_REGRESSION_2026_08_20.md](BOOPER_REGRESSION_2026_08_20.md) (2026-08-20) — root-cause investigation into an apparent quality regression in booper's samples, traced to the corpus-only pretrain pivot rather than "more data made it worse."
 - [STORY_V2_PROMOTE.md](STORY_V2_PROMOTE.md) (2026-08-30) — promotion record for typer-org/booper-story-v2 (v1 continued on writingprompts/smoltalk/no_robots×2/Discord), with mix, val, sha256s, honest assessment, rollback.
 - [STORY_V1_PROMOTE.md](STORY_V1_PROMOTE.md) (2026-08-29) — promotion record for typer-org/booper-story-v1 (long-form SFT of Big-Chat) going live on jason's box, with data mix, val curve, sha256s, .env changes, rollback.
