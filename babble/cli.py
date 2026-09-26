@@ -721,7 +721,7 @@ def main(argv: list[str] | None = None) -> int:
             # command stays a faithful preflight for the hf backend too.
             import dataclasses
 
-            from .hfserve import HFGenerator
+            from .hfserve import make_generator
 
             overrides = {
                 name: value
@@ -735,8 +735,8 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 if value is not None
             }
-            generator = HFGenerator(dataclasses.replace(settings, **overrides))
-            print(f"# hf backend · {settings.hf_model_dir}", flush=True)
+            generator = make_generator(dataclasses.replace(settings, **overrides))
+            print(f"# hf backend ({settings.hf_runtime}) · {settings.hf_model_dir}", flush=True)
             for _ in range(max(1, args.count)):
                 generation = generator(args.prompt)
                 print(f"{args.prompt!r} -> {generation.text!r} ({generation.ms:.0f}ms)", flush=True)

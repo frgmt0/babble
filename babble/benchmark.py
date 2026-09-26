@@ -144,6 +144,9 @@ def run_benchmark(generator: Callable[[str], Any]) -> BenchmarkResult:
     e2e_tps = aggregate / elapsed_s if elapsed_s > 0 else 0.0
     metadata_fn = getattr(generator, "benchmark_metadata", None)
     metadata = metadata_fn() if callable(metadata_fn) else {}
+    backend = str(metadata.get("backend", backend))
+    # The lean hf runtime never imports transformers; do not credit it.
+    uses_transformers = metadata.get("runtime", "transformers") == "transformers"
     return BenchmarkResult(
         backend=backend,
         prompt_tokens=prompt_tokens,
@@ -161,7 +164,7 @@ def run_benchmark(generator: Callable[[str], Any]) -> BenchmarkResult:
         rss_mb=_rss_mb(),
         peak_rss_mb=_peak_rss_mb(),
         torch_version=str(torch.__version__),
-        transformers_version=_transformers_version(),
+        transformers_version=_transformers_version() if uses_transformers else None,
         threads=torch.get_num_threads(),
         interop_threads=torch.get_num_interop_threads(),
         machine=platform.machine() or "unknown",

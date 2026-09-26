@@ -193,6 +193,22 @@ class Settings:
     # model-int8.safetensors, tokenizer.json). Local-only on purpose: serving
     # must never depend on the Hub being up.
     hf_model_dir: Path | None = None
+    # Which runtime executes an `hf` snapshot:
+    # "transformers" -- `hfserve.HFGenerator`, MixtralForCausalLM + generate().
+    # "lean" -- `leanserve.LeanGenerator`, a hand-written Mixtral forward and
+    # decode loop over the same safetensors (no transformers at runtime),
+    # with row compaction and a prefix KV cache. See README "Lean runtime".
+    hf_runtime: str = "transformers"
+    # Lean weight precision. "int8": on-disk int8 weights x bf16 activations
+    # for decode (fp32 copy for prefill, exact fp32 rescoring of sampling
+    # candidates). "fp32": the dequantized fp32 model, lossless vs transformers.
+    lean_precision: str = "int8"
+    # int8 mode keeps an fp32 copy of every matrix for prefill-sized matmuls
+    # (~600 MB). Off: prefill dequantizes transiently (lower RSS, slower TTFT).
+    lean_prefill_fp32: bool = True
+    # Prefix KV cache across turns (lean only). 0 MB or 0 entries disables it.
+    lean_prefix_cache_mb: int = 128
+    lean_prefix_cache_entries: int = 32
 
     # Multi-turn prompting is a checkpoint format switch, not merely a UI
     # feature. Existing checkpoints (including story-v2) were trained on one
@@ -400,6 +416,11 @@ class Settings:
             serve_layout=os.environ.get("BABBLE_SERVE_LAYOUT", "continuation"),
             serve_backend=os.environ.get("BABBLE_SERVE_BACKEND", "checkpoint"),
             hf_model_dir=_env_path("BABBLE_HF_MODEL_DIR", None),
+            hf_runtime=os.environ.get("BABBLE_HF_RUNTIME", "transformers").strip().lower() or "transformers",
+            lean_precision=os.environ.get("BABBLE_LEAN_PRECISION", "int8").strip().lower() or "int8",
+            lean_prefill_fp32=_env_bool("BABBLE_LEAN_PREFILL_FP32", True),
+            lean_prefix_cache_mb=_env_int("BABBLE_LEAN_PREFIX_CACHE_MB", 128),
+            lean_prefix_cache_entries=_env_int("BABBLE_LEAN_PREFIX_CACHE_ENTRIES", 32),
             conversation_context=_env_bool("BABBLE_CONVERSATION_CONTEXT", False),
             conversation_max_turns=_env_int("BABBLE_CONVERSATION_MAX_TURNS", 6),
             conversation_max_tokens=_env_int("BABBLE_CONVERSATION_MAX_TOKENS", 512),

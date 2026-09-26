@@ -470,12 +470,21 @@ class HFGenerator:
 
 
 def make_generator(settings: Settings, log: EventLog | None = None):
-    """The generator `Settings.serve_backend` names.
+    """The generator `Settings.serve_backend` (and, for hf, `hf_runtime`) names.
 
     Imports stay inside the branches so the checkpoint path never pays for
-    (or requires) transformers.
+    (or requires) transformers, and the lean hf runtime never imports it.
     """
     if settings.serve_backend == "hf":
+        runtime = str(getattr(settings, "hf_runtime", "transformers") or "transformers").lower()
+        if runtime == "lean":
+            from .leanserve import LeanGenerator
+
+            return LeanGenerator(settings, log)
+        if runtime != "transformers":
+            raise ValueError(
+                f"unknown hf_runtime {runtime!r} -- expected 'transformers' or 'lean'"
+            )
         return HFGenerator(settings, log)
     if settings.serve_backend == "checkpoint":
         from .generate import CheckpointGenerator
