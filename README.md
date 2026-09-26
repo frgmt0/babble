@@ -353,6 +353,76 @@ babble rescan-blocklist   # purge stored rows that now match the current list
 
 Run this after extending the list, so history gets cleaned up along with it.
 
+## GIF replies
+
+A separately-trained format, served by `babble/gifs.py`: a reply may end with
+`[gif: 2-5 lowercase search words]` (or be nothing but that tag), and the bot
+turns it into a direct GIF URL Discord auto-embeds on its own — nothing here
+ever uploads or re-hosts an image. **Off unless `BABBLE_GIFS=1`.** When it's
+off, or a lookup fails, times out, or is skipped by the content filter, the
+tag is stripped and whatever text remains is sent as-is; a whole-reply tag
+that resolves to nothing falls back to the same "nothing printable" message
+an empty generation already gets. A GIF lookup can never turn a reply that
+would otherwise have gone out fine into no reply at all.
+
+**Parsing** (`extract_gif_tag`) is pure text surgery, no network involved,
+and handles the messy cases a real generation produces: case and whitespace
+inside the brackets are irrelevant (`[GIF:cats]`, `[ gif :  cats  ]`), stray
+punctuation around the words is stripped (`cats!, dogs.` → `cats dogs`), and
+a generation truncated by `max_new_tokens` mid-tag (`...reminds me of [gif:
+sunse`) has the dangling, unterminated fragment dropped rather than searched
+for. A tag followed by more real text is left alone entirely — that's the
+model quoting the syntax, not placing the marker, since the contract is
+"the whole reply, or the end of it."
+
+**Providers** are swappable by name (`BABBLE_GIF_PROVIDER`), each turning a
+query into a list of candidate direct-media URLs:
+
+* **`tenor-scrape`** (the default, keyless) — screen-scrapes
+  `https://tenor.com/search/<query-words-joined-by-dash>-gifs` for the
+  `https://media.tenor.com/<id>/<slug>.gif` links embedded in the page,
+  fetched with a browser-shaped User-Agent (the stdlib's default one gets a
+  403 from Cloudflare before the request ever lands). No signup, no quota —
+  and no safe-search parameter either: Tenor's *site* (as opposed to its API)
+  doesn't document a content-rating query param for this path, so this
+  provider is unmoderated beyond the blocklist check below. Fine for a dev
+  box; not the moderated choice for a public server, and inherently fragile
+  since it depends on markup Tenor never promised to keep stable.
+* **`giphy`** (keyed, official, the recommended production choice) — GIPHY's
+  search API, `rating=g` (their safest tier) by default. Needs
+  `BABBLE_GIF_API_KEY`; a free "beta" key from developers.giphy.com is capped
+  at 100 requests/hour but otherwise unlimited, and the API is stable and
+  well documented. It won the slot over the alternatives: **Tenor's own v2
+  API** is being retired by Google in 2026 (new key issuance is already
+  closed, so it isn't a viable choice for a fresh setup regardless of how
+  well-known it is), and **Klipy** (built by ex-Tenor staff, a
+  near-identical API, a free tier with no hard cap) is the natural next
+  migration once Tenor's API is fully gone, but its current endpoint/response
+  shape couldn't be pinned down precisely enough during this build to
+  implement with confidence — revisit `docs.klipy.com` and add a
+  `KlipyProvider` when that migration actually needs doing.
+
+An unknown provider name, or `giphy` with no key set, resolves to *no*
+provider — identical to `BABBLE_GIFS=0`, never a crash.
+
+**Safety and performance**, both non-negotiable regardless of provider: every
+call runs through a small in-memory LRU+TTL cache (so the same query doesn't
+hit the network on every message) and a hard ~1.5s timeout (a slow GIF lookup
+must lose, not stall, the reply); the result is a random pick among the top
+few candidates, not always the first, so a query doesn't always post the
+identical GIF. The extracted query is run through the same content blocklist
+as everything else the bot might send — a blocked term must never reach a
+provider, network call or page scrape alike — before any lookup is even
+attempted.
+
+**What gets remembered:** the *sent* text — after the tag has been resolved
+to a URL (or stripped) — is what's stored as the exchange's response and, if
+a correction ever comes in against it, published in that correction's
+`rejected` field. This matches every other reply: the exchange always mirrors
+exactly what the person saw on Discord, never an intermediate form only the
+model produced. The corpus itself is unaffected either way — it only ever
+stores what people say to the bot, never what the bot says back.
+
 ## Pretraining
 
 **One corpus, one command.** babble trains on nothing but the corpus people
