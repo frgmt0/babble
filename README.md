@@ -353,6 +353,76 @@ babble rescan-blocklist   # purge stored rows that now match the current list
 
 Run this after extending the list, so history gets cleaned up along with it.
 
+## GIF replies
+
+A separately-trained format, served by `babble/gifs.py`: a reply may end with
+`[gif: 2-5 lowercase search words]` (or be nothing but that tag), and the bot
+turns it into a direct GIF URL Discord auto-embeds on its own — nothing here
+ever uploads or re-hosts an image. **Off unless `BABBLE_GIFS=1`.** When it's
+off, or a lookup fails, times out, or is skipped by the content filter, the
+tag is stripped and whatever text remains is sent as-is; a whole-reply tag
+that resolves to nothing falls back to the same "nothing printable" message
+an empty generation already gets. A GIF lookup can never turn a reply that
+would otherwise have gone out fine into no reply at all.
+
+**Parsing** (`extract_gif_tag`) is pure text surgery, no network involved,
+and handles the messy cases a real generation produces: case and whitespace
+inside the brackets are irrelevant (`[GIF:cats]`, `[ gif :  cats  ]`), stray
+punctuation around the words is stripped (`cats!, dogs.` → `cats dogs`), and
+a generation truncated by `max_new_tokens` mid-tag (`...reminds me of [gif:
+sunse`) has the dangling, unterminated fragment dropped rather than searched
+for. A tag followed by more real text is left alone entirely — that's the
+model quoting the syntax, not placing the marker, since the contract is
+"the whole reply, or the end of it."
+
+**Providers** are swappable by name (`BABBLE_GIF_PROVIDER`), each turning a
+query into a list of candidate direct-media URLs:
+
+* **`tenor-scrape`** (the default, keyless) — screen-scrapes
+  `https://tenor.com/search/<query-words-joined-by-dash>-gifs` for the
+  `https://media.tenor.com/<id>/<slug>.gif` links embedded in the page,
+  fetched with a browser-shaped User-Agent (the stdlib's default one gets a
+  403 from Cloudflare before the request ever lands). No signup, no quota —
+  and no safe-search parameter either: Tenor's *site* (as opposed to its API)
+  doesn't document a content-rating query param for this path, so this
+  provider is unmoderated beyond the blocklist check below. Fine for a dev
+  box; not the moderated choice for a public server, and inherently fragile
+  since it depends on markup Tenor never promised to keep stable.
+* **`giphy`** (keyed, official, the recommended production choice) — GIPHY's
+  search API, `rating=g` (their safest tier) by default. Needs
+  `BABBLE_GIF_API_KEY`; a free "beta" key from developers.giphy.com is capped
+  at 100 requests/hour but otherwise unlimited, and the API is stable and
+  well documented. It won the slot over the alternatives: **Tenor's own v2
+  API** is being retired by Google in 2026 (new key issuance is already
+  closed, so it isn't a viable choice for a fresh setup regardless of how
+  well-known it is), and **Klipy** (built by ex-Tenor staff, a
+  near-identical API, a free tier with no hard cap) is the natural next
+  migration once Tenor's API is fully gone, but its current endpoint/response
+  shape couldn't be pinned down precisely enough during this build to
+  implement with confidence — revisit `docs.klipy.com` and add a
+  `KlipyProvider` when that migration actually needs doing.
+
+An unknown provider name, or `giphy` with no key set, resolves to *no*
+provider — identical to `BABBLE_GIFS=0`, never a crash.
+
+**Safety and performance**, both non-negotiable regardless of provider: every
+call runs through a small in-memory LRU+TTL cache (so the same query doesn't
+hit the network on every message) and a hard ~1.5s timeout (a slow GIF lookup
+must lose, not stall, the reply); the result is a random pick among the top
+few candidates, not always the first, so a query doesn't always post the
+identical GIF. The extracted query is run through the same content blocklist
+as everything else the bot might send — a blocked term must never reach a
+provider, network call or page scrape alike — before any lookup is even
+attempted.
+
+**What gets remembered:** the *sent* text — after the tag has been resolved
+to a URL (or stripped) — is what's stored as the exchange's response and, if
+a correction ever comes in against it, published in that correction's
+`rejected` field. This matches every other reply: the exchange always mirrors
+exactly what the person saw on Discord, never an intermediate form only the
+model produced. The corpus itself is unaffected either way — it only ever
+stores what people say to the bot, never what the bot says back.
+
 ## Pretraining
 
 **One corpus, one command.** babble trains on nothing but the corpus people
@@ -1278,6 +1348,103 @@ which sets all three):
   `BABBLE_POST_TRIGGER_PAIRS=0`) so corpus growth can never overwrite the
   promoted checkpoint with a from-scratch model, and zero the publish
   cadences — one comparison bot must not double-publish the dataset.
+
+### Lean runtime for the hf backend
+
+With `BABBLE_SERVE_BACKEND=hf`, `BABBLE_HF_RUNTIME` picks what runs the
+snapshot. The default, `transformers`, is `hfserve.HFGenerator`
+(MixtralForCausalLM + `generate()`). `lean` is `babble/leanserve.py`: a
+hand-written Mixtral forward pass and decode loop over the same
+`model-int8.safetensors`. It never imports transformers.
+
+| env | default | meaning |
+| --- | --- | --- |
+| `BABBLE_HF_RUNTIME` | `transformers` | `lean` or `transformers` |
+| `BABBLE_LEAN_PRECISION` | `int8` | `int8` runs decode on the on-disk int8 weights with bf16 activations. `fp32` uses the same dequantized fp32 weights as transformers and is lossless. |
+| `BABBLE_LEAN_PREFILL_FP32` | `1` | int8 mode keeps an fp32 copy for prompt prefill, about +500 MB RSS. Set `0` for a smaller process (~550 MB) with a slower TTFT. |
+| `BABBLE_LEAN_PREFIX_CACHE_MB` | `128` | Byte bound for the cross-turn prefix KV cache. `0` disables it. |
+| `BABBLE_LEAN_PREFIX_CACHE_ENTRIES` | `32` | Entry bound for the same cache. |
+
+Sampling semantics are the same as the transformers path:
+
+- The same processors run in the same order: repetition penalty, no-repeat-ngram, frequency/presence (still gated by `BABBLE_HF_FREQUENCY_PENALTIES`), temperature, top-k, top-p.
+- Best-of picks the candidate with the highest mean post-warp log-probability.
+- EOS and pad accounting are unchanged.
+
+In int8 mode, every token that survives top-k has its logit recomputed exactly
+in fp32 before the penalties, sampling and scoring use it.
+
+The prefix cache is keyed by token content, not by channel. A turn's
+transcript starts with the previous turn's transcript, so a follow-up reuses
+the K/V of everything except the newest reply and message. When the history
+window slides and the oldest turn drops out, the cache misses and falls back to
+a full prefill. `babble bench` (`/bench`) never uses the cache.
+
+Gates and measurements: `docs/reports/LEAN_RUNTIME_2026-09-26.md`. To switch,
+set `BABBLE_HF_RUNTIME=lean` in the env file and restart. To roll back, remove
+the line or set it to `transformers`.
+
+### Native runtime for the hf backend
+
+`BABBLE_HF_RUNTIME=native` runs the same snapshot on a C++ engine,
+`babble/_native/engine.cpp`, driven by `babble/nativeserve.py`. The engine
+repacks the on-disk int8 weights at load, dequantizes them in AVX2 registers,
+and does all activations and accumulation in fp32. Against the fp32
+transformers reference it is lossless: top-1 agreement 1.0, and the NLL moves
+by less than 1e-4 per token. On the i7-4790 live box it is about 7x the
+transformers throughput at under half the RSS (`/bench`: ~1010 vs ~146
+aggregate tok/s, 400 vs 1000 MB).
+
+| env | default | meaning |
+| --- | --- | --- |
+| `BABBLE_HF_RUNTIME` | `transformers` | `native` selects this engine |
+| `BABBLE_INFER_THREADS` | `4` | Engine thread count. 2-3 threads already saturate memory bandwidth, and 8 (hyperthreads) is slower. |
+| `BABBLE_NATIVE_CACHE` | `~/.cache/babble/native` | Where the compiled engine is cached. It is kept outside the repo and outside /tmp. |
+| `BABBLE_LEAN_PREFIX_CACHE_MB` / `_ENTRIES` | `128` / `32` | The cross-turn prefix KV cache, shared with lean |
+| `BABBLE_HF_FREQUENCY_PENALTIES` | off | Same gate as the other runtimes, implemented in the engine |
+
+**No build step.** On first use, the engine is compiled with the system
+`g++` (`-O3 -march=haswell`, about 5 s) and loaded with ctypes. A plain
+`git pull --ff-only` plus a restart (`deploy/update-live.sh`) is therefore
+enough. The cached library is keyed by the source hash, the compiler, the
+flags and the CPU features. An edited engine or a compiler upgrade gets a new
+build, and a stale library is never loaded. Builds take a file lock and
+publish the result with an atomic rename. Only the first start after an engine
+change pays the compile; `model.load` logs `native_build=compiled|cached`.
+
+**Fallback.** The engine falls back to `lean` if the CPU lacks AVX2/FMA/F16C,
+if there is no compiler, if the build fails, if the library does not load, or
+if the snapshot shape is outside what the kernels implement. Unsupported
+shapes are: dimensions that are not multiples of 16, GQA, top-k > 1 routing,
+and an untied head. The fallback logs a `model.native_fallback` event with the
+reason and prints a line on stderr. A missing or broken model dir is still a
+hard error, as with every runtime.
+
+**Model shape.** Geometry is read from `config.json` at load, not compiled
+in. KV buffers grow with the request, so the 4096-position long-context SFT
+serves without a rebuild, and so does any other top-1 Mixtral with
+dimensions that are multiples of 16.
+
+**Semantics.** The processors, their order, best-of scoring, the eos/pad
+accounting, row compaction and the prefix cache policy are the same as lean's
+(see above). Prompt handling is inherited from `LeanGenerator`. There are two
+differences:
+
+- The engine draws from its own RNG, seeded per call from torch's global
+  generator. `torch.manual_seed` still makes runs reproducible, but the same
+  seed gives different samples than the torch runtimes.
+- Top-k keeps exact ties at the k-th value, as transformers does (lean keeps
+  exactly k).
+
+**Prefix reuse.** After each reply, the engine exports the prompt's K/V as a
+snapshot. The next turn of the same conversation restores the snapshot and
+prefills only the new suffix. On a 495-token transcript, TTFT drops from
+149 ms to 13 ms. As with lean, the cache misses once the history window
+starts sliding.
+
+Gates and measurements: `docs/reports/NATIVE_RUNTIME_2026-09-26.md`. To
+switch, set `BABBLE_HF_RUNTIME=native` in the env file and restart; the first
+start compiles. To roll back, set the variable to `lean` or `transformers`.
 
 ## Keeping the live install current
 

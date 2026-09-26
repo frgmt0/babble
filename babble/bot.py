@@ -21,6 +21,7 @@ from .backfill import backfill_corpus
 from .config import TOKEN_ENV, Settings, discord_token
 from .core import Babble, IncomingMessage, ReactionEvent
 from .discord_feed import CollectionFeed
+from .gifs import GifResolver
 from .hfserve import make_generator
 from .identity import Pseudonymiser
 from .logs import EventLog
@@ -75,10 +76,14 @@ class BabbleClient(discord.Client):
             # default (`Settings.post_augment_pairs`) -- see
             # `pairaugment.AutoAugmentTrigger`.
             augment_trigger = AutoAugmentTrigger(settings, log)
+            gifs = GifResolver.from_env_bool(
+                settings.gifs_enabled, settings.gif_provider, settings.gif_api_key
+            )
             brain = Babble(
                 settings,
                 generator=make_generator(settings, log),
                 log=log,
+                gifs=gifs,
                 feed=self.feed,
                 publisher=publisher,
                 train_trigger=train_trigger,

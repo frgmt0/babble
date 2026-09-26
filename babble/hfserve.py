@@ -470,12 +470,43 @@ class HFGenerator:
 
 
 def make_generator(settings: Settings, log: EventLog | None = None):
-    """The generator `Settings.serve_backend` names.
+    """The generator `Settings.serve_backend` (and, for hf, `hf_runtime`) names.
 
     Imports stay inside the branches so the checkpoint path never pays for
-    (or requires) transformers.
+    (or requires) transformers, and the lean hf runtime never imports it.
     """
     if settings.serve_backend == "hf":
+        runtime = str(getattr(settings, "hf_runtime", "transformers") or "transformers").lower()
+        fell_back = False
+        if runtime == "native":
+            from .nativeserve import NativeGenerator, NativeUnavailable
+
+            try:
+                return NativeGenerator(settings, log)
+            except NativeUnavailable as exc:
+                # CPU, compiler, build or snapshot shape: serve on lean instead
+                # of not at all, and say so where the operator will look.
+                import sys
+
+                (log or NullLog()).event("model.native_fallback", reason=str(exc), fallback="lean")
+                print(f"babble: native runtime unavailable ({exc}); falling back to lean", file=sys.stderr, flush=True)
+                runtime = "lean"
+                fell_back = True
+        if runtime == "lean":
+            from .leanserve import LeanGenerator
+
+            if not fell_back:
+                return LeanGenerator(settings, log)
+            try:
+                return LeanGenerator(settings, log)
+            except HFServeError as exc:
+                # A snapshot shape lean rejects too: transformers still serves it.
+                (log or NullLog()).event("model.native_fallback", reason=str(exc), fallback="transformers")
+                runtime = "transformers"
+        if runtime != "transformers":
+            raise ValueError(
+                f"unknown hf_runtime {runtime!r} -- expected 'transformers', 'lean' or 'native'"
+            )
         return HFGenerator(settings, log)
     if settings.serve_backend == "checkpoint":
         from .generate import CheckpointGenerator
