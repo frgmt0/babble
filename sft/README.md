@@ -96,7 +96,12 @@ sft/stop.sh    # then, to continue (same flags + --resume):
 sft/train.sh longctx-v1 --base runs/multiturn-v1/export --config configs/sft/longctx-mac.json --resume
 ```
 
-LONGCTX_SIZING_PLACEHOLDER
+Sizing (M2 Pro 16 GB, measured on the launched run): 16 micro-batches of 2048 tokens per step, about 23.9k real
+tokens per step, 25.2 s per step wall at duty 0.5 (about 950 tok/s wall, 1875 active). Eval covers about 2.5k val
+views, which is 7.3 min of compute and about 15 min wall with the duty nap, every 300 steps. `tokens 425e6` gives
+12,969 steps: 12,969 × 25.2 s + 43 evals × ~890 s + checkpoints ≈ 368k s ≈ 4.3 days, covering about 0.87 of an
+epoch (615k train targets, mean 579 tokens). Lid-closed sleep or battery pauses push the finish out
+(`idle_s` in metrics).
 
 Live dashboard: put `BABBLE_RUNS_URL=https://booper.frgmt.xyz` and `BABBLE_RUNS_TOKEN=<the worker's RUNS_TOKEN secret>`
 in `.env.sft` (gitignored) and every metrics record is also POSTed to `/api/runs/<name>` → https://booper.frgmt.xyz/runs.
