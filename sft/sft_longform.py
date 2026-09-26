@@ -1303,6 +1303,7 @@ def main():
     ap.add_argument("--gif-synth-rate", type=float, default=0.0, help="chance a short Discord reaction becomes a synthetic gif tag")
     ap.add_argument("--gif-synth-max-frac", type=float, default=0.03, help="hard cap: synthetic gif targets / Discord targets")
     ap.add_argument("--duty-cycle", type=float, default=1.0, help="fraction of wall time spent computing; 0.5 sleeps as long as each optimizer step took")
+    ap.add_argument("--prepare-data", action="store_true", help="build runs/<name>/data-cache.pkl and exit (a fresh build leaves a fat RSS; train from the cache)")
     ap.add_argument("--pause-on-battery", action="store_true", help="macOS: sleep while `pmset -g batt` reports battery power")
     ap.add_argument("--seq-len", type=int, default=1024)
     ap.add_argument("--prompt-budget", type=int, default=256)
@@ -1399,6 +1400,9 @@ def main():
     if not 0.0 < args.duty_cycle <= 1.0:
         ap.error("--duty-cycle must be in (0, 1]")
     train, val_by_source, counts = _cached_build(tok, tok_path, args, run_dir, log)
+    if args.prepare_data:
+        log(f"data: cache ready in {run_dir / 'data-cache.pkl'}; --prepare-data exits here")
+        return
     n_val = sum(len(examples) for examples in val_by_source.values())
     log(f"data: {len(train)} train / {n_val} val examples, mean len {sum(len(e[0]) for e in train)/max(len(train),1):.0f}")
     data_provenance = {
