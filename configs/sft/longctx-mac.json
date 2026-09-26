@@ -35,8 +35,8 @@
   "duty_cycle": 0.5,
   "pause_on_battery": true,
   "pad_multiple": 256,
-  "mps_high_watermark": 0.45,
-  "mps_low_watermark": 0.3,
+  "mps_high_watermark": 0.6,
+  "mps_low_watermark": 0.4,
   "grouped_experts": true,
   "fixed_rows": true
 }
