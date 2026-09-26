@@ -852,16 +852,20 @@ def build_examples(tok, args, log):
     return train, val, counts
 
 
-def batches(examples, tokens_per_batch, pad_id, shuffle_seed=None, skip=0):
+def batches(examples, tokens_per_batch, pad_id, shuffle_seed=None, skip=0, pad_multiple=1):
     """Length-bucketed batches under a token budget (padding counted).
 
     ``skip`` drops the first N batches without materialising them (resume).
+    ``pad_multiple`` rounds each batch width up: on MPS every new tensor shape
+    grows the kernel/graph and allocator caches, and seq 2048 with free widths
+    means ~2000 distinct shapes (measured: a 19 GB footprint on a 16 GB Mac).
     """
     import numpy as np
 
     groups = _batch_groups(examples, tokens_per_batch, shuffle_seed)
     for g in groups[skip:]:
         width = max(len(examples[i][0]) for i in g)
+        width = -(-width // pad_multiple) * pad_multiple
         ids = torch.full((len(g), width), pad_id, dtype=torch.long)
         labels = torch.full((len(g), width), -100, dtype=torch.long)
         for r, i in enumerate(g):
@@ -1156,10 +1160,10 @@ def sample(model, tok, device, max_new=120, draws=2, prompt_budget=512):
 
 
 @torch.no_grad()
-def evaluate(model, val, device, pad, dtype):
+def evaluate(model, val, device, pad, dtype, pad_multiple=1):
     model.eval()
     tot, n = 0.0, 0
-    for ids, labels in batches(val, 2048, pad):
+    for ids, labels in batches(val, 2048, pad, pad_multiple=pad_multiple):
         ids, labels = ids.to(device), labels.to(device)
         with torch.autocast(device_type=device.type, dtype=dtype, enabled=dtype != torch.float32):
             logits = model(input_ids=ids, attention_mask=(ids != pad)).logits
@@ -1172,10 +1176,10 @@ def evaluate(model, val, device, pad, dtype):
     return tot / max(n, 1)
 
 
-def evaluate_sources(model, val_by_source, device, pad, dtype):
+def evaluate_sources(model, val_by_source, device, pad, dtype, pad_multiple=1):
     """Return aggregate and per-source loss over independent holdouts."""
     per_source = {
-        name: evaluate(model, examples, device, pad, dtype)
+        name: evaluate(model, examples, device, pad, dtype, pad_multiple)
         for name, examples in val_by_source.items()
         if examples
     }
@@ -1187,7 +1191,7 @@ def evaluate_sources(model, val_by_source, device, pad, dtype):
         if not name.endswith(("_single", "_legacy", "_multiturn"))
         for example in examples
     ]
-    return evaluate(model, combined, device, pad, dtype), per_source
+    return evaluate(model, combined, device, pad, dtype, pad_multiple), per_source
 
 
 class Reporter:
@@ -1303,6 +1307,9 @@ def main():
     ap.add_argument("--gif-synth-rate", type=float, default=0.0, help="chance a short Discord reaction becomes a synthetic gif tag")
     ap.add_argument("--gif-synth-max-frac", type=float, default=0.03, help="hard cap: synthetic gif targets / Discord targets")
     ap.add_argument("--duty-cycle", type=float, default=1.0, help="fraction of wall time spent computing; 0.5 sleeps as long as each optimizer step took")
+    ap.add_argument("--pad-multiple", type=int, default=1, help="round batch widths up to this (bounds MPS shape caches)")
+    ap.add_argument("--mps-high-watermark", type=float, default=0.7, help="PYTORCH_MPS_HIGH_WATERMARK_RATIO (hard cap, fraction of RAM)")
+    ap.add_argument("--mps-low-watermark", type=float, default=0.5, help="PYTORCH_MPS_LOW_WATERMARK_RATIO (allocator frees cached blocks above this)")
     ap.add_argument("--prepare-data", action="store_true", help="build runs/<name>/data-cache.pkl and exit (a fresh build leaves a fat RSS; train from the cache)")
     ap.add_argument("--pause-on-battery", action="store_true", help="macOS: sleep while `pmset -g batt` reports battery power")
     ap.add_argument("--seq-len", type=int, default=1024)
@@ -1360,8 +1367,8 @@ def main():
     # Bound the MPS allocator to a fraction of unified memory so a leak fails
     # loudly instead of paging the whole machine (default 1.0 = "everything").
     # Both must be set: PyTorch's default LOW is 1.4 and it rejects HIGH < LOW.
-    os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.7")
-    os.environ.setdefault("PYTORCH_MPS_LOW_WATERMARK_RATIO", "0.5")
+    os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", str(args.mps_high_watermark))
+    os.environ.setdefault("PYTORCH_MPS_LOW_WATERMARK_RATIO", str(args.mps_low_watermark))
     device = torch.device(args.device or ("mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu"))
     dtype = torch.bfloat16 if device.type != "cpu" else torch.float32
     log(f"device={device} autocast={dtype}")
@@ -1446,7 +1453,7 @@ def main():
     resuming_quality = args.resume and quality_path.exists()
     # A resume already has its baseline in quality.json; re-running the full
     # long-context eval (many minutes on a throttled laptop) buys nothing.
-    v, source_val = (None, None) if resuming_quality else evaluate_sources(model, val_by_source, device, pad, dtype)
+    v, source_val = (None, None) if resuming_quality else evaluate_sources(model, val_by_source, device, pad, dtype, args.pad_multiple)
     if resuming_quality:
         quality = json.loads(quality_path.read_text(encoding="utf-8"))
         if quality.get("data_signature") != data_signature:
@@ -1521,7 +1528,7 @@ def main():
                 continue
             log(f"resume: skipping {to_skip} of {per_epoch} batches in epoch {epoch}")
         skip, to_skip = to_skip, 0
-        for ids, labels in batches(train, args.tokens_per_batch, pad, shuffle_seed=args.seed + epoch, skip=skip):
+        for ids, labels in batches(train, args.tokens_per_batch, pad, shuffle_seed=args.seed + epoch, skip=skip, pad_multiple=args.pad_multiple):
             ids, labels = ids.to(device), labels.to(device)
             with torch.autocast(device_type=device.type, dtype=dtype, enabled=dtype != torch.float32):
                 logits = model(input_ids=ids, attention_mask=(ids != pad)).logits
@@ -1574,7 +1581,7 @@ def main():
                 idle_log = 0.0
             if step % args.eval_every == 0:
                 free_cache(device)
-                v, source_val = evaluate_sources(model, val_by_source, device, pad, dtype)
+                v, source_val = evaluate_sources(model, val_by_source, device, pad, dtype, args.pad_multiple)
                 source_ok, regressions = consider_candidate(v, source_val)
                 s = sample(model, tok, device, **sample_kwargs)
                 log(f"step {step} val {v:.4f} | sample: {s[0]['reply'][:160]!r} ({s[0]['tokens']} tok)")
@@ -1586,7 +1593,7 @@ def main():
                 break
         epoch += 1
     save_ckpt(model, config, tok_path, ckpt_dir, step, tokens_seen, opt)
-    v, source_val = evaluate_sources(model, val_by_source, device, pad, dtype)
+    v, source_val = evaluate_sources(model, val_by_source, device, pad, dtype, args.pad_multiple)
     source_ok, regressions = consider_candidate(v, source_val)
     s = sample(model, tok, device, **sample_kwargs)
     gated = best_step <= 0

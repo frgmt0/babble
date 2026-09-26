@@ -9,6 +9,7 @@ from sft.sft_longform import (
     GifStats,
     SFTRecord,
     _batch_groups,
+    batches,
     _chatml_turns,
     _dedupe_groups,
     _discord_group,
@@ -315,8 +316,10 @@ def test_long_response_trims_history_to_fit_sequence_instead_of_skipping():
     ((ids, n_prompt),) = _tokenize_records(CharTokenizer(), [record], args)
     assert len(ids) <= 128
     assert "".join(chr(i) for i in ids[1 : n_prompt - 1]) == "user: and then?"
-    # batching accepts the compact uint16 arrays
+    # batching accepts the compact uint16 arrays, padded to a shape multiple
     assert _batch_groups([(ids, n_prompt)], 4096) == [[0]]
+    ((batch_ids, labels),) = list(batches([(ids, n_prompt)], 4096, 0, pad_multiple=64))
+    assert batch_ids.shape == (1, 128) and int((labels != -100).sum()) == 81
 
 
 # -------------------------------------------------------------- duty ---
