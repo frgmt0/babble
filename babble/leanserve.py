@@ -79,6 +79,16 @@ def int8_kernel_available() -> bool:
     return bool(torch.allclose(y.float(), torch.full((1, 8), 32.0)))
 
 
+def _release_free_heap() -> None:
+    """Hand freed load-time scratch back to the OS (glibc only; else no-op)."""
+    try:
+        import ctypes
+
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError):
+        pass
+
+
 # --------------------------------------------------------------------------
 # weights
 # --------------------------------------------------------------------------
@@ -95,7 +105,7 @@ class _Fp32Linear:
     def __init__(self, w: torch.Tensor) -> None:
         self.w = w
 
-    def __call__(self, x: torch.Tensor) -> torch.Tensor:
+    def __call__(self, x: torch.Tensor, dense: bool = True) -> torch.Tensor:
         return F.linear(x, self.w)
 
 
@@ -113,10 +123,10 @@ class _Int8Linear:
     def dense(self) -> torch.Tensor:
         return self.wf if self.wf is not None else _dequant(self.q, self.s[:, None])
 
-    def __call__(self, x: torch.Tensor) -> torch.Tensor:
+    def __call__(self, x: torch.Tensor, dense: bool | None = None) -> torch.Tensor:
         shape = x.shape
         x2 = x.reshape(-1, shape[-1])
-        if x2.shape[0] > DECODE_MAX_ROWS:
+        if dense if dense is not None else x2.shape[0] > DECODE_MAX_ROWS:
             return F.linear(x, self.dense())
         y = torch.ops.aten._weight_int8pack_mm(x2.to(torch.bfloat16), self.q, self.s)
         return y.to(torch.float32).reshape(*shape[:-1], self.out)
@@ -215,7 +225,7 @@ class LeanModel:
     """Mixtral (top-1 MoE) forward over ``model-int8.safetensors``."""
 
     def __init__(self, model_dir: Path, *, precision: str = "int8", prefill_fp32: bool = True) -> None:
-        from safetensors.torch import load_file
+        from safetensors import safe_open
 
         if precision not in PRECISIONS:
             raise HFServeError(f"BABBLE_LEAN_PRECISION={precision!r} -- expected one of {PRECISIONS}")
@@ -226,12 +236,15 @@ class LeanModel:
         self.cfg = c = LeanConfig.from_dict(json.loads((model_dir / "config.json").read_text()))
         self.precision = precision
         self.prefill_fp32 = prefill_fp32 if precision == "int8" else True
-        packed = load_file(str(weights))
+        # Tensors are read one at a time rather than as one dict, so the load
+        # peak is the resident model plus one matrix, not the file twice over.
+        packed = safe_open(str(weights), framework="pt")
+        names = set(packed.keys())
 
         def get(name: str) -> torch.Tensor:
-            if name not in packed:
+            if name not in names:
                 raise HFServeError(f"snapshot is missing tensor {name}")
-            return packed[name]
+            return packed.get_tensor(name)
 
         def qs(name: str) -> tuple[torch.Tensor, torch.Tensor]:
             q = get(name)
@@ -282,17 +295,18 @@ class LeanModel:
         self.embed = dense("model.embed_tokens.weight")
         # Transformers ties lm_head to the embedding when the config says so,
         # overwriting any stored lm_head; mirror that.
-        head_name = "model.embed_tokens.weight" if c.tied or "lm_head.weight" not in packed else "lm_head.weight"
+        head_name = "model.embed_tokens.weight" if c.tied or "lm_head.weight" not in names else "lm_head.weight"
         self.head_w = self.embed if head_name == "model.embed_tokens.weight" else dense(head_name)
         self.head_q: _Int8Linear | None = None
         if precision == "int8":
             self.head_q = _Int8Linear(*qs(head_name), prefill_fp32=False)
         self.param_count = sum(
-            t.numel()
-            for name, t in packed.items()
+            math.prod(packed.get_slice(name).get_shape())
+            for name in names
             if not name.endswith(".scale") and not (name == "lm_head.weight" and head_name != name)
         )
         del packed
+        _release_free_heap()
 
         inv_freq = 1.0 / (c.rope_theta ** (torch.arange(0, c.head_dim, 2, dtype=torch.int64).float() / c.head_dim))
         freqs = torch.outer(torch.arange(c.max_pos, dtype=torch.float32), inv_freq)
@@ -318,20 +332,20 @@ class LeanModel:
         rot = torch.cat((-x[..., half:], x[..., :half]), dim=-1)
         return x * cos + rot * sin
 
-    def _moe(self, layer: _Layer, h: torch.Tensor) -> torch.Tensor:
+    def _moe(self, layer: _Layer, h: torch.Tensor, dense: bool) -> torch.Tensor:
         # Top-1 routing: softmax then renormalise over one expert == weight 1.0.
         choice = F.linear(h, layer.router).argmax(-1)
         chosen = choice.tolist()
         experts = sorted(set(chosen))
         if len(experts) == 1:
             e = experts[0]
-            g, u = layer.w13[e](h).chunk(2, dim=-1)
-            return layer.w2[e](F.silu(g) * u)
+            g, u = layer.w13[e](h, dense).chunk(2, dim=-1)
+            return layer.w2[e](F.silu(g) * u, dense)
         out = torch.empty_like(h)
         for e in experts:
             idx = (choice == e).nonzero().squeeze(1)
-            g, u = layer.w13[e](h.index_select(0, idx)).chunk(2, dim=-1)
-            out.index_copy_(0, idx, layer.w2[e](F.silu(g) * u))
+            g, u = layer.w13[e](h.index_select(0, idx), dense).chunk(2, dim=-1)
+            out.index_copy_(0, idx, layer.w2[e](F.silu(g) * u, dense))
         return out
 
     def forward(self, ids: torch.Tensor, cache: KVCache, start: int, *, all_positions: bool = False) -> torch.Tensor:
@@ -355,9 +369,13 @@ class LeanModel:
             mask = kpos[None, :] <= torch.arange(start, end)[:, None]
         qd, kd = c.n_heads * c.head_dim, c.n_kv * c.head_dim
         gqa = {"enable_gqa": True} if c.n_kv != c.n_heads else {}
+        # One precision decision per call, by total rows: a prefill runs every
+        # matmul (experts included, however few tokens each receives) on the
+        # fp32 path; a decode step runs all of them through the int8 kernel.
+        dense = B * T > DECODE_MAX_ROWS
         for li, layer in enumerate(self.layers):
             h = self._rms(x, layer.ln1)
-            qkv = layer.qkv(h)
+            qkv = layer.qkv(h, dense)
             q = qkv[..., :qd].view(B, T, c.n_heads, c.head_dim).transpose(1, 2)
             k = qkv[..., qd : qd + kd].view(B, T, c.n_kv, c.head_dim).transpose(1, 2)
             v = qkv[..., qd + kd :].view(B, T, c.n_kv, c.head_dim).transpose(1, 2)
@@ -373,9 +391,9 @@ class LeanModel:
                 scale=self.attn_scale,
                 **gqa,
             )
-            x = x + layer.o(attn.transpose(1, 2).reshape(B, T, qd))
+            x = x + layer.o(attn.transpose(1, 2).reshape(B, T, qd), dense)
             h = self._rms(x, layer.ln2)
-            x = x + self._moe(layer, h.reshape(B * T, -1)).view(B, T, -1)
+            x = x + self._moe(layer, h.reshape(B * T, -1), dense).view(B, T, -1)
         if not all_positions:
             x = x[:, -1]
         return self._rms(x, self.norm)
