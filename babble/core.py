@@ -49,12 +49,14 @@ from .corpus import (
     make_corpus_id,
 )
 from .exchanges import Exchange, ExchangeLog
+from .gifs import GifResolver, compose_with_gif, extract_gif_tag
 from .identity import Pseudonymiser
 from .logs import EventLog, NullLog
 from .store import APPROVAL, CORRECTION, REJECTION, Interaction, InteractionStore, make_row_id
 from .util import truncate, utcnow_iso
 
 BLOCKED_OUTPUT = "*…(that one didn't clear the content filter — regenerate by pinging me again)*"
+EMPTY_REPLY = "*…(nothing printable that time — that's what noise looks like)*"
 
 DISCORD_LIMIT = 2000
 COMMAND_PREFIX = "!babble"
@@ -281,7 +283,7 @@ def clean_for_discord(text: str, limit: int = DISCORD_LIMIT) -> str:
     """Make raw model output safe to post without changing what it says."""
     cleaned = _CONTROL.sub("", text).strip()
     if not cleaned:
-        return "*…(nothing printable that time — that's what noise looks like)*"
+        return EMPTY_REPLY
     return truncate(cleaned, limit)
 
 
@@ -304,6 +306,7 @@ class Babble:
         ids: Pseudonymiser | None = None,
         log: EventLog | None = None,
         blocklist: Blocklist | None = None,
+        gifs: GifResolver | None = None,
         bot_user_id: str | None = None,
         feed: _CollectionFeed | None = None,
         publisher: _Publisher | None = None,
@@ -321,6 +324,11 @@ class Babble:
         self.exchanges = exchanges or ExchangeLog(settings.exchanges_path)
         self.log = log or NullLog()
         self.blocklist = blocklist if blocklist is not None else Blocklist.load()
+        # `None` (the default) is exactly "off": every caller below already
+        # skips resolution when there's no tag, so a resolver-less bot never
+        # needs its own branch -- see GifResolver.from_env_bool for how a
+        # real bot builds a live one from Settings.
+        self.gifs = gifs
         self.bot_user_id = str(bot_user_id) if bot_user_id else None
         # The collection feed and the growth-based publisher. Both optional and
         # both no-ops when absent, so every existing test that builds a Babble
@@ -625,6 +633,8 @@ class Babble:
         if blocked:
             self._log_blocked("generate", prompt, body, msg.author_id)
             body = BLOCKED_OUTPUT
+        elif self.gifs is not None and self.gifs.enabled:
+            body = self._resolve_gif_tag(body, msg)
 
         preview = self.log.preview(prompt, allowed=allowed)
         self.log.event(
@@ -683,6 +693,33 @@ class Babble:
         if reask:
             replies.append(Reply(CORPUS_NOTICE, reply_to=msg.message_id, kind="consent"))
         return replies
+
+    def _resolve_gif_tag(self, body: str, msg: IncomingMessage) -> str:
+        """Turn a trailing/whole `[gif: query]` marker into a real GIF URL.
+
+        Only called once `body` has already cleared the whole-reply
+        blocklist check in `_respond`, so this never runs on text we've
+        already decided to block. The query is still checked again on its
+        own: it is about to be handed to a provider (a network call, or a
+        page scrape) and a query that only reads as clean once the `[gif: `
+        wrapper is stripped off must not reach that call.
+
+        Whatever comes back here becomes both the sent text and (via
+        `_respond`'s `exchange = Exchange(..., response=body, ...)`) the
+        stored/published response for a correction to react to -- the two
+        are kept identical on purpose, same as every other reply, so a
+        correction is always reacting to what the person actually saw.
+        """
+        remaining, query = extract_gif_tag(body)
+        if query is None:
+            return body
+        if self.blocklist.matches(query):
+            self._log_blocked("gif_query", query, "", msg.author_id)
+            return remaining or EMPTY_REPLY
+        gif_url = self.gifs.resolve(query) if self.gifs is not None else None
+        if gif_url is None:
+            return remaining or EMPTY_REPLY
+        return compose_with_gif(remaining, gif_url, DISCORD_LIMIT)
 
     def _generation_prompt(
         self, history: tuple[ConversationTurn, ...], current_user: str
