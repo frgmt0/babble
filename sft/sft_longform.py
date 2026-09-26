@@ -936,45 +936,54 @@ def _batch_groups(examples, tokens_per_batch, shuffle_seed=None, pad_multiple=1)
 # ---------------------------------------------------------------- model ---
 
 
-def grouped_experts_forward(self, hidden_states, top_k_index, top_k_weights, compute_dtype=torch.bfloat16):
-    """Static-shape replacement for the eager Mixtral experts loop.
+def bucketed_experts_forward(self, hidden_states, top_k_index, top_k_weights, bucket=128):
+    """Mixtral experts with a bounded set of MPS shapes.
 
-    The eager loop slices each expert's tokens, so every batch presents MPS
-    with new tensor shapes (per-expert token counts). MPS compiles and caches
-    a graph per shape; over a long run that cache grew the process footprint
-    past 14 GB on a 16 GB Mac. Here every tensor's shape depends only on the
-    batch shape: tokens are sorted by expert and fed to one `grouped_mm` per
-    projection with data-dependent *offsets*, not sizes. grouped_mm runs in
-    ``compute_dtype`` (MPS supports bf16 forward+backward, not fp32); the
-    fp32 master weights get their gradients through the cast.
+    The eager HF loop runs each expert on exactly its routed tokens, so the
+    matmul shapes change with every batch's routing. MPS compiles and keeps a
+    graph per shape (grouped_mm with data-dependent offsets does the same),
+    which leaked ~35 MB of CPU heap per micro-batch here: a 15 GB footprint on
+    a 16 GB Mac within minutes, measured with vmmap. Each expert's token count
+    is padded up to a multiple of ``bucket`` instead (padding rows gather a
+    real token, get weight 0 and land in a dummy output row), so only
+    ``seq/bucket`` shapes ever exist. Mathematically identical to the eager
+    loop; costs up to ``bucket - 1`` wasted rows per active expert.
     """
     num_top_k = top_k_index.size(-1)
     num_tokens, hidden_dim = hidden_states.shape
+    pairs = num_tokens * num_top_k
     expert_ids = top_k_index.reshape(-1)
     weights = top_k_weights.reshape(-1)
     expert_sorted, perm = torch.sort(expert_ids, stable=True)
-    x = hidden_states[perm // num_top_k].to(compute_dtype)
     counts = torch.histc(expert_sorted.float(), bins=self.num_experts, min=0, max=self.num_experts - 1)
-    offs = torch.cumsum(counts, dim=0).to(torch.int32)
-    gate_up = F.grouped_mm(x, self.gate_up_proj.to(compute_dtype).transpose(1, 2), offs=offs)
-    gate, up = gate_up.chunk(2, dim=-1)
-    h = self.act_fn(gate) * up
-    out = F.grouped_mm(h, self.down_proj.to(compute_dtype).transpose(1, 2), offs=offs)
-    out = out.to(hidden_states.dtype) * weights[perm].unsqueeze(-1).to(hidden_states.dtype)
-    unsorted = torch.empty_like(out).index_copy(0, perm, out)
-    return unsorted.view(num_tokens, num_top_k, hidden_dim).sum(dim=1)
+    out = torch.zeros(pairs + 1, hidden_dim, device=hidden_states.device, dtype=hidden_states.dtype)
+    start = 0
+    for expert, n in enumerate(int(c) for c in counts.tolist()):  # one sync per layer, like eager
+        if n == 0:
+            continue
+        padded = -(-n // bucket) * bucket
+        pos = torch.arange(padded, device=hidden_states.device)
+        valid = pos < n
+        pair = perm[start + pos.clamp(max=n - 1)]
+        x = hidden_states[pair // num_top_k]
+        gate, up = F.linear(x, self.gate_up_proj[expert]).chunk(2, dim=-1)
+        y = F.linear(self.act_fn(gate) * up, self.down_proj[expert])
+        y = y * (weights[pair] * valid).unsqueeze(-1).to(y.dtype)
+        out.index_add_(0, torch.where(valid, pair, pairs), y.to(out.dtype))
+        start += n
+    return out[:pairs].view(num_tokens, num_top_k, hidden_dim).sum(dim=1)
 
 
-def use_grouped_experts(model, compute_dtype=torch.bfloat16) -> int:
-    """Bind `grouped_experts_forward` onto every fused Mixtral experts module."""
-    import functools
+def use_bucketed_experts(model, bucket=128) -> int:
+    """Bind `bucketed_experts_forward` onto every fused Mixtral experts module."""
     import types
 
     patched = 0
     for module in model.modules():
         if type(module).__name__ == "MixtralExperts" and hasattr(module, "gate_up_proj"):
-            fn = functools.partial(grouped_experts_forward, compute_dtype=compute_dtype)
-            module.forward = types.MethodType(lambda self, *a, _fn=fn, **k: _fn(self, *a, **k), module)
+            module.forward = types.MethodType(
+                lambda self, h, idx, w, _b=bucket: bucketed_experts_forward(self, h, idx, w, bucket=_b), module
+            )
             patched += 1
     return patched
 
@@ -1370,7 +1379,7 @@ def main():
     ap.add_argument("--gif-synth-rate", type=float, default=0.0, help="chance a short Discord reaction becomes a synthetic gif tag")
     ap.add_argument("--gif-synth-max-frac", type=float, default=0.03, help="hard cap: synthetic gif targets / Discord targets")
     ap.add_argument("--duty-cycle", type=float, default=1.0, help="fraction of wall time spent computing; 0.5 sleeps as long as each optimizer step took")
-    ap.add_argument("--grouped-experts", action="store_true", help="static-shape grouped_mm MoE experts (bounded MPS memory; bf16 compute)")
+    ap.add_argument("--expert-bucket", type=int, default=0, help="pad each MoE expert's token count to this multiple (bounds MPS graph-cache growth); 0 = HF eager loop")
     ap.add_argument("--grad-checkpoint", action="store_true", help="activation checkpointing: much less MPS memory for ~1/3 more compute")
     ap.add_argument("--fixed-rows", action="store_true", help="fill every batch to tokens_per_batch // width rows (bounded set of MPS shapes)")
     ap.add_argument("--pad-multiple", type=int, default=1, help="round batch widths up to this (bounds MPS shape caches)")
@@ -1446,8 +1455,8 @@ def main():
     tok = Tokenizer.from_file(str(tok_path))
     pad = tok.token_to_id("<pad>")
     model, config = load_base(base, device, log)
-    if args.grouped_experts:
-        log(f"model: static-shape grouped_mm experts on {use_grouped_experts(model)} layers")
+    if args.expert_bucket > 0:
+        log(f"model: bucketed MoE experts (x{args.expert_bucket}) on {use_bucketed_experts(model, args.expert_bucket)} layers")
     if args.grad_checkpoint and not args.export:
         # Recompute activations in backward: at seq 2048 they are most of the
         # MPS footprint. `use_cache=False` is passed per call instead of being

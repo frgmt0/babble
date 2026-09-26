@@ -37,6 +37,6 @@
   "pad_multiple": 256,
   "mps_high_watermark": 0.6,
   "mps_low_watermark": 0.4,
-  "grouped_experts": true,
-  "fixed_rows": true
+  "fixed_rows": true,
+  "expert_bucket": 128
 }

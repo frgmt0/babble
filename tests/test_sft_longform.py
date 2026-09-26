@@ -344,10 +344,10 @@ def test_batch_shape_set_is_small_with_fixed_rows():
     assert sorted(i for g in groups for i in g) == list(range(3000))
 
 
-def test_grouped_experts_match_the_eager_mixtral_loop():
+def test_bucketed_experts_match_the_eager_mixtral_loop():
     torch = pytest.importorskip("torch")
     transformers = pytest.importorskip("transformers")
-    from sft.sft_longform import use_grouped_experts
+    from sft.sft_longform import use_bucketed_experts
 
     config = transformers.MixtralConfig(
         vocab_size=64, hidden_size=32, intermediate_size=48, num_hidden_layers=1,
@@ -358,7 +358,7 @@ def test_grouped_experts_match_the_eager_mixtral_loop():
     ids = torch.randint(0, 64, (2, 9))
     with torch.no_grad():
         eager = model(input_ids=ids).logits
-    assert use_grouped_experts(model, compute_dtype=torch.float32) == 1
+    assert use_bucketed_experts(model, bucket=4) == 1
     with torch.no_grad():
         grouped = model(input_ids=ids).logits
     torch.testing.assert_close(grouped, eager, rtol=1e-4, atol=1e-4)
