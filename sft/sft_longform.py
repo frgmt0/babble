@@ -852,22 +852,34 @@ def build_examples(tok, args, log):
     return train, val, counts
 
 
-def batches(examples, tokens_per_batch, pad_id, shuffle_seed=None, skip=0, pad_multiple=1):
+def batch_shape(n_rows: int, max_len: int, tokens_per_batch: int, pad_multiple: int = 1, fixed_rows: bool = False):
+    """(rows, width) of a padded batch; see `batches`."""
+    width = -(-max_len // pad_multiple) * pad_multiple
+    rows = max(n_rows, tokens_per_batch // width) if fixed_rows else n_rows
+    return rows, width
+
+
+def batches(examples, tokens_per_batch, pad_id, shuffle_seed=None, skip=0, pad_multiple=1, fixed_rows=False):
     """Length-bucketed batches under a token budget (padding counted).
 
     ``skip`` drops the first N batches without materialising them (resume).
-    ``pad_multiple`` rounds each batch width up: on MPS every new tensor shape
-    grows the kernel/graph and allocator caches, and seq 2048 with free widths
-    means ~2000 distinct shapes (measured: a 19 GB footprint on a 16 GB Mac).
+    ``pad_multiple`` rounds each batch width up and ``fixed_rows`` fills the
+    batch to ``tokens_per_batch // width`` rows: on MPS every new tensor shape
+    compiles and caches another graph, and the cache never shrinks. With free
+    shapes a seq-2048 run grew to a 15-19 GB footprint on a 16 GB Mac (mostly
+    swapped-out graph objects). Filler rows are a lone BOS (so attention never
+    sees a fully-masked row) with no loss.
     """
     import numpy as np
 
-    groups = _batch_groups(examples, tokens_per_batch, shuffle_seed)
+    groups = _batch_groups(examples, tokens_per_batch, shuffle_seed, pad_multiple)
     for g in groups[skip:]:
-        width = max(len(examples[i][0]) for i in g)
-        width = -(-width // pad_multiple) * pad_multiple
-        ids = torch.full((len(g), width), pad_id, dtype=torch.long)
-        labels = torch.full((len(g), width), -100, dtype=torch.long)
+        rows, width = batch_shape(
+            len(g), max(len(examples[i][0]) for i in g), tokens_per_batch, pad_multiple, fixed_rows
+        )
+        ids = torch.full((rows, width), pad_id, dtype=torch.long)
+        labels = torch.full((rows, width), -100, dtype=torch.long)
+        ids[len(g) :, 0] = int(examples[g[0]][0][0])
         for r, i in enumerate(g):
             toks, n_prompt = examples[i]
             row = torch.from_numpy(np.asarray(toks, dtype=np.int64))
@@ -876,8 +888,16 @@ def batches(examples, tokens_per_batch, pad_id, shuffle_seed=None, skip=0, pad_m
         yield ids, labels
 
 
-def _batch_groups(examples, tokens_per_batch, shuffle_seed=None) -> list[list[int]]:
-    """Example indices per batch; deterministic for a given shuffle seed."""
+def _batch_groups(examples, tokens_per_batch, shuffle_seed=None, pad_multiple=1) -> list[list[int]]:
+    """Example indices per batch; deterministic for a given shuffle seed.
+
+    Lengths are rounded up to ``pad_multiple`` so the padded batch still fits
+    ``tokens_per_batch`` (which makes fixed-row shapes exact).
+    """
+
+    def size(i):
+        return -(-len(examples[i][0]) // pad_multiple) * pad_multiple
+
     order = list(range(len(examples)))
     if shuffle_seed is not None:
         rng = random.Random(shuffle_seed)
@@ -889,7 +909,7 @@ def _batch_groups(examples, tokens_per_batch, shuffle_seed=None) -> list[list[in
         groups = []
         cur, cur_max = [], 0
         for i in order:
-            n = len(examples[i][0])
+            n = size(i)
             if cur and max(cur_max, n) * (len(cur) + 1) > tokens_per_batch:
                 groups.append(cur)
                 cur, cur_max = [], 0
@@ -902,7 +922,7 @@ def _batch_groups(examples, tokens_per_batch, shuffle_seed=None) -> list[list[in
         order.sort(key=lambda j: len(examples[j][0]))
         groups, cur, cur_max = [], [], 0
         for i in order:
-            n = len(examples[i][0])
+            n = size(i)
             if cur and max(cur_max, n) * (len(cur) + 1) > tokens_per_batch:
                 groups.append(cur)
                 cur, cur_max = [], 0
@@ -1203,10 +1223,10 @@ def sample(model, tok, device, max_new=120, draws=2, prompt_budget=512):
 
 
 @torch.no_grad()
-def evaluate(model, val, device, pad, dtype, pad_multiple=1):
+def evaluate(model, val, device, pad, dtype, pad_multiple=1, fixed_rows=False):
     model.eval()
     tot, n = 0.0, 0
-    for ids, labels in batches(val, 2048, pad, pad_multiple=pad_multiple):
+    for ids, labels in batches(val, 2048, pad, pad_multiple=pad_multiple, fixed_rows=fixed_rows):
         ids, labels = ids.to(device), labels.to(device)
         with torch.autocast(device_type=device.type, dtype=dtype, enabled=dtype != torch.float32):
             logits = model(input_ids=ids, attention_mask=(ids != pad), use_cache=False).logits
@@ -1219,10 +1239,10 @@ def evaluate(model, val, device, pad, dtype, pad_multiple=1):
     return tot / max(n, 1)
 
 
-def evaluate_sources(model, val_by_source, device, pad, dtype, pad_multiple=1):
+def evaluate_sources(model, val_by_source, device, pad, dtype, pad_multiple=1, fixed_rows=False):
     """Return aggregate and per-source loss over independent holdouts."""
     per_source = {
-        name: evaluate(model, examples, device, pad, dtype, pad_multiple)
+        name: evaluate(model, examples, device, pad, dtype, pad_multiple, fixed_rows)
         for name, examples in val_by_source.items()
         if examples
     }
@@ -1234,7 +1254,7 @@ def evaluate_sources(model, val_by_source, device, pad, dtype, pad_multiple=1):
         if not name.endswith(("_single", "_legacy", "_multiturn"))
         for example in examples
     ]
-    return evaluate(model, combined, device, pad, dtype, pad_multiple), per_source
+    return evaluate(model, combined, device, pad, dtype, pad_multiple, fixed_rows), per_source
 
 
 class Reporter:
@@ -1352,6 +1372,7 @@ def main():
     ap.add_argument("--duty-cycle", type=float, default=1.0, help="fraction of wall time spent computing; 0.5 sleeps as long as each optimizer step took")
     ap.add_argument("--grouped-experts", action="store_true", help="static-shape grouped_mm MoE experts (bounded MPS memory; bf16 compute)")
     ap.add_argument("--grad-checkpoint", action="store_true", help="activation checkpointing: much less MPS memory for ~1/3 more compute")
+    ap.add_argument("--fixed-rows", action="store_true", help="fill every batch to tokens_per_batch // width rows (bounded set of MPS shapes)")
     ap.add_argument("--pad-multiple", type=int, default=1, help="round batch widths up to this (bounds MPS shape caches)")
     ap.add_argument("--mps-high-watermark", type=float, default=0.7, help="PYTORCH_MPS_HIGH_WATERMARK_RATIO (hard cap, fraction of RAM)")
     ap.add_argument("--mps-low-watermark", type=float, default=0.5, help="PYTORCH_MPS_LOW_WATERMARK_RATIO (allocator frees cached blocks above this)")
@@ -1507,7 +1528,7 @@ def main():
     resuming_quality = args.resume and quality_path.exists()
     # A resume already has its baseline in quality.json; re-running the full
     # long-context eval (many minutes on a throttled laptop) buys nothing.
-    v, source_val = (None, None) if resuming_quality else evaluate_sources(model, val_by_source, device, pad, dtype, args.pad_multiple)
+    v, source_val = (None, None) if resuming_quality else evaluate_sources(model, val_by_source, device, pad, dtype, args.pad_multiple, args.fixed_rows)
     if resuming_quality:
         quality = json.loads(quality_path.read_text(encoding="utf-8"))
         if quality.get("data_signature") != data_signature:
@@ -1575,14 +1596,14 @@ def main():
     to_skip = step * args.accum
     while step < steps_total:
         if to_skip:
-            per_epoch = len(_batch_groups(train, args.tokens_per_batch, args.seed + epoch))
+            per_epoch = len(_batch_groups(train, args.tokens_per_batch, args.seed + epoch, args.pad_multiple))
             if to_skip >= per_epoch:
                 to_skip -= per_epoch
                 epoch += 1
                 continue
             log(f"resume: skipping {to_skip} of {per_epoch} batches in epoch {epoch}")
         skip, to_skip = to_skip, 0
-        for ids, labels in batches(train, args.tokens_per_batch, pad, shuffle_seed=args.seed + epoch, skip=skip, pad_multiple=args.pad_multiple):
+        for ids, labels in batches(train, args.tokens_per_batch, pad, shuffle_seed=args.seed + epoch, skip=skip, pad_multiple=args.pad_multiple, fixed_rows=args.fixed_rows):
             ids, labels = ids.to(device), labels.to(device)
             with torch.autocast(device_type=device.type, dtype=dtype, enabled=dtype != torch.float32):
                 logits = model(input_ids=ids, attention_mask=(ids != pad), use_cache=False).logits
@@ -1592,8 +1613,9 @@ def main():
             loss_acc += float(loss.detach())
             del logits, loss
             loss_n += 1
-            tokens_seen += int(ids.numel())
-            tok_log += int(ids.numel())
+            n_real = int((ids != pad).sum())  # filler rows / padding are not training tokens
+            tokens_seen += n_real
+            tok_log += n_real
             micro += 1
             if micro % args.accum:
                 continue
@@ -1635,7 +1657,7 @@ def main():
                 idle_log = 0.0
             if step % args.eval_every == 0:
                 free_cache(device)
-                v, source_val = evaluate_sources(model, val_by_source, device, pad, dtype, args.pad_multiple)
+                v, source_val = evaluate_sources(model, val_by_source, device, pad, dtype, args.pad_multiple, args.fixed_rows)
                 source_ok, regressions = consider_candidate(v, source_val)
                 s = sample(model, tok, device, **sample_kwargs)
                 log(f"step {step} val {v:.4f} | sample: {s[0]['reply'][:160]!r} ({s[0]['tokens']} tok)")
@@ -1647,7 +1669,7 @@ def main():
                 break
         epoch += 1
     save_ckpt(model, config, tok_path, ckpt_dir, step, tokens_seen, opt)
-    v, source_val = evaluate_sources(model, val_by_source, device, pad, dtype, args.pad_multiple)
+    v, source_val = evaluate_sources(model, val_by_source, device, pad, dtype, args.pad_multiple, args.fixed_rows)
     source_ok, regressions = consider_candidate(v, source_val)
     s = sample(model, tok, device, **sample_kwargs)
     gated = best_step <= 0

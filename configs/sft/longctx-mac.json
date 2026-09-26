@@ -34,8 +34,9 @@
   "max_source_val_regression": 0.05,
   "duty_cycle": 0.5,
   "pause_on_battery": true,
-  "pad_multiple": 64,
+  "pad_multiple": 256,
   "mps_high_watermark": 0.45,
   "mps_low_watermark": 0.3,
-  "grouped_experts": true
+  "grouped_experts": true,
+  "fixed_rows": true
 }
