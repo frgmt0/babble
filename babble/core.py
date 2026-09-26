@@ -633,7 +633,13 @@ class Babble:
         if blocked:
             self._log_blocked("generate", prompt, body, msg.author_id)
             body = BLOCKED_OUTPUT
-        elif self.gifs is not None and self.gifs.enabled:
+        else:
+            # A `[gif: query]` tag is part of the trained reply format, not
+            # a feature switch on the model's side -- so the tag is always
+            # stripped, whether or not resolving it to a URL is turned on.
+            # `_resolve_gif_tag` only ever *attempts* the lookup when
+            # `self.gifs` is enabled; every other path (off, unset, failed,
+            # timed out) falls back to the plain remaining text.
             body = self._resolve_gif_tag(body, msg)
 
         preview = self.log.preview(prompt, allowed=allowed)
@@ -713,10 +719,15 @@ class Babble:
         remaining, query = extract_gif_tag(body)
         if query is None:
             return body
+        if self.gifs is None or not self.gifs.enabled:
+            # Feature off (or never configured): the tag is still not
+            # something a person should see verbatim, so it's stripped same
+            # as a failed/timed-out lookup -- just never attempted.
+            return remaining or EMPTY_REPLY
         if self.blocklist.matches(query):
             self._log_blocked("gif_query", query, "", msg.author_id)
             return remaining or EMPTY_REPLY
-        gif_url = self.gifs.resolve(query) if self.gifs is not None else None
+        gif_url = self.gifs.resolve(query)
         if gif_url is None:
             return remaining or EMPTY_REPLY
         return compose_with_gif(remaining, gif_url, DISCORD_LIMIT)
