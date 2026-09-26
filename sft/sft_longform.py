@@ -1166,7 +1166,7 @@ def evaluate(model, val, device, pad, dtype, pad_multiple=1):
     for ids, labels in batches(val, 2048, pad, pad_multiple=pad_multiple):
         ids, labels = ids.to(device), labels.to(device)
         with torch.autocast(device_type=device.type, dtype=dtype, enabled=dtype != torch.float32):
-            logits = model(input_ids=ids, attention_mask=(ids != pad)).logits
+            logits = model(input_ids=ids, attention_mask=(ids != pad), use_cache=False).logits
         loss = F.cross_entropy(logits[:, :-1].reshape(-1, logits.size(-1)), labels[:, 1:].reshape(-1), ignore_index=-100, reduction="sum")
         tot += float(loss)
         n += int((labels[:, 1:] != -100).sum())
@@ -1307,6 +1307,7 @@ def main():
     ap.add_argument("--gif-synth-rate", type=float, default=0.0, help="chance a short Discord reaction becomes a synthetic gif tag")
     ap.add_argument("--gif-synth-max-frac", type=float, default=0.03, help="hard cap: synthetic gif targets / Discord targets")
     ap.add_argument("--duty-cycle", type=float, default=1.0, help="fraction of wall time spent computing; 0.5 sleeps as long as each optimizer step took")
+    ap.add_argument("--grad-checkpoint", action="store_true", help="activation checkpointing: much less MPS memory for ~1/3 more compute")
     ap.add_argument("--pad-multiple", type=int, default=1, help="round batch widths up to this (bounds MPS shape caches)")
     ap.add_argument("--mps-high-watermark", type=float, default=0.7, help="PYTORCH_MPS_HIGH_WATERMARK_RATIO (hard cap, fraction of RAM)")
     ap.add_argument("--mps-low-watermark", type=float, default=0.5, help="PYTORCH_MPS_LOW_WATERMARK_RATIO (allocator frees cached blocks above this)")
@@ -1380,6 +1381,13 @@ def main():
     tok = Tokenizer.from_file(str(tok_path))
     pad = tok.token_to_id("<pad>")
     model, config = load_base(base, device, log)
+    if args.grad_checkpoint and not args.export:
+        # Recompute activations in backward: at seq 2048 they are most of the
+        # MPS footprint. `use_cache=False` is passed per call instead of being
+        # written into config, which is saved with the export and serves with
+        # the KV cache on.
+        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+        log("model: gradient checkpointing on")
     ckpt_dir = run_dir / "ckpt"
 
     if args.export:
@@ -1531,7 +1539,7 @@ def main():
         for ids, labels in batches(train, args.tokens_per_batch, pad, shuffle_seed=args.seed + epoch, skip=skip, pad_multiple=args.pad_multiple):
             ids, labels = ids.to(device), labels.to(device)
             with torch.autocast(device_type=device.type, dtype=dtype, enabled=dtype != torch.float32):
-                logits = model(input_ids=ids, attention_mask=(ids != pad)).logits
+                logits = model(input_ids=ids, attention_mask=(ids != pad), use_cache=False).logits
             n_tgt = int((labels[:, 1:] != -100).sum())
             loss = F.cross_entropy(logits[:, :-1].reshape(-1, logits.size(-1)), labels[:, 1:].reshape(-1), ignore_index=-100)
             (loss / args.accum).backward()
