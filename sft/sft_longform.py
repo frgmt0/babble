@@ -29,8 +29,10 @@ import json
 import math
 import os
 import random
+import re
 import shutil
 import sys
+import subprocess
 import time
 import urllib.request
 from collections import defaultdict
@@ -89,6 +91,234 @@ def _group_id(*parts: str) -> str:
     """Content identity independent of source, preventing cross-source leaks."""
     body = "\x1f".join(parts).encode("utf-8")
     return hashlib.sha256(body).hexdigest()
+
+
+# ------------------------------------------------------------- gif tags ---
+#
+# Contract shared with the bot side: the model says it wants to send a gif by
+# emitting `[gif: <2-5 lowercase search words>]`, either as the whole reply or
+# at the very end of one. The bot turns the words into a gif search. Never
+# change the shape here without changing the bot.
+
+GIF_TAG_RE = re.compile(r"\[gif: [a-z0-9]+(?: [a-z0-9]+){1,4}\]")
+_URL_RE = re.compile(r"<?https?://[^\s<>]+>?", re.I)
+_GIF_URL_RE = re.compile(r"(tenor\.com|giphy\.com|\.gif(\?|#|>|$))", re.I)
+# A whole message (or its last line) that is just a Discord attachment
+# filename such as `SipsBubble.gif` or `danny devito clapping.gif`.
+_GIF_FILENAME_RE = re.compile(r"(?:^|\n)\s*([^\n/\\:*?\"<>|]{1,80}?)\.gif\s*$", re.I)
+_GIF_DROP_WORDS = {"gif", "gifs", "view", "tenor", "giphy", "media", "animated", "download", "search"}
+
+
+def _looks_like_id(token: str) -> bool:
+    """Tenor/Giphy ids: all digits, or long mixed-case/digit noise."""
+    if token.isdigit():
+        return True
+    has_digit = any(c.isdigit() for c in token)
+    mixed = any(c.isupper() for c in token[1:]) and any(c.islower() for c in token)
+    return len(token) >= 8 and (has_digit or (mixed and not token[0].isupper()))
+
+
+def gif_slug_words(slug: str) -> list[str]:
+    """Split a url slug / filename stem into lowercase search words."""
+    from urllib.parse import unquote
+
+    slug = unquote(slug)
+    raw = [t for t in re.split(r"[-_+\s.]+", slug) if t]
+    words: list[str] = []
+    for token in raw:
+        if _looks_like_id(token):
+            continue
+        # camelCase / PascalCase -> separate words ("SipsBubble" -> sips bubble)
+        for part in re.findall(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+", token):
+            part = part.lower()
+            if part in _GIF_DROP_WORDS or part.isdigit():
+                continue
+            words.append(part)
+    return words
+
+
+def gif_tag_from_words(words: list[str]) -> str | None:
+    """Render the contract tag, or None when 2-5 usable words are unavailable."""
+    words = [re.sub(r"[^a-z0-9]", "", w.lower()) for w in words]
+    words = [w for w in words if w]
+    if not 2 <= len(words) <= 5:
+        return None
+    return f"[gif: {' '.join(words)}]"
+
+
+def gif_url_to_tag(url: str) -> str | None:
+    """`https://tenor.com/view/cat-laughing-funny-gif-12345` -> `[gif: cat laughing funny]`.
+
+    Returns None for gif URLs without a usable slug (short links, raw media
+    ids); the caller drops those URLs rather than keeping them.
+    """
+    from urllib.parse import urlparse
+
+    url = url.strip("<>")
+    parsed = urlparse(url)
+    host = parsed.netloc.lower()
+    parts = [p for p in parsed.path.split("/") if p]
+    slug = None
+    if "tenor.com" in host:
+        if "view" in parts and parts.index("view") + 1 < len(parts):
+            slug = parts[parts.index("view") + 1]
+        elif host.startswith("media") and parts and parts[-1].lower().endswith(".gif"):
+            slug = parts[-1][:-4]
+    elif "giphy.com" in host:
+        if parts and parts[0] in ("gifs", "stickers") and len(parts) > 1:
+            slug = parts[-1]
+        # media.giphy.com/media/<id>/giphy.gif carries no words
+    elif parts and parts[-1].lower().endswith(".gif"):
+        slug = parts[-1][:-4]
+    if not slug:
+        return None
+    return gif_tag_from_words(gif_slug_words(slug))
+
+
+def rewrite_gifs(text: str) -> tuple[str, int, int]:
+    """Replace gif sends with one trailing `[gif: ...]` tag.
+
+    Returns (text, tags_made, gif_urls_dropped). Gif URLs anywhere in the
+    message are removed; the first one with a usable slug becomes the tag,
+    appended at the end. A message that is, or ends with, a Discord gif
+    attachment filename (`SipsBubble.gif`) is handled the same way. Non-gif
+    URLs are left for the caller to judge.
+    """
+    tag = None
+    dropped = 0
+
+    def sub(match: re.Match) -> str:
+        nonlocal tag, dropped
+        url = match.group(0)
+        if not _GIF_URL_RE.search(url.strip("<>")):
+            return url
+        found = gif_url_to_tag(url)
+        if found and tag is None:
+            tag = found
+        elif not found:
+            dropped += 1
+        return ""
+
+    out = _URL_RE.sub(sub, text)
+    if tag is None and not _URL_RE.search(out):
+        m = _GIF_FILENAME_RE.search(out)
+        if m:
+            line = m.group(1).strip()
+            head, _, last = line.rpartition(" ")
+            # `name it jerma_cute.gif`: a separator-bearing final token is the
+            # filename on its own; otherwise the whole short line is.
+            found = gif_tag_from_words(gif_slug_words(last))
+            keep = head
+            if not found:
+                found = gif_tag_from_words(gif_slug_words(line))
+                keep = ""
+            if found:
+                tag = found
+                out = out[: m.start()] + ("\n" if out[m.start() : m.start() + 1] == "\n" else "") + keep
+    out = re.sub(r"[ \t]{2,}", " ", out).strip()
+    if tag:
+        out = f"{out} {tag}".strip()
+    return out, int(tag is not None), dropped
+
+
+# Short Discord reactions that a person could just as well have answered with
+# a gif. Only these are eligible for the small synthetic slice.
+_REACTION_GIFS: list[tuple[re.Pattern, tuple[str, ...]]] = [
+    (re.compile(r"(l+m+f*a+o+|lo+l+|ha(ha)+h*|(i'?m )?dead|i'?m crying|[😂🤣💀☠️]+)"),
+     ("dying laughing", "laughing so hard", "cat laughing", "crying laughing", "spongebob laughing",
+      "man laughing hysterically", "monkey laughing", "laughing on floor")),
+    (re.compile(r"(bru+h+|bro+|bruh moment|bro what)"),
+     ("bruh moment", "disappointed stare", "blank stare", "bro really", "confused blink", "unimpressed face")),
+    (re.compile(r"(no+ wa+y+|na+h+|wa+i+t+ what|wtf+|what+|huh+|\?{2,}|wh+a+t+ the)"),
+     ("no way", "shocked face", "surprised pikachu", "wait what", "confused math lady", "jaw drop")),
+    (re.compile(r"(true+|facts|real+|so true|fr+|fr fr|based|w+|yes+|ye+a+h*)"),
+     ("so true", "nodding yes", "thumbs up", "facts nod", "you right", "agree nod")),
+    (re.compile(r"(nice+|cool+|pog+|poggers|let'?s go+|lets go+|yay+|hype)"),
+     ("lets go", "celebration dance", "hype dance", "nice thumbs up", "happy dance", "party time")),
+    (re.compile(r"(sad+|rip|f|oof+|[😭😢]+|pain)"),
+     ("sad cat", "crying sad", "press f", "sad violin", "rip funeral")),
+    (re.compile(r"(e+w+|cringe|gross|yikes)"),
+     ("cringe face", "disgusted face", "ew gross", "yikes face")),
+    (re.compile(r"(a+w+|cute|adorable|🥺+)"),
+     ("cute cat", "aww puppy", "heart eyes", "cute hamster")),
+    (re.compile(r"(hi+|hello+|hey+|yo+|sup)"),
+     ("cat waving hello", "wave hi", "hello there", "hey wave")),
+    (re.compile(r"(bye+|gn|good ?night|cya)"),
+     ("good night sleep", "bye wave", "sleepy cat", "see you later")),
+]
+
+
+def reaction_gif_words(text: str) -> tuple[str, ...] | None:
+    """Candidate search phrases when `text` is a bare short reaction."""
+    norm = re.sub(r"[.!,~*_]+", "", text.strip().lower()).strip()
+    if not norm or len(norm) > 16 or "\n" in norm:
+        return None
+    for pattern, phrases in _REACTION_GIFS:
+        if pattern.fullmatch(norm):
+            return phrases
+    return None
+
+
+class GifStats:
+    """Counts + a deterministic budgeted synthesizer for the gif slice.
+
+    ``synth_frac`` caps synthetic tags as a fraction of the assistant targets
+    seen so far (checked as they stream), so the slice can never exceed it.
+    ``synth_rate`` is the chance an eligible short reaction is converted.
+    """
+
+    def __init__(self, synth_rate: float = 0.0, synth_frac: float = 0.0, seed: int = 0):
+        self.synth_rate = synth_rate
+        self.synth_frac = synth_frac
+        self.seed = seed
+        self.targets = 0
+        self.real = 0
+        self.synthetic = 0
+        self.urls_dropped = 0
+        self.url_targets_skipped = 0
+        self.examples: list[str] = []
+        self.synthetic_examples: list[str] = []
+
+    def rewrite(self, text: str) -> str:
+        out, made, dropped = rewrite_gifs(text)
+        self.urls_dropped += dropped
+        return out
+
+    def count_target(self, response: str, *, synthetic: bool = False) -> None:
+        self.targets += 1
+        if GIF_TAG_RE.search(response):
+            bucket = self.synthetic_examples if synthetic else self.examples
+            if synthetic:
+                self.synthetic += 1
+            else:
+                self.real += 1
+            if len(bucket) < 40:
+                bucket.append(response)
+
+    def maybe_synthesize(self, key: str, text: str) -> str | None:
+        """Turn a short reaction into a tag reply, deterministically by content."""
+        if self.synth_rate <= 0 or GIF_TAG_RE.search(text):
+            return None
+        phrases = reaction_gif_words(text)
+        if not phrases:
+            return None
+        if self.synthetic + 1 > self.synth_frac * (self.targets + 1):
+            return None
+        h = hashlib.sha256(f"{self.seed}\x1fgif\x1f{key}\x1f{text}".encode()).digest()
+        if int.from_bytes(h[:4], "big") / 2**32 >= self.synth_rate:
+            return None
+        tag = f"[gif: {phrases[h[4] % len(phrases)]}]"
+        # Mostly a bare gif; sometimes the words plus a gif, as people do.
+        return tag if h[5] % 5 < 3 else f"{text.strip()} {tag}"
+
+    def as_dict(self) -> dict:
+        return {
+            "targets": self.targets,
+            "gif_real": self.real,
+            "gif_synthetic": self.synthetic,
+            "gif_urls_dropped": self.urls_dropped,
+            "url_targets_skipped": self.url_targets_skipped,
+        }
 
 
 # ----------------------------------------------------------------- data ---
@@ -202,41 +432,128 @@ def _chatml_turns(text: str) -> list[tuple[str, str]]:
     return turns
 
 
-def _discord_group(raw: str, history_turns: int) -> list[SFTRecord]:
-    """Turn one ChatML conversation into chronological assistant targets."""
-    turns = _chatml_turns(raw)
+def _turn_records(
+    source: str,
+    group_id: str,
+    turns: list[tuple[str, str]],
+    gif: GifStats | None = None,
+    synthesize: bool = False,
+) -> list[SFTRecord]:
+    """Alternating user/assistant turns -> one target per assistant turn.
+
+    With ``gif``: gif URLs/filenames in every turn become `[gif: ...]` tags,
+    a budgeted slice of short assistant reactions may become synthetic tags
+    (``synthesize``), and assistant turns still carrying a raw URL are not
+    used as targets (they stay in later turns' history).
+    """
     history: list[ConversationTurn] = []
     records: list[SFTRecord] = []
-    # Discord-Dialogues is documented as alternating two-author chains.
-    # Stay strict here: a malformed turn must not silently assign one
-    # person's words to the other role.
     for i in range(0, len(turns) - 1, 2):
         user_role, user_text = turns[i]
         assistant_role, assistant_text = turns[i + 1]
+        # Stay strict: a malformed turn must not silently assign one person's
+        # words to the other role.
         if user_role != "user" or assistant_role != "assistant":
             return []
-        records.append(
-            SFTRecord(
-                source="discord",
-                group_id=_group_id(raw),
-                current_user=user_text,
-                response=assistant_text,
-                history=tuple(history),
+        synthetic = False
+        if gif is not None:
+            user_text = gif.rewrite(user_text)
+            assistant_text = gif.rewrite(assistant_text)
+            if synthesize:
+                made = gif.maybe_synthesize(f"{group_id}\x1f{i}", assistant_text)
+                if made:
+                    assistant_text, synthetic = made, True
+        if gif is not None and _URL_RE.search(assistant_text):
+            gif.url_targets_skipped += 1
+        elif user_text and assistant_text:
+            if gif is not None:
+                gif.count_target(assistant_text, synthetic=synthetic)
+            records.append(
+                SFTRecord(
+                    source=source,
+                    group_id=group_id,
+                    current_user=user_text,
+                    response=assistant_text,
+                    history=tuple(history),
+                )
             )
-        )
         history.append(ConversationTurn(user=user_text, assistant=assistant_text))
     return records
 
 
-def _discord_groups(split: str, history_turns: int, revision: str | None = None):
+def _discord_group(raw: str, history_turns: int, gif: GifStats | None = None) -> list[SFTRecord]:
+    """Turn one ChatML conversation into chronological assistant targets."""
+    # Discord-Dialogues is documented as alternating two-author chains.
+    return _turn_records("discord", _group_id(raw), _chatml_turns(raw), gif, synthesize=True)
+
+
+def _discord_groups(split: str, history_turns: int, revision: str | None = None, gif: GifStats | None = None):
     """Yield all chronological assistant targets, grouped by conversation."""
     from datasets import load_dataset
 
     ds = load_dataset("mookiezi/Discord-Dialogues", split=split, streaming=True, revision=revision)
     for row in ds:
-        records = _discord_group(row["text"], history_turns)
+        records = _discord_group(row["text"], history_turns, gif)
         if records:
             yield records
+
+
+def _messages_group(source: str, messages, gif: GifStats | None = None) -> list[SFTRecord]:
+    """HF chat `messages` ([{role, content}]) -> per-assistant-turn targets.
+
+    System turns are dropped; a leading assistant turn (no user before it) is
+    skipped. Everything after must alternate or the conversation is dropped.
+    """
+    turns = [
+        (m["role"], (m.get("content") or "").strip())
+        for m in messages
+        if m.get("role") in ("user", "assistant")
+    ]
+    while turns and turns[0][0] != "user":
+        turns.pop(0)
+    if len(turns) < 2:
+        return []
+    group_id = _group_id(*(f"{role}:{text}" for role, text in turns))
+    return _turn_records(source, group_id, turns, gif)
+
+
+def _ultrachat_groups(split: str = "train_sft", revision: str | None = None, gif: GifStats | None = None):
+    """HuggingFaceH4/ultrachat_200k (MIT): multi-turn assistant Q&A, ~3.2 answers each."""
+    from datasets import load_dataset
+
+    ds = load_dataset("HuggingFaceH4/ultrachat_200k", split=split, streaming=True, revision=revision)
+    for row in ds:
+        records = _messages_group("ultrachat", row["messages"], gif)
+        if records:
+            yield records
+
+
+def _smoltalk_multiturn_groups(
+    split: str,
+    configs=("everyday-conversations", "smol-magpie-ultra"),
+    revision: str | None = None,
+    gif: GifStats | None = None,
+):
+    """Every assistant turn of SmolTalk's multi-turn subsets, interleaved.
+
+    everyday-conversations (~2.3k short chats) runs out quickly; interleaving
+    keeps it from being all-or-nothing at the head of the stream.
+    """
+    from datasets import load_dataset
+
+    streams = [
+        iter(load_dataset("HuggingFaceTB/smoltalk", cfg, split=split, streaming=True, revision=revision))
+        for cfg in configs
+    ]
+    while streams:
+        for stream in list(streams):
+            row = next(stream, None)
+            if row is None:
+                streams.remove(stream)
+                continue
+            records = _messages_group("smoltalk", row["messages"], gif)
+            if records:
+                yield records
 
 
 def _single_record_groups(source: str, records):
@@ -304,26 +621,44 @@ def _dedupe_groups(
     return kept, dropped
 
 
+MIN_FITTED_PROMPT = 32  # below this a long response is skipped, not given a stub prompt
+
+
 def _tokenize_records(tok, records: list[SFTRecord], args):
+    """Records -> (uint16 token array, n_prompt) examples.
+
+    The role transcript is fitted to ``min(prompt_budget, room left after the
+    response)``, so a long answer drops its oldest history turns instead of
+    being thrown away. Arrays are uint16 (vocab 16384): a multi-day run holds
+    hundreds of thousands of long examples, which as Python int lists would
+    cost several GB of the laptop's 16.
+    """
+    import numpy as np
+
     bos, sep, eos = (tok.token_to_id(t) for t in ("<bos>", "<sep>", "<eos>"))
-    examples: list[tuple[list[int], int]] = []
+    examples: list[tuple[np.ndarray, int]] = []
     for record in records:
+        r = tok.encode(record.response, add_special_tokens=False).ids
+        if len(r) < args.min_response:
+            continue
         if record.legacy_prompt:
             prompt = record.current_user
         else:
+            budget = min(args.prompt_budget, args.seq_len - 3 - len(r))
+            if budget < min(MIN_FITTED_PROMPT, args.prompt_budget):
+                continue
             prompt = conversation_prompt_for_token_budget(
                 record.history,
                 record.current_user,
                 max_turns=args.history_turns,
                 max_chars=0,
-                max_tokens=args.prompt_budget,
+                max_tokens=budget,
                 token_count=lambda text: len(tok.encode(text, add_special_tokens=False).ids),
             )
         p = tok.encode(prompt, add_special_tokens=False).ids
-        r = tok.encode(record.response, add_special_tokens=False).ids
-        if len(r) < args.min_response or len(p) + len(r) + 3 > args.seq_len:
+        if len(p) + len(r) + 3 > args.seq_len:
             continue
-        examples.append(([bos, *p, sep, *r, eos], len(p) + 2))
+        examples.append((np.asarray([bos, *p, sep, *r, eos], dtype=np.uint16), len(p) + 2))
     return examples
 
 
@@ -375,9 +710,24 @@ def build_examples(tok, args, log):
         ("tinystories", args.mix_story, 1, lambda: _single_record_groups("tinystories", _tinystories_records("train", args.seed, args.tinystories_revision))),
         ("writingprompts", args.mix_wp, 1, lambda: _single_record_groups("writingprompts", _writingprompts_records("train", revision=args.writingprompts_revision))),
         ("no_robots", args.mix_norobots, max(1, args.repeat_norobots), lambda: _single_record_groups("no_robots", _no_robots_records("train", args.no_robots_revision))),
-        ("smoltalk", args.mix_smoltalk, 1, lambda: _single_record_groups("smoltalk", _smoltalk_records("train", revision=args.smoltalk_revision))),
-        ("discord", args.mix_discord, 1, lambda: _discord_groups("train", args.history_turns, args.discord_revision)),
+        (
+            "smoltalk",
+            args.mix_smoltalk,
+            1,
+            (lambda: _smoltalk_multiturn_groups("train", revision=args.smoltalk_revision, gif=gif_stats["smoltalk"]))
+            if args.smoltalk_multiturn
+            else (lambda: _single_record_groups("smoltalk", _smoltalk_records("train", revision=args.smoltalk_revision))),
+        ),
+        ("discord", args.mix_discord, 1, lambda: _discord_groups("train", args.history_turns, args.discord_revision, gif=gif_stats["discord"])),
+        # Appended last so earlier sources keep their split seeds (seed + index).
+        ("ultrachat", args.mix_ultrachat, 1, lambda: _ultrachat_groups("train_sft", args.ultrachat_revision, gif=gif_stats["ultrachat"])),
     ]
+    gif_on = bool(getattr(args, "gif_tags", False))
+    gif_stats: dict[str, GifStats | None] = {
+        "smoltalk": GifStats(seed=args.seed) if gif_on else None,
+        "discord": GifStats(args.gif_synth_rate, args.gif_synth_max_frac, args.seed) if gif_on else None,
+        "ultrachat": GifStats(seed=args.seed) if gif_on else None,
+    }
     total = sum(w for _, w, _, _ in sources)
     train_records: list[SFTRecord] = []
     val_records: dict[str, list[SFTRecord]] = {}
@@ -446,6 +796,15 @@ def build_examples(tok, args, log):
             "groups": len({r.group_id for r in unique}),
             "duplicate_groups_dropped": duplicate_groups,
         }
+        if gif_stats.get(name) is not None:
+            stats = gif_stats[name]
+            counts[name].update(stats.as_dict())
+            counts[name]["gif_tagged_train"] = sum(bool(GIF_TAG_RE.search(r.response)) for r in repeated_train)
+            counts[name]["history_train"] = sum(bool(r.history) for r in repeated_train)
+            log(f"gif: {name} {stats.as_dict()} tagged train targets {counts[name]['gif_tagged_train']}")
+            for kind, examples in (("real", stats.examples), ("synthetic", stats.synthetic_examples)):
+                for example in examples[:6]:
+                    log(f"gif example ({name}, {kind}): {example[-160:]!r}")
         log(
             f"data: {name} -> {len(repeated_train)} train / "
             f"{len(source_val)} val examples in {counts[name]['groups']} groups"
@@ -492,8 +851,13 @@ def build_examples(tok, args, log):
     return train, val, counts
 
 
-def batches(examples, tokens_per_batch, pad_id, shuffle_seed=None):
-    """Length-bucketed batches under a token budget (padding counted)."""
+def batches(examples, tokens_per_batch, pad_id, shuffle_seed=None, skip=0):
+    """Length-bucketed batches under a token budget (padding counted).
+
+    ``skip`` drops the first N batches without materialising them (resume).
+    """
+    import numpy as np
+
     order = list(range(len(examples)))
     if shuffle_seed is not None:
         rng = random.Random(shuffle_seed)
@@ -526,14 +890,15 @@ def batches(examples, tokens_per_batch, pad_id, shuffle_seed=None):
             cur_max = max(cur_max, n)
         if cur:
             groups.append(cur)
-    for g in groups:
+    for g in groups[skip:]:
         width = max(len(examples[i][0]) for i in g)
         ids = torch.full((len(g), width), pad_id, dtype=torch.long)
         labels = torch.full((len(g), width), -100, dtype=torch.long)
         for r, i in enumerate(g):
             toks, n_prompt = examples[i]
-            ids[r, : len(toks)] = torch.tensor(toks)
-            labels[r, n_prompt : len(toks)] = torch.tensor(toks[n_prompt:])
+            row = torch.from_numpy(np.asarray(toks, dtype=np.int64))
+            ids[r, : len(toks)] = row
+            labels[r, n_prompt : len(toks)] = row[n_prompt:]
         yield ids, labels
 
 
@@ -722,6 +1087,31 @@ def free_cache(device):
         torch.cuda.empty_cache()
 
 
+def duty_sleep_seconds(compute_s: float, duty: float) -> float:
+    """Sleep that makes compute / (compute + sleep) == duty.
+
+    duty 1.0 never sleeps; 0.5 sleeps exactly as long as it computed; 0.25
+    sleeps three times as long.
+    """
+    if not 0.0 < duty <= 1.0:
+        raise ValueError(f"duty cycle must be in (0, 1], got {duty}")
+    return max(0.0, compute_s) * (1.0 - duty) / duty
+
+
+def on_battery(pmset_output: str) -> bool:
+    """Parse `pmset -g batt`: first line is "Now drawing from 'AC Power'" or 'Battery Power'."""
+    return "'Battery Power'" in pmset_output
+
+
+def pmset_on_battery() -> bool:
+    """False when not on macOS or pmset fails: never pause on a guess."""
+    try:
+        out = subprocess.run(["pmset", "-g", "batt"], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return on_battery(out)
+
+
 def rss_gb() -> float:
     import resource
 
@@ -820,6 +1210,66 @@ class Reporter:
                 print(f"reporter: {e}", flush=True)
 
 
+DATA_CACHE_VERSION = 1
+
+
+def _data_extras(args) -> dict:
+    """Build-relevant settings added after multiturn-v1 (only when in use)."""
+    extras = {}
+    if getattr(args, "mix_ultrachat", 0) > 0:
+        extras["mix_ultrachat"] = args.mix_ultrachat
+        extras["ultrachat_revision"] = args.ultrachat_revision
+    if getattr(args, "smoltalk_multiturn", False):
+        extras["smoltalk_multiturn"] = True
+    if getattr(args, "gif_tags", False):
+        extras["gif_tags"] = True
+        extras["gif_synth_rate"] = args.gif_synth_rate
+        extras["gif_synth_max_frac"] = args.gif_synth_max_frac
+    return extras
+
+
+def _cached_build(tok, tok_path: Path, args, run_dir: Path, log):
+    """build_examples, memoised in runs/<name>/data-cache.pkl.
+
+    Streaming and tokenizing a few hundred thousand long conversations takes a
+    while; a multi-day laptop run gets stopped and resumed (reboots, battery),
+    so resumes reuse the identical tokenized split instead of rebuilding it.
+    The key covers every build input, so a changed preset rebuilds.
+    """
+    import pickle
+
+    keyed = {
+        name: getattr(args, name)
+        for name in (
+            "examples", "val_examples", "seed", "seq_len", "prompt_budget", "history_turns", "min_response",
+            "mix_story", "mix_wp", "mix_norobots", "repeat_norobots", "mix_smoltalk", "mix_discord",
+            "tinystories_revision", "writingprompts_revision", "no_robots_revision", "smoltalk_revision",
+            "discord_revision",
+        )
+    }
+    keyed.update(_data_extras(args))
+    keyed["version"] = DATA_CACHE_VERSION
+    keyed["tokenizer"] = hashlib.sha256(tok_path.read_bytes()).hexdigest()
+    key = hashlib.sha256(json.dumps(keyed, sort_keys=True, default=str).encode()).hexdigest()
+    path = run_dir / "data-cache.pkl"
+    if path.exists():
+        try:
+            with path.open("rb") as f:
+                cached = pickle.load(f)
+            if cached.get("key") == key:
+                log(f"data: reusing tokenized cache {path.name}")
+                return cached["train"], cached["val"], cached["counts"]
+            log("data: cache key changed; rebuilding")
+        except Exception as e:  # a torn cache must never block a resume
+            log(f"data: unreadable cache ({e}); rebuilding")
+    train, val, counts = build_examples(tok, args, log)
+    tmp = path.with_suffix(".tmp")
+    with tmp.open("wb") as f:
+        pickle.dump({"key": key, "train": train, "val": val, "counts": counts}, f, protocol=pickle.HIGHEST_PROTOCOL)
+    tmp.replace(path)
+    return train, val, counts
+
+
 def main():
     pre = argparse.ArgumentParser(add_help=False)
     pre.add_argument("--config", type=Path, help="JSON preset; explicit CLI flags override it")
@@ -839,6 +1289,14 @@ def main():
     ap.add_argument("--no-robots-revision", default=None)
     ap.add_argument("--smoltalk-revision", default=None)
     ap.add_argument("--discord-revision", default=None)
+    ap.add_argument("--mix-ultrachat", type=float, default=0.0, help="HuggingFaceH4/ultrachat_200k multi-turn Q&A (MIT)")
+    ap.add_argument("--ultrachat-revision", default=None)
+    ap.add_argument("--smoltalk-multiturn", action="store_true", help="train every assistant turn of SmolTalk's multi-turn subsets")
+    ap.add_argument("--gif-tags", action="store_true", help="rewrite gif URLs/filenames into [gif: words] tags")
+    ap.add_argument("--gif-synth-rate", type=float, default=0.0, help="chance a short Discord reaction becomes a synthetic gif tag")
+    ap.add_argument("--gif-synth-max-frac", type=float, default=0.03, help="hard cap: synthetic gif targets / Discord targets")
+    ap.add_argument("--duty-cycle", type=float, default=1.0, help="fraction of wall time spent computing; 0.5 sleeps as long as each optimizer step took")
+    ap.add_argument("--pause-on-battery", action="store_true", help="macOS: sleep while `pmset -g batt` reports battery power")
     ap.add_argument("--seq-len", type=int, default=1024)
     ap.add_argument("--prompt-budget", type=int, default=256)
     ap.add_argument("--history-turns", type=int, default=3, help="completed exchanges retained before the current user turn")
@@ -931,7 +1389,9 @@ def main():
     config.babble_history_turns = args.history_turns
     config.babble_prompt_budget = args.prompt_budget
 
-    train, val_by_source, counts = build_examples(tok, args, log)
+    if not 0.0 < args.duty_cycle <= 1.0:
+        ap.error("--duty-cycle must be in (0, 1]")
+    train, val_by_source, counts = _cached_build(tok, tok_path, args, run_dir, log)
     n_val = sum(len(examples) for examples in val_by_source.values())
     log(f"data: {len(train)} train / {n_val} val examples, mean len {sum(len(e[0]) for e in train)/max(len(train),1):.0f}")
     data_provenance = {
@@ -945,6 +1405,9 @@ def main():
         "prompt_budget": args.prompt_budget,
         "seq_len": args.seq_len,
     }
+    extras = _data_extras(args)
+    if extras:  # absent for older presets, so their signatures stay resumable
+        data_provenance["extras"] = extras
     data_signature = hashlib.sha256(
         json.dumps(data_provenance, sort_keys=True).encode("utf-8")
     ).hexdigest()
