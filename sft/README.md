@@ -56,6 +56,38 @@ At Story-v2's observed 2.6k input tokens/second, 12M tokens is about 77 minutes
 of gradient work. Source-specific evaluation and longer histories make roughly
 1.5-2 hours a realistic M2 Pro wall-clock estimate.
 
+## Long-context run (`longctx-mac.json`)
+
+Continues from `runs/multiturn-v1/export` (the live model). Changes from multi-turn v1:
+
+- **Context**: `seq_len 2048`, `prompt_budget 1536`, `history_turns 8`. The export's `config.json` records
+  `babble_history_turns=8` / `babble_prompt_budget=1536`; serving it needs the matching
+  `BABBLE_CONVERSATION_MAX_TURNS=8`, `BABBLE_CONVERSATION_MAX_TOKENS=1536` and `BABBLE_MAX_NEW_TOKENS<=509`.
+  A long response now trims the oldest history turns to fit the sequence instead of being skipped.
+- **Data**: `HuggingFaceH4/ultrachat_200k` (MIT, pinned) and every assistant turn of SmolTalk's multi-turn subsets
+  (`--smoltalk-multiturn`), each turn a response-only target grouped per conversation for the val split.
+  Discord-Dialogues stays the largest share (46%); TinyStories/WritingPrompts/no_robots stay in as rehearsal.
+- **GIF tags** (`--gif-tags`): the model learns to emit `[gif: <2-5 lowercase search words>]` as the whole reply or
+  at its end (contract shared with the bot). Gif URLs (tenor/giphy/`*.gif`) and Discord attachment filenames
+  (`SipsBubble.gif`) are rewritten into tags from their slug; slug-less gif URLs are dropped, and targets still
+  holding any raw URL are not trained on. Discord-Dialogues had its URLs stripped upstream, so real sends are rare;
+  a budgeted synthetic slice turns short reactions ("lmao", "bruh", "no way") into tags, hard-capped by
+  `--gif-synth-max-frac` (2.5% of Discord targets). Counts and examples are logged at data build (`gif:` lines).
+- **Throttle**: `--duty-cycle 0.5` sleeps as long as each optimizer step computed; `--pause-on-battery` idles while
+  `pmset` reports battery power. `sft/train.sh` launches under `taskpolicy -b` (macOS background QoS;
+  `SFT_QOS=utility|none` to change). Metrics carry `duty_cycle`, `tok_s` (wall) and `tok_s_active` (compute only).
+- **Resume**: the tokenized split is cached in `runs/<name>/data-cache.pkl`, and `--resume` skips the batches the
+  checkpoint already consumed, so a reboot mid-run costs minutes, not a data rebuild or replayed data.
+
+```bash
+sft/train.sh longctx-smoke --base runs/multiturn-v1/export --config configs/sft/longctx-mac.json --smoke
+sft/train.sh longctx-v1 --base runs/multiturn-v1/export --config configs/sft/longctx-mac.json
+sft/stop.sh    # then, to continue (same flags + --resume):
+sft/train.sh longctx-v1 --base runs/multiturn-v1/export --config configs/sft/longctx-mac.json --resume
+```
+
+LONGCTX_SIZING_PLACEHOLDER
+
 Live dashboard: put `BABBLE_RUNS_URL=https://booper.frgmt.xyz` and `BABBLE_RUNS_TOKEN=<the worker's RUNS_TOKEN secret>`
 in `.env.sft` (gitignored) and every metrics record is also POSTed to `/api/runs/<name>` → https://booper.frgmt.xyz/runs.
 
