@@ -322,6 +322,31 @@ def test_long_response_trims_history_to_fit_sequence_instead_of_skipping():
     assert batch_ids.shape == (1, 128) and int((labels != -100).sum()) == 81
 
 
+def test_grouped_experts_match_the_eager_mixtral_loop():
+    torch = pytest.importorskip("torch")
+    transformers = pytest.importorskip("transformers")
+    from sft.sft_longform import use_grouped_experts
+
+    config = transformers.MixtralConfig(
+        vocab_size=64, hidden_size=32, intermediate_size=48, num_hidden_layers=1,
+        num_attention_heads=4, num_key_value_heads=4, num_local_experts=5, num_experts_per_tok=2,
+    )
+    torch.manual_seed(0)
+    model = transformers.MixtralForCausalLM(config).eval()
+    ids = torch.randint(0, 64, (2, 9))
+    with torch.no_grad():
+        eager = model(input_ids=ids).logits
+    assert use_grouped_experts(model, compute_dtype=torch.float32) == 1
+    with torch.no_grad():
+        grouped = model(input_ids=ids).logits
+    torch.testing.assert_close(grouped, eager, rtol=1e-4, atol=1e-4)
+    # gradients reach the fp32 expert weights
+    model.train()
+    model(input_ids=ids).logits.sum().backward()
+    experts = next(m for m in model.modules() if type(m).__name__ == "MixtralExperts")
+    assert experts.gate_up_proj.grad is not None and experts.gate_up_proj.grad.abs().sum() > 0
+
+
 # -------------------------------------------------------------- duty ---
 
 

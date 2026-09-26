@@ -916,6 +916,49 @@ def _batch_groups(examples, tokens_per_batch, shuffle_seed=None) -> list[list[in
 # ---------------------------------------------------------------- model ---
 
 
+def grouped_experts_forward(self, hidden_states, top_k_index, top_k_weights, compute_dtype=torch.bfloat16):
+    """Static-shape replacement for the eager Mixtral experts loop.
+
+    The eager loop slices each expert's tokens, so every batch presents MPS
+    with new tensor shapes (per-expert token counts). MPS compiles and caches
+    a graph per shape; over a long run that cache grew the process footprint
+    past 14 GB on a 16 GB Mac. Here every tensor's shape depends only on the
+    batch shape: tokens are sorted by expert and fed to one `grouped_mm` per
+    projection with data-dependent *offsets*, not sizes. grouped_mm runs in
+    ``compute_dtype`` (MPS supports bf16 forward+backward, not fp32); the
+    fp32 master weights get their gradients through the cast.
+    """
+    num_top_k = top_k_index.size(-1)
+    num_tokens, hidden_dim = hidden_states.shape
+    expert_ids = top_k_index.reshape(-1)
+    weights = top_k_weights.reshape(-1)
+    expert_sorted, perm = torch.sort(expert_ids, stable=True)
+    x = hidden_states[perm // num_top_k].to(compute_dtype)
+    counts = torch.histc(expert_sorted.float(), bins=self.num_experts, min=0, max=self.num_experts - 1)
+    offs = torch.cumsum(counts, dim=0).to(torch.int32)
+    gate_up = F.grouped_mm(x, self.gate_up_proj.to(compute_dtype).transpose(1, 2), offs=offs)
+    gate, up = gate_up.chunk(2, dim=-1)
+    h = self.act_fn(gate) * up
+    out = F.grouped_mm(h, self.down_proj.to(compute_dtype).transpose(1, 2), offs=offs)
+    out = out.to(hidden_states.dtype) * weights[perm].unsqueeze(-1).to(hidden_states.dtype)
+    unsorted = torch.empty_like(out).index_copy(0, perm, out)
+    return unsorted.view(num_tokens, num_top_k, hidden_dim).sum(dim=1)
+
+
+def use_grouped_experts(model, compute_dtype=torch.bfloat16) -> int:
+    """Bind `grouped_experts_forward` onto every fused Mixtral experts module."""
+    import functools
+    import types
+
+    patched = 0
+    for module in model.modules():
+        if type(module).__name__ == "MixtralExperts" and hasattr(module, "gate_up_proj"):
+            fn = functools.partial(grouped_experts_forward, compute_dtype=compute_dtype)
+            module.forward = types.MethodType(lambda self, *a, _fn=fn, **k: _fn(self, *a, **k), module)
+            patched += 1
+    return patched
+
+
 def load_base(model_dir: Path, device, log):
     from babble.hfserve import _load_int8
 
@@ -1307,6 +1350,7 @@ def main():
     ap.add_argument("--gif-synth-rate", type=float, default=0.0, help="chance a short Discord reaction becomes a synthetic gif tag")
     ap.add_argument("--gif-synth-max-frac", type=float, default=0.03, help="hard cap: synthetic gif targets / Discord targets")
     ap.add_argument("--duty-cycle", type=float, default=1.0, help="fraction of wall time spent computing; 0.5 sleeps as long as each optimizer step took")
+    ap.add_argument("--grouped-experts", action="store_true", help="static-shape grouped_mm MoE experts (bounded MPS memory; bf16 compute)")
     ap.add_argument("--grad-checkpoint", action="store_true", help="activation checkpointing: much less MPS memory for ~1/3 more compute")
     ap.add_argument("--pad-multiple", type=int, default=1, help="round batch widths up to this (bounds MPS shape caches)")
     ap.add_argument("--mps-high-watermark", type=float, default=0.7, help="PYTORCH_MPS_HIGH_WATERMARK_RATIO (hard cap, fraction of RAM)")
@@ -1381,6 +1425,8 @@ def main():
     tok = Tokenizer.from_file(str(tok_path))
     pad = tok.token_to_id("<pad>")
     model, config = load_base(base, device, log)
+    if args.grouped_experts:
+        log(f"model: static-shape grouped_mm experts on {use_grouped_experts(model)} layers")
     if args.grad_checkpoint and not args.export:
         # Recompute activations in backward: at seq 2048 they are most of the
         # MPS footprint. `use_cache=False` is passed per call instead of being
