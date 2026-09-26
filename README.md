@@ -1279,6 +1279,41 @@ which sets all three):
   promoted checkpoint with a from-scratch model, and zero the publish
   cadences — one comparison bot must not double-publish the dataset.
 
+### Lean runtime for the hf backend
+
+With `BABBLE_SERVE_BACKEND=hf`, `BABBLE_HF_RUNTIME` picks what runs the
+snapshot. The default, `transformers`, is `hfserve.HFGenerator`
+(MixtralForCausalLM + `generate()`). `lean` is `babble/leanserve.py`: a
+hand-written Mixtral forward pass and decode loop over the same
+`model-int8.safetensors`. It never imports transformers.
+
+| env | default | meaning |
+| --- | --- | --- |
+| `BABBLE_HF_RUNTIME` | `transformers` | `lean` or `transformers` |
+| `BABBLE_LEAN_PRECISION` | `int8` | `int8` runs decode on the on-disk int8 weights with bf16 activations. `fp32` uses the same dequantized fp32 weights as transformers and is lossless. |
+| `BABBLE_LEAN_PREFILL_FP32` | `1` | int8 mode keeps an fp32 copy for prompt prefill, about +500 MB RSS. Set `0` for a smaller process with a slower TTFT. |
+| `BABBLE_LEAN_PREFIX_CACHE_MB` | `128` | Byte bound for the cross-turn prefix KV cache. `0` disables it. |
+| `BABBLE_LEAN_PREFIX_CACHE_ENTRIES` | `32` | Entry bound for the same cache. |
+
+Sampling semantics are the same as the transformers path:
+
+- The same processors run in the same order: repetition penalty, no-repeat-ngram, frequency/presence (still gated by `BABBLE_HF_FREQUENCY_PENALTIES`), temperature, top-k, top-p.
+- Best-of picks the candidate with the highest mean post-warp log-probability.
+- EOS and pad accounting are unchanged.
+
+In int8 mode, every token that survives top-k has its logit recomputed exactly
+in fp32 before the penalties, sampling and scoring use it.
+
+The prefix cache is keyed by token content, not by channel. A turn's
+transcript starts with the previous turn's transcript, so a follow-up reuses
+the K/V of everything except the newest reply and message. When the history
+window slides and the oldest turn drops out, the cache misses and falls back to
+a full prefill. `babble bench` (`/bench`) never uses the cache.
+
+Gates and measurements: `docs/reports/LEAN_RUNTIME_2026-09-26.md`. To switch,
+set `BABBLE_HF_RUNTIME=lean` in the env file and restart. To roll back, remove
+the line or set it to `transformers`.
+
 ## Keeping the live install current
 
 The bot runs from a **plain clone**, and drift is invisible if nothing checks
