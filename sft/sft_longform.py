@@ -60,6 +60,7 @@ SAMPLE_PROMPTS = [
     "write me a short story about a dragon who is afraid of fire",
     "write a short story about a detective in a city that never sleeps",
     "hey booper whats up",
+    "LMAOOO did you see that",
 ]
 STORY_TEMPLATES = [
     "write me a story about {summary}",
@@ -858,6 +859,21 @@ def batches(examples, tokens_per_batch, pad_id, shuffle_seed=None, skip=0):
     """
     import numpy as np
 
+    groups = _batch_groups(examples, tokens_per_batch, shuffle_seed)
+    for g in groups[skip:]:
+        width = max(len(examples[i][0]) for i in g)
+        ids = torch.full((len(g), width), pad_id, dtype=torch.long)
+        labels = torch.full((len(g), width), -100, dtype=torch.long)
+        for r, i in enumerate(g):
+            toks, n_prompt = examples[i]
+            row = torch.from_numpy(np.asarray(toks, dtype=np.int64))
+            ids[r, : len(toks)] = row
+            labels[r, n_prompt : len(toks)] = row[n_prompt:]
+        yield ids, labels
+
+
+def _batch_groups(examples, tokens_per_batch, shuffle_seed=None) -> list[list[int]]:
+    """Example indices per batch; deterministic for a given shuffle seed."""
     order = list(range(len(examples)))
     if shuffle_seed is not None:
         rng = random.Random(shuffle_seed)
@@ -890,16 +906,7 @@ def batches(examples, tokens_per_batch, pad_id, shuffle_seed=None, skip=0):
             cur_max = max(cur_max, n)
         if cur:
             groups.append(cur)
-    for g in groups[skip:]:
-        width = max(len(examples[i][0]) for i in g)
-        ids = torch.full((len(g), width), pad_id, dtype=torch.long)
-        labels = torch.full((len(g), width), -100, dtype=torch.long)
-        for r, i in enumerate(g):
-            toks, n_prompt = examples[i]
-            row = torch.from_numpy(np.asarray(toks, dtype=np.int64))
-            ids[r, : len(toks)] = row
-            labels[r, n_prompt : len(toks)] = row[n_prompt:]
-        yield ids, labels
+    return groups
 
 
 # ---------------------------------------------------------------- model ---
@@ -1429,7 +1436,7 @@ def main():
         return args.lr * (0.1 + 0.9 * 0.5 * (1 + math.cos(math.pi * prog)))
 
     report = Reporter(run_dir, args.name)
-    report({"event": "start", "steps_total": steps_total, "device": str(device), "counts": counts, "args": vars(args), "resumed_step": step})
+    report({"event": "start", "duty_cycle": args.duty_cycle, "steps_total": steps_total, "device": str(device), "counts": counts, "args": vars(args), "resumed_step": step})
     v, source_val = evaluate_sources(model, val_by_source, device, pad, dtype)
     quality_path = run_dir / "quality.json"
     best_dir = run_dir / "best"
@@ -1488,8 +1495,25 @@ def main():
     epoch = 0
     t_log, tok_log, loss_acc, loss_n = time.perf_counter(), 0, 0.0, 0
     micro = 0
+    # Throttle ("passive, non-impeding"): after each optimizer step, sleep so
+    # compute / wall == duty_cycle. Sleep and battery pauses are excluded from
+    # tok_s_active so the dashboard shows both the real and the raw rate.
+    t_active = time.perf_counter()
+    idle_log = 0.0
+    last_batt_check = 0.0
+    # Resume continues where the data order left off instead of replaying the
+    # head of epoch 0: skip the micro-batches the checkpoint already consumed.
+    to_skip = step * args.accum
     while step < steps_total:
-        for ids, labels in batches(train, args.tokens_per_batch, pad, shuffle_seed=args.seed + epoch):
+        if to_skip:
+            per_epoch = len(_batch_groups(train, args.tokens_per_batch, args.seed + epoch))
+            if to_skip >= per_epoch:
+                to_skip -= per_epoch
+                epoch += 1
+                continue
+            log(f"resume: skipping {to_skip} of {per_epoch} batches in epoch {epoch}")
+        skip, to_skip = to_skip, 0
+        for ids, labels in batches(train, args.tokens_per_batch, pad, shuffle_seed=args.seed + epoch, skip=skip):
             ids, labels = ids.to(device), labels.to(device)
             with torch.autocast(device_type=device.type, dtype=dtype, enabled=dtype != torch.float32):
                 logits = model(input_ids=ids, attention_mask=(ids != pad)).logits
@@ -1510,12 +1534,36 @@ def main():
             opt.step()
             opt.zero_grad(set_to_none=True)
             step += 1
+            nap = duty_sleep_seconds(time.perf_counter() - t_active, args.duty_cycle)
+            if nap > 0:
+                time.sleep(nap)
+                idle_log += nap
+            if args.pause_on_battery and time.perf_counter() - last_batt_check > 60:
+                last_batt_check = time.perf_counter()
+                if pmset_on_battery():
+                    t_pause = time.perf_counter()
+                    log("battery: on battery power; pausing until AC")
+                    report({"event": "pause", "reason": "battery", "step": step})
+                    while pmset_on_battery():
+                        time.sleep(60)
+                    paused = time.perf_counter() - t_pause
+                    idle_log += paused
+                    log(f"battery: back on AC after {paused/60:.0f}m; resuming")
+                    report({"event": "resume", "reason": "battery", "step": step, "paused_s": paused})
+            t_active = time.perf_counter()
             if step % args.log_every == 0:
                 dt = time.perf_counter() - t_log
-                rec = {"step": step, "loss": loss_acc / loss_n, "lr": lr_at(step - 1), "grad_norm": float(gn), "tok_s": tok_log / dt, "tokens": tokens_seen, "steps_total": steps_total, "eta_s": (steps_total - step) * dt / args.log_every, "rss_gb": rss_gb()}
-                log(f"step {step}/{steps_total} loss {rec['loss']:.4f} lr {rec['lr']:.2e} gn {rec['grad_norm']:.2f} {rec['tok_s']:.0f} tok/s rss {rec['rss_gb']:.1f}G eta {rec['eta_s']/60:.0f}m")
+                rec = {
+                    "step": step, "loss": loss_acc / loss_n, "lr": lr_at(step - 1), "grad_norm": float(gn),
+                    "tok_s": tok_log / dt, "tok_s_active": tok_log / max(dt - idle_log, 1e-9),
+                    "duty_cycle": args.duty_cycle, "idle_s": idle_log,
+                    "tokens": tokens_seen, "steps_total": steps_total,
+                    "eta_s": (steps_total - step) * dt / args.log_every, "rss_gb": rss_gb(),
+                }
+                log(f"step {step}/{steps_total} loss {rec['loss']:.4f} lr {rec['lr']:.2e} gn {rec['grad_norm']:.2f} {rec['tok_s']:.0f} tok/s ({rec['tok_s_active']:.0f} active, duty {args.duty_cycle:g}) rss {rec['rss_gb']:.1f}G eta {rec['eta_s']/60:.0f}m")
                 report(rec)
                 t_log, tok_log, loss_acc, loss_n = time.perf_counter(), 0, 0.0, 0
+                idle_log = 0.0
             if step % args.eval_every == 0:
                 free_cache(device)
                 v, source_val = evaluate_sources(model, val_by_source, device, pad, dtype)
