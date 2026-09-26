@@ -49,7 +49,8 @@ CXXFLAGS = (
     "-Wall",
     "-Wno-unused-function",
 )
-REQUIRED_CPU_FLAGS = ("avx2", "fma", "f16c")
+# Everything -march=haswell may emit, so a CPU that passes cannot SIGILL.
+REQUIRED_CPU_FLAGS = ("avx2", "fma", "f16c", "bmi1", "bmi2", "abm", "movbe")
 BUILD_TIMEOUT_S = 600
 
 

@@ -477,6 +477,7 @@ def make_generator(settings: Settings, log: EventLog | None = None):
     """
     if settings.serve_backend == "hf":
         runtime = str(getattr(settings, "hf_runtime", "transformers") or "transformers").lower()
+        fell_back = False
         if runtime == "native":
             from .nativeserve import NativeGenerator, NativeUnavailable
 
@@ -490,10 +491,18 @@ def make_generator(settings: Settings, log: EventLog | None = None):
                 (log or NullLog()).event("model.native_fallback", reason=str(exc), fallback="lean")
                 print(f"babble: native runtime unavailable ({exc}); falling back to lean", file=sys.stderr, flush=True)
                 runtime = "lean"
+                fell_back = True
         if runtime == "lean":
             from .leanserve import LeanGenerator
 
-            return LeanGenerator(settings, log)
+            if not fell_back:
+                return LeanGenerator(settings, log)
+            try:
+                return LeanGenerator(settings, log)
+            except HFServeError as exc:
+                # A snapshot shape lean rejects too: transformers still serves it.
+                (log or NullLog()).event("model.native_fallback", reason=str(exc), fallback="transformers")
+                runtime = "transformers"
         if runtime != "transformers":
             raise ValueError(
                 f"unknown hf_runtime {runtime!r} -- expected 'transformers', 'lean' or 'native'"

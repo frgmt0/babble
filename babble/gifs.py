@@ -42,6 +42,8 @@ from typing import Protocol
 #: How long any single provider call is allowed to take. Discord replies are
 #: on the clock; a slow GIF lookup must lose, not stall, the reply.
 TIMEOUT_SECONDS = 1.5
+# Whole-lookup cap (DNS + connect + reads), enforced by GifResolver.
+HARD_DEADLINE_SECONDS = 2.5
 
 #: How long a query's candidate list stays cached before a fresh lookup.
 CACHE_TTL_SECONDS = 600.0
@@ -329,15 +331,29 @@ class GifResolver:
             return None
         candidates = self._cache.get(query)
         if candidates is None:
-            try:
-                candidates = self.provider.search(query)
-            except Exception:
-                candidates = []
+            candidates = self._search_with_deadline(query)
             self._cache.set(query, candidates)
         if not candidates:
             return None
         pool = candidates[: self.top_n] or candidates
         return self._random.choice(pool)
+
+    def _search_with_deadline(self, query: str) -> list[str]:
+        """`provider.search` under a hard wall-clock cap.
+
+        urllib's timeout is per socket operation and does not cover DNS, and
+        this runs while the bot holds its generation lock -- so bound the
+        whole lookup, and abandon a straggler rather than wait for it.
+        """
+        import concurrent.futures
+
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        try:
+            return pool.submit(self.provider.search, query).result(timeout=HARD_DEADLINE_SECONDS)
+        except Exception:
+            return []
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
 
     @classmethod
     def from_env_bool(cls, enabled: bool, provider_name: str, api_key: str | None) -> "GifResolver":
