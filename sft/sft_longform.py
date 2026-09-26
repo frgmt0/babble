@@ -1437,10 +1437,13 @@ def main():
 
     report = Reporter(run_dir, args.name)
     report({"event": "start", "duty_cycle": args.duty_cycle, "steps_total": steps_total, "device": str(device), "counts": counts, "args": vars(args), "resumed_step": step})
-    v, source_val = evaluate_sources(model, val_by_source, device, pad, dtype)
     quality_path = run_dir / "quality.json"
     best_dir = run_dir / "best"
-    if args.resume and quality_path.exists():
+    resuming_quality = args.resume and quality_path.exists()
+    # A resume already has its baseline in quality.json; re-running the full
+    # long-context eval (many minutes on a throttled laptop) buys nothing.
+    v, source_val = (None, None) if resuming_quality else evaluate_sources(model, val_by_source, device, pad, dtype)
+    if resuming_quality:
         quality = json.loads(quality_path.read_text(encoding="utf-8"))
         if quality.get("data_signature") != data_signature:
             raise RuntimeError("refusing to resume: dataset revisions, split, or prompt format changed")
@@ -1488,9 +1491,10 @@ def main():
         return source_ok, regressions
 
     write_quality()
-    log(f"step {step} val {v:.4f} sources={source_val} rss {rss_gb():.1f}G")
-    report({"step": step, "val": v, "source_val": source_val, "samples": sample(model, tok, device, **sample_kwargs)})
-    log(f"samples done rss {rss_gb():.1f}G")
+    if v is not None:
+        log(f"step {step} val {v:.4f} sources={source_val} rss {rss_gb():.1f}G")
+        report({"step": step, "val": v, "source_val": source_val, "samples": sample(model, tok, device, **sample_kwargs)})
+        log(f"samples done rss {rss_gb():.1f}G")
 
     epoch = 0
     t_log, tok_log, loss_acc, loss_n = time.perf_counter(), 0, 0.0, 0
