@@ -1291,7 +1291,7 @@ hand-written Mixtral forward pass and decode loop over the same
 | --- | --- | --- |
 | `BABBLE_HF_RUNTIME` | `transformers` | `lean` or `transformers` |
 | `BABBLE_LEAN_PRECISION` | `int8` | `int8` runs decode on the on-disk int8 weights with bf16 activations. `fp32` uses the same dequantized fp32 weights as transformers and is lossless. |
-| `BABBLE_LEAN_PREFILL_FP32` | `1` | int8 mode keeps an fp32 copy for prompt prefill, about +500 MB RSS. Set `0` for a smaller process with a slower TTFT. |
+| `BABBLE_LEAN_PREFILL_FP32` | `1` | int8 mode keeps an fp32 copy for prompt prefill, about +500 MB RSS. Set `0` for a smaller process (~550 MB) with a slower TTFT. |
 | `BABBLE_LEAN_PREFIX_CACHE_MB` | `128` | Byte bound for the cross-turn prefix KV cache. `0` disables it. |
 | `BABBLE_LEAN_PREFIX_CACHE_ENTRIES` | `32` | Entry bound for the same cache. |
 
