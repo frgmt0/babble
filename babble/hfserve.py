@@ -477,13 +477,26 @@ def make_generator(settings: Settings, log: EventLog | None = None):
     """
     if settings.serve_backend == "hf":
         runtime = str(getattr(settings, "hf_runtime", "transformers") or "transformers").lower()
+        if runtime == "native":
+            from .nativeserve import NativeGenerator, NativeUnavailable
+
+            try:
+                return NativeGenerator(settings, log)
+            except NativeUnavailable as exc:
+                # CPU, compiler, build or snapshot shape: serve on lean instead
+                # of not at all, and say so where the operator will look.
+                import sys
+
+                (log or NullLog()).event("model.native_fallback", reason=str(exc), fallback="lean")
+                print(f"babble: native runtime unavailable ({exc}); falling back to lean", file=sys.stderr, flush=True)
+                runtime = "lean"
         if runtime == "lean":
             from .leanserve import LeanGenerator
 
             return LeanGenerator(settings, log)
         if runtime != "transformers":
             raise ValueError(
-                f"unknown hf_runtime {runtime!r} -- expected 'transformers' or 'lean'"
+                f"unknown hf_runtime {runtime!r} -- expected 'transformers', 'lean' or 'native'"
             )
         return HFGenerator(settings, log)
     if settings.serve_backend == "checkpoint":
