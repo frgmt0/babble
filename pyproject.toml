@@ -42,7 +42,7 @@ babble = "babble.cli:main"
 include = ["babble*"]
 
 [tool.setuptools.package-data]
-babble = ["blocklist.txt"]
+babble = ["blocklist.txt", "_native/*.cpp"]
 
 # uv users get the CPU-only torch build automatically -- no multi-GB CUDA wheels.
 [[tool.uv.index]]

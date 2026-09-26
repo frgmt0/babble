@@ -198,6 +198,12 @@ class Settings:
     # "lean" -- `leanserve.LeanGenerator`, a hand-written Mixtral forward and
     # decode loop over the same safetensors (no transformers at runtime),
     # with row compaction and a prefix KV cache. See README "Lean runtime".
+    # "native" -- `nativeserve.NativeGenerator`, the C++ engine in
+    # babble/_native (int8 weights, fp32 math, AVX2/FMA), compiled on first use
+    # into ~/.cache/babble/native (BABBLE_NATIVE_CACHE); falls back to "lean"
+    # with a `model.native_fallback` event if it cannot build or run. Engine
+    # threads = infer_threads; the prefix cache uses the lean_prefix_* knobs.
+    # See README "Native runtime".
     hf_runtime: str = "transformers"
     # Lean weight precision. "int8": on-disk int8 weights x bf16 activations
     # for decode (fp32 copy for prefill, exact fp32 rescoring of sampling
@@ -206,7 +212,7 @@ class Settings:
     # int8 mode keeps an fp32 copy of every matrix for prefill-sized matmuls
     # (~600 MB). Off: prefill dequantizes transiently (lower RSS, slower TTFT).
     lean_prefill_fp32: bool = True
-    # Prefix KV cache across turns (lean only). 0 MB or 0 entries disables it.
+    # Prefix KV cache across turns (lean and native). 0 MB or 0 entries disables it.
     lean_prefix_cache_mb: int = 128
     lean_prefix_cache_entries: int = 32
 
