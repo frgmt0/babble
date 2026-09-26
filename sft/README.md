@@ -74,8 +74,18 @@ Continues from `runs/multiturn-v1/export` (the live model). Changes from multi-t
   a budgeted synthetic slice turns short reactions ("lmao", "bruh", "no way") into tags, hard-capped by
   `--gif-synth-max-frac` (2.5% of Discord targets). Counts and examples are logged at data build (`gif:` lines).
 - **Throttle**: `--duty-cycle 0.5` sleeps as long as each optimizer step computed; `--pause-on-battery` idles while
-  `pmset` reports battery power. `sft/train.sh` launches under `taskpolicy -b` (macOS background QoS;
-  `SFT_QOS=utility|none` to change). Metrics carry `duty_cycle`, `tok_s` (wall) and `tok_s_active` (compute only).
+  `pmset` reports battery power. `sft/train.sh` launches under `taskpolicy -c utility` (`SFT_QOS=background|none`
+  to change). `taskpolicy -b` was measured and rejected: it cut MPS throughput from ~2000 to ~750 tok/s, so the
+  gentleness comes from the duty cycle instead. Metrics carry `duty_cycle`, `tok_s` (wall), `tok_s_active`
+  (compute only) and `idle_s`. `tokens`/`tok_s` count real (non-padding) tokens; `--tokens` is nominal
+  (`steps = tokens / (tokens_per_batch * accum)`).
+- **Memory on a 16 GB Mac** (all measured with `vmmap`; the first launch hit a 19 GB footprint and 9 GB of swap):
+  - `--expert-bucket 128`: on MPS the HF eager Mixtral experts loop, and `grouped_mm` too, leak about 35 MB of
+    CPU heap per micro-batch whenever routing changes, because MPS caches a graph per per-expert token count.
+    Padding each expert's token count to a multiple of 128 is mathematically identical, just as fast, and flat.
+  - `--pad-multiple 128 --fixed-rows`: a small fixed set of batch shapes. `--mps-high-watermark 0.6` caps the MPS
+    pool at about 7 GiB; at 0.45 a 2048-token micro-batch OOMs. `--grad-checkpoint` exists but costs about 55% of
+    throughput, so the preset leaves it off. Steady footprint is about 7.5 GB.
 - **Resume**: the tokenized split is cached in `runs/<name>/data-cache.pkl`, and `--resume` skips the batches the
   checkpoint already consumed, so a reboot mid-run costs minutes, not a data rebuild or replayed data.
 
