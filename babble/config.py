@@ -11,6 +11,11 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from .gifs import API_KEY_ENV as GIF_API_KEY_ENV
+from .gifs import DEFAULT_PROVIDER as GIF_DEFAULT_PROVIDER
+from .gifs import GIFS_ENV
+from .gifs import PROVIDER_ENV as GIF_PROVIDER_ENV
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 TOKEN_ENV = "BABBLE_DISCORD_TOKEN"
@@ -389,6 +394,21 @@ class Settings:
     paraphrase_timeout_seconds: float = 60.0
     paraphrase_bin: str = "claude"
 
+    # --- GIF replies (babble/gifs.py) -------------------------------------
+    # A model reply may end with `[gif: 2-5 lowercase search words]` (or be
+    # nothing but that tag); the bot resolves it to a direct media URL
+    # Discord auto-embeds. Off by default -- a from-scratch model emitting
+    # this format is a training-side decision, not a config default, and the
+    # feature must stay inert everywhere until that lands. See gifs.py for
+    # the parsing/provider/cache contract.
+    gifs_enabled: bool = False
+    # "tenor-scrape" (keyless, fragile screen-scrape of a tenor.com search
+    # page -- see gifs.py) or "giphy" (keyed, official API). Unknown name or
+    # a keyed provider missing its key resolves to no provider at all, which
+    # `GifResolver` treats identically to the feature being off.
+    gif_provider: str = GIF_DEFAULT_PROVIDER
+    gif_api_key: str | None = None
+
     @classmethod
     def from_env(cls, root: Path | None = None) -> "Settings":
         root = root or REPO_ROOT
@@ -460,6 +480,9 @@ class Settings:
             paraphrase_model=os.environ.get("BABBLE_PARAPHRASE_MODEL", "haiku"),
             paraphrase_timeout_seconds=_env_float("BABBLE_PARAPHRASE_TIMEOUT", 60.0),
             paraphrase_bin=os.environ.get("BABBLE_PARAPHRASE_BIN", "claude"),
+            gifs_enabled=_env_bool(GIFS_ENV, False),
+            gif_provider=os.environ.get(GIF_PROVIDER_ENV, GIF_DEFAULT_PROVIDER),
+            gif_api_key=os.environ.get(GIF_API_KEY_ENV) or None,
         )
 
     @classmethod
