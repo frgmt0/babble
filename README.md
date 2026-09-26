@@ -1314,6 +1314,68 @@ Gates and measurements: `docs/reports/LEAN_RUNTIME_2026-09-26.md`. To switch,
 set `BABBLE_HF_RUNTIME=lean` in the env file and restart. To roll back, remove
 the line or set it to `transformers`.
 
+### Native runtime for the hf backend
+
+`BABBLE_HF_RUNTIME=native` runs the same snapshot on a C++ engine,
+`babble/_native/engine.cpp`, driven by `babble/nativeserve.py`. The engine
+repacks the on-disk int8 weights at load, dequantizes them in AVX2 registers,
+and does all activations and accumulation in fp32. Against the fp32
+transformers reference it is lossless: top-1 agreement 1.0, and the NLL moves
+by less than 1e-4 per token. On the i7-4790 live box it is about 7x the
+transformers throughput at under half the RSS (`/bench`: ~1010 vs ~146
+aggregate tok/s, 400 vs 1000 MB).
+
+| env | default | meaning |
+| --- | --- | --- |
+| `BABBLE_HF_RUNTIME` | `transformers` | `native` selects this engine |
+| `BABBLE_INFER_THREADS` | `4` | Engine thread count. 2-3 threads already saturate memory bandwidth, and 8 (hyperthreads) is slower. |
+| `BABBLE_NATIVE_CACHE` | `~/.cache/babble/native` | Where the compiled engine is cached. It is kept outside the repo and outside /tmp. |
+| `BABBLE_LEAN_PREFIX_CACHE_MB` / `_ENTRIES` | `128` / `32` | The cross-turn prefix KV cache, shared with lean |
+| `BABBLE_HF_FREQUENCY_PENALTIES` | off | Same gate as the other runtimes, implemented in the engine |
+
+**No build step.** On first use, the engine is compiled with the system
+`g++` (`-O3 -march=haswell`, about 5 s) and loaded with ctypes. A plain
+`git pull --ff-only` plus a restart (`deploy/update-live.sh`) is therefore
+enough. The cached library is keyed by the source hash, the compiler, the
+flags and the CPU features. An edited engine or a compiler upgrade gets a new
+build, and a stale library is never loaded. Builds take a file lock and
+publish the result with an atomic rename. Only the first start after an engine
+change pays the compile; `model.load` logs `native_build=compiled|cached`.
+
+**Fallback.** The engine falls back to `lean` if the CPU lacks AVX2/FMA/F16C,
+if there is no compiler, if the build fails, if the library does not load, or
+if the snapshot shape is outside what the kernels implement. Unsupported
+shapes are: dimensions that are not multiples of 16, GQA, top-k > 1 routing,
+and an untied head. The fallback logs a `model.native_fallback` event with the
+reason and prints a line on stderr. A missing or broken model dir is still a
+hard error, as with every runtime.
+
+**Model shape.** Geometry is read from `config.json` at load, not compiled
+in. KV buffers grow with the request, so the 4096-position long-context SFT
+serves without a rebuild, and so does any other top-1 Mixtral with
+dimensions that are multiples of 16.
+
+**Semantics.** The processors, their order, best-of scoring, the eos/pad
+accounting, row compaction and the prefix cache policy are the same as lean's
+(see above). Prompt handling is inherited from `LeanGenerator`. There are two
+differences:
+
+- The engine draws from its own RNG, seeded per call from torch's global
+  generator. `torch.manual_seed` still makes runs reproducible, but the same
+  seed gives different samples than the torch runtimes.
+- Top-k keeps exact ties at the k-th value, as transformers does (lean keeps
+  exactly k).
+
+**Prefix reuse.** After each reply, the engine exports the prompt's K/V as a
+snapshot. The next turn of the same conversation restores the snapshot and
+prefills only the new suffix. On a 495-token transcript, TTFT drops from
+149 ms to 13 ms. As with lean, the cache misses once the history window
+starts sliding.
+
+Gates and measurements: `docs/reports/NATIVE_RUNTIME_2026-09-26.md`. To
+switch, set `BABBLE_HF_RUNTIME=native` in the env file and restart; the first
+start compiles. To roll back, set the variable to `lean` or `transformers`.
+
 ## Keeping the live install current
 
 The bot runs from a **plain clone**, and drift is invisible if nothing checks
