@@ -1454,6 +1454,32 @@ prefills only the new suffix. On a 495-token transcript, TTFT drops from
 149 ms to 13 ms. As with lean, the cache misses once the history window
 starts sliding.
 
+**Speculative decoding (opt-in, default off).** With `BABBLE_NATIVE_SPEC=1`,
+a static n-gram table proposes the next token(s) for every candidate, and the
+engine checks all of them in one forward pass. Acceptance is exact
+speculative sampling against the warped distribution: each position is warped
+with the history it would really have had, so repetition and no-repeat-ngram
+stay exact. The output distribution is unchanged, and greedy output is
+identical token for token. A fixed seed still gives different samples than
+with spec off, because the RNG is consumed differently.
+
+- The table is a derived artifact and is not in git. Build it with
+  `bench/extreme/spec_ngram.py`, from a Discord-Dialogues sample plus the
+  model's own replies. Never build it from the consented corpus.
+- Without a table, spec stays off and `model.load` logs why (`native_spec`).
+- Gain on the live box (i7-4790, best-of-4 at the live sampling settings),
+  measured as wall time per reply:
+  - Short Discord prompts: 44.3 to 36.0 ms (1.23x).
+  - Prompts with ~1500 tokens of history: 856 to 765 ms (1.12x).
+  - `/bench` shape (27-token prompt, 4x64 tokens): 252 to 196 ms (1.29x).
+  - TTFT is unchanged.
+
+| env | default | meaning |
+| --- | --- | --- |
+| `BABBLE_NATIVE_SPEC` | off | `1` turns n-gram speculative decoding on |
+| `BABBLE_NATIVE_SPEC_K` | `1` | Draft tokens per candidate per step. 1 measured best for best-of-4. |
+| `BABBLE_NATIVE_SPEC_TABLE` | `<model dir>/spec-ngram.pt` | n-gram table path |
+
 Gates and measurements: `docs/reports/NATIVE_RUNTIME_2026-09-26.md`. To
 switch, set `BABBLE_HF_RUNTIME=native` in the env file and restart; the first
 start compiles. To roll back, set the variable to `lean` or `transformers`.
