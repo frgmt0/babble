@@ -1,0 +1,250 @@
+{"id": "fact_common-001", "category": "fact_common", "question": "what is the capital of france?", "answers": ["paris"]}
+{"id": "fact_common-002", "category": "fact_common", "question": "capital of japan?", "answers": ["tokyo"]}
+{"id": "fact_common-003", "category": "fact_common", "question": "what's the capital city of italy", "answers": ["rome"]}
+{"id": "fact_common-004", "category": "fact_common", "question": "what is the capital of england", "answers": ["london"]}
+{"id": "fact_common-005", "category": "fact_common", "question": "what's the capital of germany?", "answers": ["berlin"]}
+{"id": "fact_common-006", "category": "fact_common", "question": "which city is the capital of spain", "answers": ["madrid"]}
+{"id": "fact_common-007", "category": "fact_common", "question": "what is russia's capital", "answers": ["moscow"]}
+{"id": "fact_common-008", "category": "fact_common", "question": "what's the capital of egypt", "answers": ["cairo"]}
+{"id": "fact_common-009", "category": "fact_common", "question": "what is the capital of the united states?", "answers": ["washington", "dc", "d c"]}
+{"id": "fact_common-010", "category": "fact_common", "question": "what's the capital of canada", "answers": ["ottawa"]}
+{"id": "fact_common-011", "category": "fact_common", "question": "capital of china?", "answers": ["beijing"]}
+{"id": "fact_common-012", "category": "fact_common", "question": "what is the capital of australia", "answers": ["canberra"]}
+{"id": "fact_common-013", "category": "fact_common", "question": "how many legs does a spider have?", "answers": ["8"]}
+{"id": "fact_common-014", "category": "fact_common", "question": "how many legs does a dog have", "answers": ["4"]}
+{"id": "fact_common-015", "category": "fact_common", "question": "how many legs do insects have?", "answers": ["6"]}
+{"id": "fact_common-016", "category": "fact_common", "question": "what colour is the sky on a clear day?", "answers": ["blue"]}
+{"id": "fact_common-017", "category": "fact_common", "question": "what color is grass", "answers": ["green"]}
+{"id": "fact_common-018", "category": "fact_common", "question": "what colour do you get if you mix blue and yellow?", "answers": ["green"]}
+{"id": "fact_common-019", "category": "fact_common", "question": "what do you get when you mix red and white paint", "answers": ["pink"]}
+{"id": "fact_common-020", "category": "fact_common", "question": "what color is a ripe banana", "answers": ["yellow"]}
+{"id": "fact_common-021", "category": "fact_common", "question": "what colour is fresh snow?", "answers": ["white"]}
+{"id": "fact_common-022", "category": "fact_common", "question": "what color are strawberries", "answers": ["red"]}
+{"id": "fact_common-023", "category": "fact_common", "question": "how many days are in a week?", "answers": ["7"]}
+{"id": "fact_common-024", "category": "fact_common", "question": "how many months are there in a year", "answers": ["12"]}
+{"id": "fact_common-025", "category": "fact_common", "question": "what day comes after monday?", "answers": ["tuesday"]}
+{"id": "fact_common-026", "category": "fact_common", "question": "which day comes right before sunday", "answers": ["saturday"]}
+{"id": "fact_common-027", "category": "fact_common", "question": "what month comes after january", "answers": ["february"]}
+{"id": "fact_common-028", "category": "fact_common", "question": "which month is just before december?", "answers": ["november"]}
+{"id": "fact_common-029", "category": "fact_common", "question": "what's the first month of the year", "answers": ["january"]}
+{"id": "fact_common-030", "category": "fact_common", "question": "how many hours are in a day?", "answers": ["24"]}
+{"id": "fact_common-031", "category": "fact_common", "question": "how many minutes in an hour", "answers": ["60"]}
+{"id": "fact_common-032", "category": "fact_common", "question": "how many seconds are there in a minute?", "answers": ["60"]}
+{"id": "fact_common-033", "category": "fact_common", "question": "what is the largest planet in our solar system?", "answers": ["jupiter"]}
+{"id": "fact_common-034", "category": "fact_common", "question": "what planet do we live on", "answers": ["earth"]}
+{"id": "fact_common-035", "category": "fact_common", "question": "which planet is called the red planet?", "answers": ["mars"]}
+{"id": "fact_common-036", "category": "fact_common", "question": "what is the closest star to earth", "answers": ["sun"]}
+{"id": "fact_common-037", "category": "fact_common", "question": "what does the moon go around?", "answers": ["earth"]}
+{"id": "fact_common-038", "category": "fact_common", "question": "what gas do people need to breathe to stay alive", "answers": ["oxygen"]}
+{"id": "fact_common-039", "category": "fact_common", "question": "what is water made of?", "answers": ["hydrogen", "oxygen", "h2o"]}
+{"id": "fact_common-040", "category": "fact_common", "question": "what do you call frozen water", "answers": ["ice"]}
+{"id": "fact_common-041", "category": "fact_common", "question": "at what temperature does water boil in celsius?", "answers": ["100"]}
+{"id": "fact_common-042", "category": "fact_common", "question": "what temperature does water freeze at, in celsius", "answers": ["0"]}
+{"id": "fact_common-043", "category": "fact_common", "question": "what is the biggest ocean on earth?", "answers": ["pacific"]}
+{"id": "fact_common-044", "category": "fact_common", "question": "what's the tallest mountain in the world", "answers": ["everest"]}
+{"id": "fact_common-045", "category": "fact_common", "question": "what is the longest river in africa?", "answers": ["nile"]}
+{"id": "fact_common-046", "category": "fact_common", "question": "which animal is known as the king of the jungle", "answers": ["lion"]}
+{"id": "fact_common-047", "category": "fact_common", "question": "what is the largest animal that has ever lived?", "answers": ["blue whale", "whale"]}
+{"id": "fact_common-048", "category": "fact_common", "question": "what's the fastest land animal", "answers": ["cheetah"]}
+{"id": "fact_common-049", "category": "fact_common", "question": "which animal says moo?", "answers": ["cow", "cows"]}
+{"id": "fact_common-050", "category": "fact_common", "question": "what sound does a cat make", "answers": ["meow", "miaow", "mew", "purr"]}
+{"id": "fact_common-051", "category": "fact_common", "question": "what do bees make?", "answers": ["honey", "wax"]}
+{"id": "fact_common-052", "category": "fact_common", "question": "what does a caterpillar turn into", "answers": ["butterfly", "butterflies", "moth"]}
+{"id": "fact_common-053", "category": "fact_common", "question": "what is a baby dog called?", "answers": ["puppy", "pup", "puppies"]}
+{"id": "fact_common-054", "category": "fact_common", "question": "what do you call a baby cat", "answers": ["kitten", "kitty"]}
+{"id": "fact_common-055", "category": "fact_common", "question": "which african animal has a really long neck?", "answers": ["giraffe", "giraffes"]}
+{"id": "fact_common-056", "category": "fact_common", "question": "what is a group of wolves called", "answers": ["pack"]}
+{"id": "fact_common-057", "category": "fact_common", "question": "who wrote romeo and juliet?", "answers": ["shakespeare"]}
+{"id": "fact_common-058", "category": "fact_common", "question": "who painted the mona lisa", "answers": ["da vinci", "leonardo"]}
+{"id": "fact_common-059", "category": "fact_common", "question": "who was the first president of the united states?", "answers": ["washington"]}
+{"id": "fact_common-060", "category": "fact_common", "question": "which scientist is famous for an apple falling on his head and gravity", "answers": ["newton"]}
+{"id": "fact_common-061", "category": "fact_common", "question": "who came up with the theory of relativity?", "answers": ["einstein"]}
+{"id": "fact_common-062", "category": "fact_common", "question": "who was the first person to walk on the moon", "answers": ["armstrong"]}
+{"id": "fact_common-063", "category": "fact_common", "question": "how many continents are there?", "answers": ["7"]}
+{"id": "fact_common-064", "category": "fact_common", "question": "what is the biggest continent", "answers": ["asia"]}
+{"id": "fact_common-065", "category": "fact_common", "question": "what language do people speak in brazil?", "answers": ["portuguese"]}
+{"id": "fact_common-066", "category": "fact_common", "question": "what language is mostly spoken in mexico", "answers": ["spanish"]}
+{"id": "fact_common-067", "category": "fact_common", "question": "what's the opposite of hot?", "answers": ["cold"]}
+{"id": "fact_common-068", "category": "fact_common", "question": "how many sides does a triangle have", "answers": ["3"]}
+{"id": "fact_common-069", "category": "fact_common", "question": "how many sides does a square have?", "answers": ["4"]}
+{"id": "fact_common-070", "category": "fact_common", "question": "what shape is a football or a basketball", "answers": ["round", "sphere", "circle", "ball shaped"]}
+{"id": "math-001", "category": "math", "question": "what's 7+5", "answers": ["12"]}
+{"id": "math-002", "category": "math", "question": "what is 9 times 3", "answers": ["27"]}
+{"id": "math-003", "category": "math", "question": "12 minus 4?", "answers": ["8"]}
+{"id": "math-004", "category": "math", "question": "what is 2 plus 2?", "answers": ["4"]}
+{"id": "math-005", "category": "math", "question": "how much is 6 + 3", "answers": ["9"]}
+{"id": "math-006", "category": "math", "question": "what's 10 - 7?", "answers": ["3"]}
+{"id": "math-007", "category": "math", "question": "whats 5x4", "answers": ["20"]}
+{"id": "math-008", "category": "math", "question": "what is 8 divided by 2", "answers": ["4"]}
+{"id": "math-009", "category": "math", "question": "can you tell me what 15 + 10 is", "answers": ["25"]}
+{"id": "math-010", "category": "math", "question": "what do you get if you add 3 and 4?", "answers": ["7"]}
+{"id": "math-011", "category": "math", "question": "what's 3 * 3", "answers": ["9"]}
+{"id": "math-012", "category": "math", "question": "quick maths: 20 / 5", "answers": ["4"]}
+{"id": "math-013", "category": "math", "question": "what is 100 minus 1", "answers": ["99"]}
+{"id": "math-014", "category": "math", "question": "what's eleven plus one?", "answers": ["12"]}
+{"id": "math-015", "category": "math", "question": "what is seven times eight", "answers": ["56"]}
+{"id": "math-016", "category": "math", "question": "solve 9 - 5", "answers": ["4"]}
+{"id": "math-017", "category": "math", "question": "what's 6 times 7?", "answers": ["42"]}
+{"id": "math-018", "category": "math", "question": "how much is 18 divided by 3", "answers": ["6"]}
+{"id": "math-019", "category": "math", "question": "what is 14 + 6", "answers": ["20"]}
+{"id": "math-020", "category": "math", "question": "if i have 5 apples and eat 2, how many are left?", "answers": ["3"]}
+{"id": "math-021", "category": "math", "question": "i have 3 cookies and get 4 more. how many cookies do i have now?", "answers": ["7"]}
+{"id": "math-022", "category": "math", "question": "what's half of 10", "answers": ["5"]}
+{"id": "math-023", "category": "math", "question": "what is double 6?", "answers": ["12"]}
+{"id": "math-024", "category": "math", "question": "what's 1+1", "answers": ["2"]}
+{"id": "math-025", "category": "math", "question": "what is 50 + 50", "answers": ["100"]}
+{"id": "math-026", "category": "math", "question": "what's 30 - 10?", "answers": ["20"]}
+{"id": "math-027", "category": "math", "question": "2 times 9?", "answers": ["18"]}
+{"id": "math-028", "category": "math", "question": "what is 12 divided by 4", "answers": ["3"]}
+{"id": "math-029", "category": "math", "question": "what's 4 squared", "answers": ["16"]}
+{"id": "math-030", "category": "math", "question": "what is 9 minus 9?", "answers": ["0"]}
+{"id": "math-031", "category": "math", "question": "what's 13 + 8", "answers": ["21"]}
+{"id": "math-032", "category": "math", "question": "what is 16 - 9", "answers": ["7"]}
+{"id": "math-033", "category": "math", "question": "what's 25 + 25?", "answers": ["50"]}
+{"id": "math-034", "category": "math", "question": "what is 63 divided by 9", "answers": ["7"]}
+{"id": "math-035", "category": "math", "question": "what's 10 times 10", "answers": ["100"]}
+{"id": "math-036", "category": "math", "question": "add 2 and 5", "answers": ["7"]}
+{"id": "math-037", "category": "math", "question": "subtract 3 from 10", "answers": ["7"]}
+{"id": "math-038", "category": "math", "question": "what's 7 minus 7?", "answers": ["0"]}
+{"id": "math-039", "category": "math", "question": "what is 11 times 2", "answers": ["22"]}
+{"id": "math-040", "category": "math", "question": "there are 4 kids and each one has 2 balloons. how many balloons are there in total?", "answers": ["8"]}
+{"id": "definition-001", "category": "definition", "question": "what is a volcano?", "keywords": ["erupt", "lava", "magma", "mountain", "ash"]}
+{"id": "definition-002", "category": "definition", "question": "what's a rainbow", "keywords": ["colour", "color", "light", "arc", "sun"]}
+{"id": "definition-003", "category": "definition", "question": "what is a dog", "keywords": ["animal", "pet", "bark", "canine", "mammal"]}
+{"id": "definition-004", "category": "definition", "question": "can you explain what a computer is?", "keywords": ["machine", "device", "electronic", "program", "data", "calculat"]}
+{"id": "definition-005", "category": "definition", "question": "what does a doctor do", "keywords": ["medic", "sick", "patient", "hospital", "health", "treat", "heal"]}
+{"id": "definition-006", "category": "definition", "question": "what is the ocean?", "keywords": ["water", "salt", "sea", "huge", "large"]}
+{"id": "definition-007", "category": "definition", "question": "what's a piano", "keywords": ["instrument", "music", "keys", "play"]}
+{"id": "definition-008", "category": "definition", "question": "what are clouds made of", "keywords": ["water", "vapor", "vapour", "droplet", "ice"]}
+{"id": "definition-009", "category": "definition", "question": "what is the moon?", "keywords": ["orbit", "earth", "satellite", "night", "rock"]}
+{"id": "definition-010", "category": "definition", "question": "what is a tree", "keywords": ["plant", "wood", "leaves", "leaf", "trunk", "branch"]}
+{"id": "definition-011", "category": "definition", "question": "what is bread?", "keywords": ["food", "flour", "bake", "dough", "wheat", "eat"]}
+{"id": "definition-012", "category": "definition", "question": "what's a library", "keywords": ["book", "read", "borrow"]}
+{"id": "definition-013", "category": "definition", "question": "what is a school?", "keywords": ["learn", "student", "teach", "educat", "class", "kids", "children"]}
+{"id": "definition-014", "category": "definition", "question": "what is a river", "keywords": ["water", "flow", "stream"]}
+{"id": "definition-015", "category": "definition", "question": "what's a desert?", "keywords": ["dry", "sand", "hot", "arid", "rain"]}
+{"id": "definition-016", "category": "definition", "question": "what is an island", "keywords": ["land", "water", "surround", "ocean"]}
+{"id": "definition-017", "category": "definition", "question": "what is a thermometer used for?", "keywords": ["temperature", "measur", "hot", "cold", "heat", "fever"]}
+{"id": "definition-018", "category": "definition", "question": "what's an umbrella for", "keywords": ["rain", "wet", "dry", "shade", "cover"]}
+{"id": "definition-019", "category": "definition", "question": "what is a friend?", "keywords": ["person", "trust", "care", "someone", "like", "close"]}
+{"id": "definition-020", "category": "definition", "question": "what is a fish", "keywords": ["water", "swim", "animal", "gills", "fins"]}
+{"id": "definition-021", "category": "definition", "question": "what's a bicycle", "keywords": ["wheel", "ride", "pedal", "bike", "vehicle"]}
+{"id": "definition-022", "category": "definition", "question": "what is a kitchen?", "keywords": ["cook", "food", "room", "meal"]}
+{"id": "definition-023", "category": "definition", "question": "what's an earthquake", "keywords": ["ground", "shak", "plate", "tremor", "move"]}
+{"id": "definition-024", "category": "definition", "question": "what is pizza", "keywords": ["food", "cheese", "dough", "tomato", "italian", "eat"]}
+{"id": "definition-025", "category": "definition", "question": "what does a mirror do?", "keywords": ["reflect", "see", "image", "yourself"]}
+{"id": "definition-026", "category": "definition", "question": "what is a calendar", "keywords": ["date", "day", "month", "year", "schedule", "time"]}
+{"id": "definition-027", "category": "definition", "question": "what's a camera?", "keywords": ["photo", "picture", "image", "film", "record", "video"]}
+{"id": "definition-028", "category": "definition", "question": "what does a farmer do", "keywords": ["crop", "grow", "animal", "food", "land", "plant", "harvest", "cow"]}
+{"id": "definition-029", "category": "definition", "question": "what is a battery?", "keywords": ["energy", "power", "electric", "charge"]}
+{"id": "definition-030", "category": "definition", "question": "what is snow", "keywords": ["cold", "ice", "frozen", "white", "winter", "flake", "water"]}
+{"id": "about_bot-001", "category": "about_bot", "question": "who are you?", "answers": ["booper", "bot"]}
+{"id": "about_bot-002", "category": "about_bot", "question": "what's your name", "answers": ["booper"]}
+{"id": "about_bot-003", "category": "about_bot", "question": "what is your name?", "answers": ["booper"]}
+{"id": "about_bot-004", "category": "about_bot", "question": "what should i call you", "answers": ["booper"]}
+{"id": "about_bot-005", "category": "about_bot", "question": "do you have a name?", "answers": ["booper"]}
+{"id": "about_bot-006", "category": "about_bot", "question": "tell me your name", "answers": ["booper"]}
+{"id": "about_bot-007", "category": "about_bot", "question": "hey, what are you called?", "answers": ["booper"]}
+{"id": "about_bot-008", "category": "about_bot", "question": "are you a bot?", "answers": ["yes", "booper"]}
+{"id": "about_bot-009", "category": "about_bot", "question": "are you a robot", "answers": ["yes", "bot", "booper"]}
+{"id": "about_bot-010", "category": "about_bot", "question": "are you human?", "answers": ["no", "bot", "booper"], "must_not": ["i am human", "i'm human", "im human", "i am a human", "i'm a human", "im a human", "i am a real person", "i'm a real person", "im a real person"]}
+{"id": "about_bot-011", "category": "about_bot", "question": "are you a real person", "answers": ["no", "bot", "booper"], "must_not": ["i am human", "i'm human", "im human", "i am a human", "i'm a human", "im a human", "i am a real person", "i'm a real person", "im a real person"]}
+{"id": "about_bot-012", "category": "about_bot", "question": "is this a bot?", "answers": ["yes", "booper"]}
+{"id": "about_bot-013", "category": "about_bot", "question": "are you a person or a bot", "answers": ["bot", "booper"], "must_not": ["i am human", "i'm human", "im human", "i am a human", "i'm a human", "im a human", "i am a real person", "i'm a real person", "im a real person"]}
+{"id": "about_bot-014", "category": "about_bot", "question": "are you an ai?", "answers": ["yes", "ai", "bot", "booper"]}
+{"id": "about_bot-015", "category": "about_bot", "question": "what are you", "answers": ["bot", "booper"]}
+{"id": "about_bot-016", "category": "about_bot", "question": "introduce yourself", "answers": ["booper", "bot"]}
+{"id": "about_bot-017", "category": "about_bot", "question": "who am i talking to?", "answers": ["booper", "bot"]}
+{"id": "about_bot-018", "category": "about_bot", "question": "whats ur name lol", "answers": ["booper"]}
+{"id": "about_bot-019", "category": "about_bot", "question": "yo who is this", "answers": ["booper", "bot"]}
+{"id": "about_bot-020", "category": "about_bot", "question": "are you a discord bot?", "answers": ["yes", "booper"]}
+{"id": "about_bot-021", "category": "about_bot", "question": "can you tell me who you are", "answers": ["booper", "bot"]}
+{"id": "about_bot-022", "category": "about_bot", "question": "is your name booper?", "answers": ["yes"]}
+{"id": "about_bot-023", "category": "about_bot", "question": "are you chatgpt", "answers": ["no", "booper"], "must_not": ["i am chatgpt", "i'm chatgpt", "im chatgpt"]}
+{"id": "about_bot-024", "category": "about_bot", "question": "is your name steve?", "answers": ["no", "booper"], "must_not": ["my name is steve", "i am steve", "i'm steve", "im steve"]}
+{"id": "about_bot-025", "category": "about_bot", "question": "what do people call you", "answers": ["booper"]}
+{"id": "commonsense-001", "category": "commonsense", "question": "if i drop a glass on the floor what happens?", "answers": ["break", "breaks", "broken", "shatter", "shatters", "smash", "smashes", "crack", "cracks"]}
+{"id": "commonsense-002", "category": "commonsense", "question": "is fire hot?", "answers": ["yes"]}
+{"id": "commonsense-003", "category": "commonsense", "question": "is ice cold", "answers": ["yes"]}
+{"id": "commonsense-004", "category": "commonsense", "question": "can fish breathe underwater?", "answers": ["yes"]}
+{"id": "commonsense-005", "category": "commonsense", "question": "can dogs fly", "answers": ["no"]}
+{"id": "commonsense-006", "category": "commonsense", "question": "can pigs fly?", "answers": ["no"]}
+{"id": "commonsense-007", "category": "commonsense", "question": "is the sun hot", "answers": ["yes"]}
+{"id": "commonsense-008", "category": "commonsense", "question": "do cats bark?", "answers": ["no", "meow"]}
+{"id": "commonsense-009", "category": "commonsense", "question": "does ice melt when it gets warm", "answers": ["yes"]}
+{"id": "commonsense-010", "category": "commonsense", "question": "what happens if you leave ice cream out in the sun?", "answers": ["melt", "melts", "melted", "melting"]}
+{"id": "commonsense-011", "category": "commonsense", "question": "what do you use to cut paper", "answers": ["scissors", "knife"]}
+{"id": "commonsense-012", "category": "commonsense", "question": "what do you wear on your feet?", "answers": ["shoes", "socks", "boots", "sneakers", "shoe"]}
+{"id": "commonsense-013", "category": "commonsense", "question": "where do fish live", "answers": ["water", "sea", "ocean", "river", "lake", "pond"]}
+{"id": "commonsense-014", "category": "commonsense", "question": "what should you drink when you're thirsty?", "answers": ["water", "juice", "milk", "tea", "soda"]}
+{"id": "commonsense-015", "category": "commonsense", "question": "what do you do when you're really tired", "answers": ["sleep", "rest", "nap", "bed"]}
+{"id": "commonsense-016", "category": "commonsense", "question": "it's raining outside, what should i bring?", "answers": ["umbrella", "coat", "jacket", "raincoat", "hood"]}
+{"id": "commonsense-017", "category": "commonsense", "question": "is a mouse bigger than an elephant?", "answers": ["no"]}
+{"id": "commonsense-018", "category": "commonsense", "question": "is an elephant bigger than a cat", "answers": ["yes"]}
+{"id": "commonsense-019", "category": "commonsense", "question": "can you eat rocks?", "answers": ["no"]}
+{"id": "commonsense-020", "category": "commonsense", "question": "should you touch a hot stove", "answers": ["no"]}
+{"id": "commonsense-021", "category": "commonsense", "question": "is it dark at night?", "answers": ["yes"]}
+{"id": "commonsense-022", "category": "commonsense", "question": "do plants need water", "answers": ["yes"]}
+{"id": "commonsense-023", "category": "commonsense", "question": "can a car fly?", "answers": ["no"]}
+{"id": "commonsense-024", "category": "commonsense", "question": "what happens if you put water in the freezer", "answers": ["freeze", "freezes", "frozen", "ice"]}
+{"id": "commonsense-025", "category": "commonsense", "question": "what do cows drink?", "answers": ["water"], "must_not": ["milk"]}
+{"id": "commonsense-026", "category": "commonsense", "question": "which is heavier, a feather or a brick", "answers": ["brick"]}
+{"id": "commonsense-027", "category": "commonsense", "question": "which is bigger, the sun or the moon?", "answers": ["sun"]}
+{"id": "commonsense-028", "category": "commonsense", "question": "what can you use to see in the dark", "answers": ["light", "flashlight", "torch", "lamp", "candle"]}
+{"id": "commonsense-029", "category": "commonsense", "question": "which direction does the sun rise in?", "answers": ["east"]}
+{"id": "commonsense-030", "category": "commonsense", "question": "what comes out of a tap", "answers": ["water"]}
+{"id": "commonsense-031", "category": "commonsense", "question": "is the ocean salty?", "answers": ["yes"]}
+{"id": "commonsense-032", "category": "commonsense", "question": "do birds have feathers", "answers": ["yes"]}
+{"id": "commonsense-033", "category": "commonsense", "question": "do snakes have legs?", "answers": ["no"]}
+{"id": "commonsense-034", "category": "commonsense", "question": "if you're cold, what should you put on", "answers": ["coat", "jacket", "sweater", "jumper", "hoodie", "scarf", "blanket", "warm", "clothes"]}
+{"id": "commonsense-035", "category": "commonsense", "question": "can a baby drive a car?", "answers": ["no"]}
+{"id": "followup-001", "category": "followup", "question": "what's my name?", "answers": ["sam"], "history": [{"role": "user", "content": "my name is sam"}, {"role": "assistant", "content": "nice to meet you sam!"}]}
+{"id": "followup-002", "category": "followup", "question": "what's my favourite colour", "answers": ["purple"], "history": [{"role": "user", "content": "my favourite colour is purple"}, {"role": "assistant", "content": "purple is a nice colour"}]}
+{"id": "followup-003", "category": "followup", "question": "what is my dog called?", "answers": ["biscuit"], "history": [{"role": "user", "content": "i have a dog named biscuit"}, {"role": "assistant", "content": "aww, biscuit is a cute name"}]}
+{"id": "followup-004", "category": "followup", "question": "which country do i live in", "answers": ["canada"], "history": [{"role": "user", "content": "i live in canada"}, {"role": "assistant", "content": "cool, canada is huge"}]}
+{"id": "followup-005", "category": "followup", "question": "how old am i?", "answers": ["30"], "history": [{"role": "user", "content": "i'm 30 years old"}, {"role": "assistant", "content": "nice!"}]}
+{"id": "followup-006", "category": "followup", "question": "now add 2 to that", "answers": ["9"], "history": [{"role": "user", "content": "what's 3 plus 4"}, {"role": "assistant", "content": "7"}]}
+{"id": "followup-007", "category": "followup", "question": "and times 2?", "answers": ["14"], "history": [{"role": "user", "content": "what's 10 minus 3?"}, {"role": "assistant", "content": "7"}]}
+{"id": "followup-008", "category": "followup", "question": "what's my brother's name?", "answers": ["leo"], "history": [{"role": "user", "content": "my brother is called leo"}, {"role": "assistant", "content": "leo is a cool name"}]}
+{"id": "followup-009", "category": "followup", "question": "what did i just eat", "answers": ["pizza"], "history": [{"role": "user", "content": "i just ate a whole pizza"}, {"role": "assistant", "content": "yum, sounds good"}]}
+{"id": "followup-010", "category": "followup", "question": "how many cats do i have?", "answers": ["3"], "history": [{"role": "user", "content": "i have three cats"}, {"role": "assistant", "content": "three cats, nice"}]}
+{"id": "followup-011", "category": "followup", "question": "what food do i like the most", "answers": ["sushi"], "history": [{"role": "user", "content": "my favourite food is sushi"}, {"role": "assistant", "content": "sushi is great"}]}
+{"id": "followup-012", "category": "followup", "question": "what instrument do i play?", "answers": ["guitar"], "history": [{"role": "user", "content": "i play the guitar"}, {"role": "assistant", "content": "that's awesome"}]}
+{"id": "followup-013", "category": "followup", "question": "what are we talking about", "answers": ["ocean", "sea"], "history": [{"role": "user", "content": "let's talk about the ocean"}, {"role": "assistant", "content": "sure, the ocean is really big"}]}
+{"id": "followup-014", "category": "followup", "question": "where am i going tomorrow?", "answers": ["paris"], "history": [{"role": "user", "content": "i'm going to paris tomorrow"}, {"role": "assistant", "content": "have fun in paris!"}]}
+{"id": "followup-015", "category": "followup", "question": "what number did i ask you to remember", "answers": ["42"], "history": [{"role": "user", "content": "remember the number 42 for me"}, {"role": "assistant", "content": "ok, got it"}]}
+{"id": "followup-016", "category": "followup", "question": "what colour is my cat?", "answers": ["orange"], "history": [{"role": "user", "content": "my cat is orange"}, {"role": "assistant", "content": "orange cats are the best"}]}
+{"id": "followup-017", "category": "followup", "question": "what's my job", "answers": ["teacher", "teach", "teaching"], "history": [{"role": "user", "content": "i work as a teacher"}, {"role": "assistant", "content": "teaching is important work"}]}
+{"id": "followup-018", "category": "followup", "question": "what month is my birthday in?", "answers": ["july"], "history": [{"role": "user", "content": "my birthday is in july"}, {"role": "assistant", "content": "a summer birthday!"}]}
+{"id": "followup-019", "category": "followup", "question": "do you remember my name", "answers": ["maya"], "history": [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hey!"}, {"role": "user", "content": "my name is maya"}, {"role": "assistant", "content": "hi maya"}]}
+{"id": "followup-020", "category": "followup", "question": "how did i say i was feeling?", "answers": ["sad"], "history": [{"role": "user", "content": "i'm feeling sad today"}, {"role": "assistant", "content": "sorry to hear that"}]}
+{"id": "followup-021", "category": "followup", "question": "what colour is my car", "answers": ["red"], "history": [{"role": "user", "content": "my car is red"}, {"role": "assistant", "content": "red cars look fast"}]}
+{"id": "followup-022", "category": "followup", "question": "and what about germany?", "answers": ["berlin"], "history": [{"role": "user", "content": "what's the capital of france?"}, {"role": "assistant", "content": "paris"}]}
+{"id": "followup-023", "category": "followup", "question": "what about a bird?", "answers": ["2"], "history": [{"role": "user", "content": "how many legs does a cat have"}, {"role": "assistant", "content": "four"}]}
+{"id": "followup-024", "category": "followup", "question": "what's my sister's name?", "answers": ["zoe"], "history": [{"role": "user", "content": "i have a sister named zoe and a brother named max"}, {"role": "assistant", "content": "nice family"}], "must_not": ["max"]}
+{"id": "followup-025", "category": "followup", "question": "which animal do i like best", "answers": ["penguin", "penguins"], "history": [{"role": "user", "content": "my favourite animal is the penguin"}, {"role": "assistant", "content": "penguins are cool"}]}
+{"id": "chat-001", "category": "chat", "question": "how's your day going?"}
+{"id": "chat-002", "category": "chat", "question": "what's up"}
+{"id": "chat-003", "category": "chat", "question": "hey!"}
+{"id": "chat-004", "category": "chat", "question": "how are you doing"}
+{"id": "chat-005", "category": "chat", "question": "tell me something fun"}
+{"id": "chat-006", "category": "chat", "question": "i'm bored"}
+{"id": "chat-007", "category": "chat", "question": "good morning!"}
+{"id": "chat-008", "category": "chat", "question": "what are you up to?"}
+{"id": "chat-009", "category": "chat", "question": "i had a rough day"}
+{"id": "chat-010", "category": "chat", "question": "lol"}
+{"id": "chat-011", "category": "chat", "question": "do you like music?"}
+{"id": "chat-012", "category": "chat", "question": "what's your favourite food"}
+{"id": "chat-013", "category": "chat", "question": "tell me a joke"}
+{"id": "chat-014", "category": "chat", "question": "i'm so tired"}
+{"id": "chat-015", "category": "chat", "question": "guess what"}
+{"id": "chat-016", "category": "chat", "question": "happy friday!"}
+{"id": "chat-017", "category": "chat", "question": "what should i do this weekend?"}
+{"id": "chat-018", "category": "chat", "question": "i got a new puppy today"}
+{"id": "chat-019", "category": "chat", "question": "that's so funny"}
+{"id": "chat-020", "category": "chat", "question": "thanks for chatting with me"}
+{"id": "chat-021", "category": "chat", "question": "goodnight"}
+{"id": "chat-022", "category": "chat", "question": "how was your weekend?"}
+{"id": "chat-023", "category": "chat", "question": "say something nice"}
+{"id": "chat-024", "category": "chat", "question": "i just finished my exams!"}
+{"id": "chat-025", "category": "chat", "question": "what do you think about rainy days"}
