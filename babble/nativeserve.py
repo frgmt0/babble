@@ -712,9 +712,9 @@ class NativeGenerator(LeanGenerator):
         if not _flag("BABBLE_NATIVE_SPEC"):
             return None, 0, "off"
         try:
-            k = max(1, min(16, int(os.environ.get("BABBLE_NATIVE_SPEC_K", "3") or 3)))
+            k = max(1, min(16, int(os.environ.get("BABBLE_NATIVE_SPEC_K", "1") or 1)))
         except ValueError:
-            k = 3
+            k = 1
         path = Path(os.environ.get("BABBLE_NATIVE_SPEC_TABLE", "").strip() or (model_dir / "spec-ngram.pt"))
         if not path.is_file():
             return None, 0, f"off (no n-gram table at {path})"
