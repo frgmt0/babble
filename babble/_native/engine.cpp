@@ -189,9 +189,49 @@ void rmsnorm(const float* x, const float* w, float* out, int H, float eps) {
 }
 
 // ------------------------------------------------------------ int8 kernels
+// Optional decode-only int4 copy of a Mat (BABBLE_NATIVE_W4, opt-in quality
+// trade). Same 16-row panels; within a panel, K is split into groups of G:
+//   group = [G][8 bytes] nibbles (byte j: col j low nibble, col j+8 high,
+//           stored as q+8 with q in [-8, 7]) then [16] fp16 scales
+// so a panel streams as one contiguous run. The scale is the full per-(row,
+// group) weight scale (the int8 per-row scale is folded in).
+struct Q4 {
+  uint8_t* p = nullptr;
+  int N = 0, K = 0, G = 0;
+  size_t gbytes = 0, pbytes = 0;
+  void alloc(int n, int k, int g) {
+    N = n;
+    K = k;
+    G = g;
+    gbytes = (size_t)g * 8 + 32;
+    pbytes = gbytes * (k / g);
+    p = amalloc<uint8_t>(pbytes * (n / 16));
+  }
+  void release() {
+    free(p);
+    p = nullptr;
+  }
+  const uint8_t* panel(int nb) const { return p + (size_t)nb * pbytes; }
+  // q: K int values in [-8, 7]; sc: K/G fp32 scales
+  void put_row(int dst, const int8_t* q, const float* sc) {
+    uint8_t* base = p + (size_t)(dst / 16) * pbytes;
+    const int j = dst % 16;
+    for (int gi = 0; gi < K / G; ++gi) {
+      uint8_t* gb = base + gi * gbytes;
+      for (int k = 0; k < G; ++k) {
+        uint8_t v = (uint8_t)(q[gi * G + k] + 8) & 0x0F;
+        uint8_t& b = gb[k * 8 + (j & 7)];
+        b = j < 8 ? (uint8_t)((b & 0xF0) | v) : (uint8_t)((b & 0x0F) | (v << 4));
+      }
+      reinterpret_cast<uint16_t*>(gb + (size_t)G * 8)[j] = _cvtss_sh(sc[gi], 0);
+    }
+  }
+};
+
 struct Mat {  // [N/16][K][16] int8 + scale[N]
   int8_t* p = nullptr;
   float* s = nullptr;
+  Q4* q4 = nullptr;  // optional int4 decode copy (rows <= Q4_MAX_M)
   int N = 0, K = 0;
   void alloc(int n, int k) {
     N = n;
@@ -204,6 +244,11 @@ struct Mat {  // [N/16][K][16] int8 + scale[N]
     free(s);
     p = nullptr;
     s = nullptr;
+    if (q4) {
+      q4->release();
+      delete q4;
+      q4 = nullptr;
+    }
   }
   const int8_t* panel(int nb) const { return p + (size_t)nb * K * 16; }
   void put_row(int dst, const int8_t* src, float scale) {
@@ -312,6 +357,96 @@ void tile_rows(const float* const* xs, int M, Src src, int K, float* out) {
 
 inline void panel_rows(const float* const* xs, int M, const int8_t* P, int K, float* out) {
   tile_rows(xs, M, I8Src{P}, K, out);
+}
+
+// ------------------------------------------------------------- int4 decode
+constexpr int Q4_MAX_M = 4;  // decode GEMMs with at most this many rows use the int4 copy
+
+// 8 nibble bytes of one k-row -> cols 0..7 (w0) and 8..15 (w1) as fp32 ints in [-8, 7]
+inline void q4_load(const uint8_t* q, __m256& w0, __m256& w1) {
+  const __m128i m0f = _mm_set1_epi8(0x0F), m8 = _mm_set1_epi8(8);
+  __m128i v = _mm_loadl_epi64(reinterpret_cast<const __m128i*>(q));
+  __m128i lo = _mm_sub_epi8(_mm_and_si128(v, m0f), m8);
+  __m128i hi = _mm_sub_epi8(_mm_and_si128(_mm_srli_epi16(v, 4), m0f), m8);
+  w0 = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(lo));
+  w1 = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(hi));
+}
+
+// out[m][0..16) = sum_g scale_g * sum_{k in g} xs[m][k] * q[k]   (scales applied)
+template <int M, int U>
+inline void q4k16(const float* const* xs, const uint8_t* P, int K, int G, size_t gbytes, float* __restrict out) {
+  __m256 acc[M][2];
+#pragma GCC unroll 8
+  for (int m = 0; m < M; ++m) acc[m][0] = acc[m][1] = _mm256_setzero_ps();
+  const float* x[M];
+#pragma GCC unroll 8
+  for (int m = 0; m < M; ++m) x[m] = xs[m];
+  for (int k0 = 0; k0 < K; k0 += G) {
+    const uint8_t* gb = P + (size_t)(k0 / G) * gbytes;
+    __m256 a[U][M][2];
+#pragma GCC unroll 8
+    for (int u = 0; u < U; ++u)
+#pragma GCC unroll 8
+      for (int m = 0; m < M; ++m) a[u][m][0] = a[u][m][1] = _mm256_setzero_ps();
+    for (int k = 0; k < G; k += U) {
+      if (((k * 8) & 63) == 0) _mm_prefetch(reinterpret_cast<const char*>(gb + k * 8 + PREFETCH), _MM_HINT_T0);
+#pragma GCC unroll 8
+      for (int u = 0; u < U; ++u) {
+        __m256 w0, w1;
+        q4_load(gb + (size_t)(k + u) * 8, w0, w1);
+#pragma GCC unroll 8
+        for (int m = 0; m < M; ++m) {
+          __m256 xb = _mm256_broadcast_ss(x[m] + k0 + k + u);
+          a[u][m][0] = _mm256_fmadd_ps(xb, w0, a[u][m][0]);
+          a[u][m][1] = _mm256_fmadd_ps(xb, w1, a[u][m][1]);
+        }
+      }
+    }
+    const uint16_t* sc = reinterpret_cast<const uint16_t*>(gb + (size_t)G * 8);
+    __m256 s0 = _mm256_cvtph_ps(_mm_loadu_si128(reinterpret_cast<const __m128i*>(sc)));
+    __m256 s1 = _mm256_cvtph_ps(_mm_loadu_si128(reinterpret_cast<const __m128i*>(sc + 8)));
+#pragma GCC unroll 8
+    for (int m = 0; m < M; ++m) {
+      __m256 p0 = a[0][m][0], p1 = a[0][m][1];
+#pragma GCC unroll 8
+      for (int u = 1; u < U; ++u) {
+        p0 = _mm256_add_ps(p0, a[u][m][0]);
+        p1 = _mm256_add_ps(p1, a[u][m][1]);
+      }
+      acc[m][0] = _mm256_fmadd_ps(p0, s0, acc[m][0]);
+      acc[m][1] = _mm256_fmadd_ps(p1, s1, acc[m][1]);
+    }
+  }
+#pragma GCC unroll 8
+  for (int m = 0; m < M; ++m) {
+    _mm256_storeu_ps(out + m * 16, acc[m][0]);
+    _mm256_storeu_ps(out + m * 16 + 8, acc[m][1]);
+  }
+}
+
+// M <= Q4_MAX_M rows over one int4 panel (scales applied).
+inline void q4_panel_rows(const float* const* xs, int M, const Q4& W, int nb, float* out) {
+  const uint8_t* P = W.panel(nb);
+  switch (M) {
+    case 1: q4k16<1, 4>(xs, P, W.K, W.G, W.gbytes, out); break;
+    case 2: q4k16<2, 2>(xs, P, W.K, W.G, W.gbytes, out); break;
+    case 3: q4k16<3, 2>(xs, P, W.K, W.G, W.gbytes, out); break;
+    default: q4k16<4, 1>(xs, P, W.K, W.G, W.gbytes, out); break;
+  }
+}
+
+// y[m][col..col+16) (=|+=) acc   (int4 path: scales already applied)
+inline void epilogue_noscale(const float* acc, int M, float* const* ys, int col, bool add) {
+  for (int m = 0; m < M; ++m) {
+    float* y = ys[m] + col;
+    __m256 v0 = _mm256_loadu_ps(acc + m * 16), v1 = _mm256_loadu_ps(acc + m * 16 + 8);
+    if (add) {
+      v0 = _mm256_add_ps(v0, _mm256_loadu_ps(y));
+      v1 = _mm256_add_ps(v1, _mm256_loadu_ps(y + 8));
+    }
+    _mm256_storeu_ps(y, v0);
+    _mm256_storeu_ps(y + 8, v1);
+  }
 }
 
 // y[m][nb*16 + j] (=|+=) scale * acc
@@ -651,8 +786,17 @@ void forward(Engine& E, int tid) {
   }
   E.pool.barrier();
 
+  // int4 copies (if loaded) serve decode only: the prompt KV stays int8-exact
+  bool q4_ok = E.decode;
   // y rows (=|+=) xs rows . W^T over this thread's panels [nb0, nb1), row-blocked
-  auto gemm = [&](const float* const* xs, float* const* ys, int rows, const Mat& W, int nb0, int nb1, bool add) {
+  auto gemm =[&](const float* const* xs, float* const* ys, int rows, const Mat& W, int nb0, int nb1, bool add) {
+    if (W.q4 && q4_ok && rows <= Q4_MAX_M) {
+      for (int nb = nb0; nb < nb1; ++nb) {
+        q4_panel_rows(xs, rows, *W.q4, nb, T.acc);
+        epilogue_noscale(T.acc, rows, ys, nb * 16, add);
+      }
+      return;
+    }
     for (int m0 = 0; m0 < rows; m0 += MC) {
       int mc = std::min(MC, rows - m0);
       for (int nb = nb0; nb < nb1; ++nb) {
@@ -822,13 +966,22 @@ void forward(Engine& E, int tid) {
       const Mat& W = Ly.w13[e];
       const float* const* xs = T.xs + T.off[e];
       float* const* hs = T.hs + T.off[e];
+      const bool q4 = W.q4 && q4_ok && cnt[e] <= Q4_MAX_M;
+      static const float ones[32] = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+                                     1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
       for (int m0 = 0; m0 < cnt[e]; m0 += MC) {
         const int mc = std::min(MC, cnt[e] - m0);
         for (int j = u0[e]; j < u1[e]; ++j) {
-          panel_rows(xs + m0, mc, W.panel(2 * j), H, T.acc);
-          panel_rows(xs + m0, mc, W.panel(2 * j + 1), H, T.acc2);
-          __m256 s1a = _mm256_loadu_ps(W.s + 32 * j), s1b = _mm256_loadu_ps(W.s + 32 * j + 8);
-          __m256 s3a = _mm256_loadu_ps(W.s + 32 * j + 16), s3b = _mm256_loadu_ps(W.s + 32 * j + 24);
+          if (q4) {
+            q4_panel_rows(xs + m0, mc, *W.q4, 2 * j, T.acc);
+            q4_panel_rows(xs + m0, mc, *W.q4, 2 * j + 1, T.acc2);
+          } else {
+            panel_rows(xs + m0, mc, W.panel(2 * j), H, T.acc);
+            panel_rows(xs + m0, mc, W.panel(2 * j + 1), H, T.acc2);
+          }
+          const float* ws = q4 ? ones : W.s + 32 * j;
+          __m256 s1a = _mm256_loadu_ps(ws), s1b = _mm256_loadu_ps(ws + 8);
+          __m256 s3a = _mm256_loadu_ps(ws + 16), s3b = _mm256_loadu_ps(ws + 24);
           for (int m = 0; m < mc; ++m) {
             for (int hf = 0; hf < 2; ++hf) {
               __m256 gv = _mm256_mul_ps(_mm256_loadu_ps(T.acc + m * 16 + hf * 8), hf ? s1b : s1a);
@@ -868,6 +1021,7 @@ void forward(Engine& E, int tid) {
     T.ys[r] = E.logits + (size_t)r * V;
   }
   split(V / 16, nt, tid, lo, hi);
+  q4_ok = true;  // sampled logits (prefill last row or decode) all come from the same head
   gemm(T.xs, T.ys, R, E.lm, lo, hi, false);
   E.pool.barrier();
 }
@@ -1250,6 +1404,60 @@ int eng_set_matrix(void* p, int kind, int layer, int expert, const int8_t* w, co
       return 0;
   }
   return -2;
+}
+
+// Opt-in int4 decode copy of a matrix already set with eng_set_matrix (same
+// kinds and row mapping). q: rows x cols int8 values in [-8, 7]; scale: rows x
+// (cols/group) fp32 full weight scales (stored fp16). group must divide cols
+// and be a multiple of 4.
+int eng_set_matrix_q4(void* p, int kind, int layer, int expert, const int8_t* q, const float* scale, int rows,
+                      int cols, int group) {
+  Engine* E = static_cast<Engine*>(p);
+  const int H = E->H, FF = E->FF;
+  if (group < 4 || group % 4 || cols % group) return -4;
+  if (kind != 7 && (layer < 0 || layer >= E->NL)) return -3;
+  if ((kind == 4 || kind == 5 || kind == 6) && (expert < 0 || expert >= E->NE)) return -3;
+  Layer* Ly = kind != 7 ? &E->L[layer] : nullptr;
+  Mat* M = nullptr;
+  std::function<int(int)> dst;
+  switch (kind) {
+    case 0: case 1: case 2:
+      if (rows != H || cols != H) return -1;
+      M = &Ly->qkv;
+      dst = [kind, H](int r) { return kind * H + r; };
+      break;
+    case 3:
+      if (rows != H || cols != H) return -1;
+      M = &Ly->o;
+      dst = [](int r) { return r; };
+      break;
+    case 4: case 6:
+      if (rows != FF || cols != H) return -1;
+      M = &Ly->w13[expert];
+      dst = [kind](int r) { return (r / 16) * 32 + (kind == 6 ? 16 : 0) + r % 16; };
+      break;
+    case 5:
+      if (rows != H || cols != FF) return -1;
+      M = &Ly->w2[expert];
+      dst = [](int r) { return r; };
+      break;
+    case 7:
+      if (rows != E->V || cols != H) return -1;
+      M = &E->lm;
+      dst = [](int r) { return r; };
+      break;
+    default:
+      return -2;
+  }
+  if (!M->q4) {
+    M->q4 = new Q4();
+    M->q4->alloc(M->N, M->K, group);
+  } else if (M->q4->G != group) {
+    return -4;
+  }
+  const int ng = cols / group;
+  for (int r = 0; r < rows; ++r) M->q4->put_row(dst(r), q + (size_t)r * cols, scale + (size_t)r * ng);
+  return 0;
 }
 
 // kind: 0=ln1 1=ln2 2=router[NE*H] (dequantized fp32) 3=final norm

@@ -183,12 +183,12 @@ def _qparams(w: torch.Tensor, bits: int, sym: bool, clip: float = 1.0):
     if sym:
         qmax = 2 ** (bits - 1) - 1
         amax = w.abs().amax(-1, keepdim=True).clamp_min(1e-12) * clip
-        s = (amax / qmax).half().float()
+        s = (amax / qmax).half().float().clamp_min(1e-7)
         return s, None, -qmax - 1, qmax
     lo = w.amin(-1, keepdim=True) * clip
     hi = w.amax(-1, keepdim=True) * clip
     qmax = 2**bits - 1
-    s = ((hi - lo).clamp_min(1e-12) / qmax).half().float()
+    s = ((hi - lo) / qmax).half().float().clamp_min(1e-7)
     z = torch.round(-lo / s).clamp(0, qmax)
     return s, z, 0, qmax
 
@@ -493,7 +493,9 @@ def cmd_variant(names):
     for name in names:
         spec = parse_variant(name)
         if spec["method"].startswith("gptq") and hess is None:
-            hess = torch.load(W / "hessians.pt")["H"]
+            hd = torch.load(W / "hessians.pt")
+            # rarely-routed experts: too few calibration tokens for a Hessian -> RTN
+            hess = {k: v for k, v in hd["H"].items() if hd["cnt"][k] >= 128}
         t = time.time()
         over = make_override(packed, spec, hess)
         tq = time.time() - t

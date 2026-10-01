@@ -30,6 +30,7 @@ from __future__ import annotations
 import ctypes
 import json
 import math
+import os
 import threading
 import time
 from dataclasses import dataclass
@@ -44,6 +45,49 @@ from .cpu_runtime import configure_cpu, force_cpu_device
 from .hfserve import HFGenerationStats, HFServeError
 from .leanserve import LeanConfig, LeanGenerator, PrefixKVCache, SamplingConfig
 from .logs import EventLog, NullLog
+
+
+# BABBLE_NATIVE_W4 scopes -> eng_set_matrix kinds (0-2 qkv, 3 o, 4-6 experts, 7 tied head)
+W4_SCOPES = {
+    "all": frozenset(range(8)),
+    "noh": frozenset(range(7)),
+    "exp": frozenset((4, 5, 6)),
+    "attn": frozenset((0, 1, 2, 3)),
+}
+
+
+def parse_w4(spec: str) -> tuple[frozenset, int] | None:
+    """`BABBLE_NATIVE_W4` = "" / "0" / "off" (default) or "<scope>[:<group>]".
+
+    Opt-in QUALITY TRADE: decode GEMMs (<= 4 rows) read an int4 group-wise copy
+    of the scoped matrices (round-to-nearest from the int8 snapshot, symmetric,
+    fp16 group scales); prefill keeps the int8 panels. Scopes: all | noh (all
+    but the tied lm_head) | exp (experts) | attn. Group defaults to 64.
+    """
+    spec = (spec or "").strip().lower()
+    if spec in ("", "0", "off", "none", "false"):
+        return None
+    scope, _, group = spec.partition(":")
+    if scope not in W4_SCOPES:
+        raise NativeUnavailable(f"BABBLE_NATIVE_W4={spec!r}: scope must be one of {sorted(W4_SCOPES)}")
+    try:
+        g = int(group or 64)
+    except ValueError as exc:
+        raise NativeUnavailable(f"BABBLE_NATIVE_W4={spec!r}: bad group") from exc
+    if g < 4 or g % 4:
+        raise NativeUnavailable(f"BABBLE_NATIVE_W4={spec!r}: group must be a multiple of 4")
+    return W4_SCOPES[scope], g
+
+
+def quantize_q4(q: torch.Tensor, scale: torch.Tensor, group: int) -> tuple[torch.Tensor, torch.Tensor]:
+    """int8 rows (q * per-row scale) -> symmetric int4 [-8, 7] + fp32 group scales (fp16-exact)."""
+    w = q.to(torch.float32) * scale.reshape(-1, 1)
+    rows, cols = w.shape
+    wg = w.reshape(rows, cols // group, group)
+    # fp16-exact scales (what the engine stores); the floor keeps all-zero groups finite
+    s = (wg.abs().amax(-1, keepdim=True) / 7.0).clamp_min(1e-4).half().float()
+    q4 = torch.clamp(torch.round(wg / s), -8, 7).to(torch.int8).reshape(rows, cols).contiguous()
+    return q4, s.reshape(rows, cols // group).contiguous()
 
 
 def _ptr(t: torch.Tensor | None) -> int | None:
@@ -69,7 +113,7 @@ class NativeOutput:
 class NativeEngine:
     """One loaded model in the C++ engine. Not thread-safe; serialize calls."""
 
-    def __init__(self, model_dir: Path | str, *, threads: int = 4) -> None:
+    def __init__(self, model_dir: Path | str, *, threads: int = 4, w4: str | None = None) -> None:
         from safetensors import safe_open
 
         model_dir = Path(model_dir)
@@ -93,6 +137,9 @@ class NativeEngine:
         if raw.get("attention_bias") or raw.get("mlp_bias"):
             raise NativeUnavailable("attention/mlp bias is not implemented")
         self.cfg = c
+        self.w4 = parse_w4(os.environ.get("BABBLE_NATIVE_W4", "") if w4 is None else w4)
+        if self.w4 is not None and (c.hidden % self.w4[1] or c.inter % self.w4[1]):
+            raise NativeUnavailable(f"BABBLE_NATIVE_W4 group {self.w4[1]} does not divide hidden/inter")
         self.lib, self.build = _native.load()
         self.threads = max(1, int(threads))
 
@@ -136,6 +183,11 @@ class NativeEngine:
             if rc != 0:
                 raise NativeUnavailable(f"{name} {tuple(q.shape)} does not fit the engine geometry (rc={rc})")
             params += q.numel()
+            if self.w4 is not None and kind in self.w4[0]:
+                q4, s4 = quantize_q4(q, s, self.w4[1])
+                rc = lib.eng_set_matrix_q4(h, kind, layer, expert, _ptr(q4), _ptr(s4), q.shape[0], q.shape[1], self.w4[1])
+                if rc != 0:
+                    raise NativeUnavailable(f"{name}: int4 copy rejected (rc={rc})")
 
         def dense(name: str) -> torch.Tensor:
             v = get(name)

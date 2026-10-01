@@ -66,16 +66,17 @@ def main():
     print(f"{n} positions, mean history {sum(map(len, hists)) / n:.0f} tokens")
     exact = hs @ Wt.T  # [n, V]
 
-    # ---- screens: name -> (scores [n,V], bound [n,V] or None, bytes)
-    screens = {}
     hn = hs.norm(dim=1, keepdim=True)
-    for g in (32, 64, 128):
+
+    def screens():
+      # name, scores [n,V], bound [n,V], bytes
+      for g in (32, 64, 128):
         for bits in (4, 3):
             Wq = rtn(Wt, bits, g, True)
             err = (Wt - Wq).norm(dim=1)  # per-row L2
-            screens[f"int{bits}-g{g}"] = (hs @ Wq.T, hn * err.unsqueeze(0), V * H * bits / 8 + V * (H // g) * 2)
-    U, S, Vh = torch.linalg.svd(Wt, full_matrices=False)
-    for r in (32, 64, 128, 256):
+            yield f"int{bits}-g{g}", hs @ Wq.T, hn * err.unsqueeze(0), V * H * bits / 8 + V * (H // g) * 2
+      U, S, Vh = torch.linalg.svd(Wt, full_matrices=False)
+      for r in (32, 64, 128, 256):
         A = U[:, :r] * S[:r]  # [V, r]
         B = Vh[:r]  # [r, H]
         # store A as int8 per row (what the engine would stream), B fp32 (tiny)
@@ -90,12 +91,12 @@ def main():
         # resid.h = (A - Aq)(B h) + Rp . h_perp ;  bound both by Cauchy-Schwarz
         e1 = (A - Aq).norm(dim=1)
         bound = (hs @ B.T).norm(dim=1, keepdim=True) * e1.unsqueeze(0) + h_perp.norm(dim=1, keepdim=True) * Rp.norm(dim=1).unsqueeze(0)
-        screens[f"lowrank-r{r}-int8"] = (sc, bound, V * r + V * 4 + r * H * 4)
         del resid
+        yield f"lowrank-r{r}-int8", sc, bound, V * r + V * 4 + r * H * 4
 
     results = []
     pen = [penalize(exact[i], hists[i]) for i in range(n)]
-    for name, (sc, bound, nbytes) in screens.items():
+    for name, sc, bound, nbytes in screens():
         t = time.time()
         row = {"screen": name, "MB": round(nbytes / 1e6, 2), "positions": n}
         raw_top = exact.topk(K, dim=1).indices
