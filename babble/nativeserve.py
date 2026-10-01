@@ -82,14 +82,16 @@ def parse_w4(spec: str) -> tuple[frozenset, int] | None:
 def parse_head2(spec: str) -> tuple[int, float, int] | None:
     """`BABBLE_NATIVE_HEAD2` = "" / "0" / "off" (default) or "<N>[:<delta>[:<group>]]".
 
-    Opt-in two-stage lm_head for sampled tokens: an int4 (group-wise, default
-    g64) screen of the tied head picks the top-N unpenalized tokens; those plus
-    every penalized token get exact int8 logits. If the k-th best exact
-    candidate is not at least `delta` (default 0.5 logits) above the best
-    screen score left outside, the row falls back to the full exact head.
-    Reads ~half the head bytes per step. Exact whenever no outside token's
-    screen error exceeds the margin; measured coverage on 7k real positions was
-    100% at N=256 (docs: track w4 NOTES).
+    Opt-in two-stage lm_head for sampled rows: an int4 (group-wise, default
+    g64) screen of the tied head is penalized like the sampler does
+    (repetition, frequency/presence, no-repeat-ngram), and the N..2N best
+    tokens get exact int8 logits. If the k-th best exact (penalized) candidate
+    is not at least `delta` (default 0.5 logits) above the best screen score
+    left outside, the row falls back to the full exact head. Reads about half
+    the head bytes per step. Sampling is exact whenever no outside token's
+    screen error exceeds the margin: on 120 real prompts x best-of-4 every
+    token matched the exact head, with 0 fallbacks (track w4 NOTES). Greedy
+    uses k = 1; top_k > N, or top-k off, always takes the exact head.
     """
     spec = (spec or "").strip().lower()
     if spec in ("", "0", "off", "none", "false"):
@@ -462,6 +464,8 @@ class NativeGenerator(LeanGenerator):
             native_build="compiled" if build.built else "cached",
             native_build_s=round(build.build_s, 2),
             native_lib=str(build.path),
+            native_w4=os.environ.get("BABBLE_NATIVE_W4", "") if self.engine.w4 else "",
+            native_head2=os.environ.get("BABBLE_NATIVE_HEAD2", "") if self.engine.head2 else "",
             load_s=round(load_s, 2),
             prefix_cache_mb=self.prefix_cache.max_bytes // (1024 * 1024),
             prefix_cache_entries=self.prefix_cache.max_entries,
@@ -537,10 +541,16 @@ class NativeGenerator(LeanGenerator):
         if self.prefix_cache.enabled:
             opts.append(f"prefix KV cache ({self.prefix_cache.max_bytes // (1024 * 1024)} MB)")
         opts.append("frequency/presence penalties on" if self._extra_penalties else "frequency/presence penalties off")
+        if self.engine.head2:
+            opts.append(f"two-stage lm_head (N={self.engine.head2[0]})")
+        dtype = "int8/fp32"
+        if self.engine.w4:
+            dtype = f"int8/fp32 + int4 g{self.engine.w4[1]} decode (QUALITY TRADE)"
+            opts.append("int4 decode weights (BABBLE_NATIVE_W4, lossy)")
         return {
             "model": self.model_id,
             "params": self.param_count,
-            "dtype": "int8/fp32",
+            "dtype": dtype,
             "backend": "hf-native",
             "runtime": "native",
             "optimizations": tuple(opts),
