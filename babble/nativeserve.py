@@ -20,6 +20,11 @@ emits ``<eos>`` leaves the batch (row compaction); generation stops when all
 have. The engine draws from its own RNG, seeded per call from torch's global
 generator, so `torch.manual_seed` still makes a run reproducible.
 
+The K/V cache (and so every prefix snapshot) is stored as fp16 by default
+(``BABBLE_NATIVE_KV=fp16``; ``fp32`` keeps the original full-precision cache).
+fp16 halves the bandwidth of long-context attention and the size of a
+snapshot; it passes the same lossless gate (see docs/reports).
+
 Unusable here (CPU without AVX2/FMA/F16C, no compiler, failed build, a
 snapshot shape the kernels do not implement) raises `NativeUnavailable`, which
 `hfserve.make_generator` logs and answers with the lean runtime.
@@ -66,10 +71,26 @@ class NativeOutput:
     last_s: float
 
 
+KV_TYPES = {"fp32": 0, "fp16": 1}
+DEFAULT_KV = "fp16"
+
+
+def kv_type_from_env() -> str:
+    """``BABBLE_NATIVE_KV`` (fp16 | fp32); unset or empty means the default."""
+    import os
+
+    raw = os.environ.get("BABBLE_NATIVE_KV", "").strip().lower()
+    if not raw:
+        return DEFAULT_KV
+    if raw not in KV_TYPES:
+        raise HFServeError(f"BABBLE_NATIVE_KV={raw!r}; expected one of {sorted(KV_TYPES)}")
+    return raw
+
+
 class NativeEngine:
     """One loaded model in the C++ engine. Not thread-safe; serialize calls."""
 
-    def __init__(self, model_dir: Path | str, *, threads: int = 4) -> None:
+    def __init__(self, model_dir: Path | str, *, threads: int = 4, kv: str | None = None) -> None:
         from safetensors import safe_open
 
         model_dir = Path(model_dir)
@@ -110,7 +131,12 @@ class NativeEngine:
         if not h:
             raise NativeUnavailable(f"native engine rejected the geometry {c}")
         self._h = h
+        self.kv = kv_type_from_env() if kv is None else str(kv).strip().lower()
         try:
+            if self.kv not in KV_TYPES:
+                raise HFServeError(f"unknown native KV type {self.kv!r}; expected one of {sorted(KV_TYPES)}")
+            if self.lib.eng_set_kv_type(h, KV_TYPES[self.kv]) != KV_TYPES[self.kv]:
+                raise NativeUnavailable(f"native engine rejected KV type {self.kv}")
             self._load(get, names)
         except BaseException:
             self.close()
@@ -186,11 +212,13 @@ class NativeEngine:
 
     # ---- prefix snapshots ------------------------------------------------------
 
-    def kv_floats(self, positions: int) -> int:
-        return int(self.lib.eng_kv_floats(self._h, int(positions)))
-
     def kv_bytes(self, positions: int) -> int:
-        return 4 * self.kv_floats(positions)
+        """Size of a prefix snapshot of ``positions`` tokens (fp16 KV: half of fp32)."""
+        return int(self.lib.eng_kv_bytes(self._h, int(positions)))
+
+    def new_snapshot(self, positions: int) -> torch.Tensor:
+        """An uninitialized snapshot buffer (raw bytes; layout is engine-internal)."""
+        return torch.empty(self.kv_bytes(positions), dtype=torch.uint8)
 
     # ---- correctness paths -------------------------------------------------
 
@@ -207,7 +235,7 @@ class NativeEngine:
         t = torch.tensor(ids, dtype=torch.int32)
         T = len(ids)
         out = torch.empty(T - start, self.cfg.vocab)
-        kv_out = torch.empty(self.kv_floats(T)) if export else None
+        kv_out = self.new_snapshot(T) if export else None
         rc = self.lib.eng_forward(self._h, _ptr(t), T, start, _ptr(kv_in), int(kv_in_len), _ptr(kv_out), _ptr(out))
         if rc != 0:
             raise ValueError(f"eng_forward rejected T={T} start={start} (rc={rc})")
@@ -396,7 +424,7 @@ class NativeGenerator(LeanGenerator):
                     reused = 0
                 cache.record(reused)
                 if self.engine.kv_bytes(P) <= cache.max_bytes:
-                    kv_out = torch.empty(self.engine.kv_floats(P))
+                    kv_out = self.engine.new_snapshot(P)
             seed = int(torch.randint(0, 2**62, (1,)).item())
             entered = time.perf_counter()
             out = self.engine.generate(
@@ -436,6 +464,7 @@ class NativeGenerator(LeanGenerator):
             "shared prompt prefill",
             "grouped-expert batched decode",
             "row compaction",
+            f"{self.engine.kv} KV cache, flash attention (split-K decode)",
         ]
         if self.prefix_cache.enabled:
             opts.append(f"prefix KV cache ({self.prefix_cache.max_bytes // (1024 * 1024)} MB)")

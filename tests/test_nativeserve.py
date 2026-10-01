@@ -206,7 +206,7 @@ def test_prefix_restore_equals_full_prefill(engine, cut) -> None:
     ids = _ids(60, 11)
     full, _ = engine.forward(ids)
     head, kv = engine.forward(ids[:cut], export=True)
-    assert kv is not None and kv.numel() == engine.kv_floats(cut)
+    assert kv is not None and kv.numel() * kv.element_size() == engine.kv_bytes(cut)
     tail, _ = engine.forward(ids, start=cut, kv_in=kv, kv_in_len=cut)
     got = torch.cat([head, tail])
     # Same arithmetic, different row tiling: agreement to float rounding.

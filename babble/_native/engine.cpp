@@ -50,7 +50,7 @@
 #include <utility>
 #include <vector>
 
-#define BABBLE_NATIVE_ABI 3
+#define BABBLE_NATIVE_ABI 4
 
 namespace {
 
@@ -149,6 +149,13 @@ inline float hsum(__m256 v) {
   lo = _mm_add_ps(lo, hi);
   lo = _mm_add_ps(lo, _mm_movehl_ps(lo, lo));
   lo = _mm_add_ss(lo, _mm_movehdup_ps(lo));
+  return _mm_cvtss_f32(lo);
+}
+
+inline float hsum_max(__m256 v) {
+  __m128 lo = _mm_max_ps(_mm256_castps256_ps128(v), _mm256_extractf128_ps(v, 1));
+  lo = _mm_max_ps(lo, _mm_movehl_ps(lo, lo));
+  lo = _mm_max_ss(lo, _mm_movehdup_ps(lo));
   return _mm_cvtss_f32(lo);
 }
 
@@ -393,7 +400,6 @@ struct Thread {
   float* acc = nullptr;  // Mcap x 16 kernel output
   float* acc2 = nullptr;
   float* sc = nullptr;   // attention scores (6 rows x ld) / sampler scratch (>= V)
-  int ld = 0;
   const float** xs = nullptr;
   float** ys = nullptr;
   float** hs = nullptr;
@@ -402,6 +408,16 @@ struct Thread {
   std::vector<std::pair<float, int>> sv;  // sampler survivors
   std::vector<float> p;                   // sampler probabilities
   std::vector<float> kth;                 // top-k scratch for large k
+  // attention scratch (see attend()): roped queries, fp32 staging of one K/V
+  // block, scores/probabilities, and the online-softmax state of up to QBMAX rows
+  float* aq = nullptr;   // QBMAX x HD
+  float* akf = nullptr;  // KB x HD (blocked K)
+  float* avf = nullptr;  // KB x HD (row-major V)
+  float* as = nullptr;   // QBMAX x KB
+  float* ao = nullptr;   // QBMAX x HD
+  float* am = nullptr;   // QBMAX running max
+  float* al = nullptr;   // QBMAX running sum
+  float* ak = nullptr;   // HD (roped key)
 };
 
 struct Engine {
@@ -417,7 +433,10 @@ struct Engine {
   float* cosT = nullptr;
   float* sinT = nullptr;  // [maxctx][HD/2]
 
-  float *Kp = nullptr, *Vp = nullptr, *Ks = nullptr, *Vs = nullptr;
+  // KV storage: fp32 or fp16 (kv16) elements, es bytes each; typed views via kp<KT>() etc.
+  bool kv16 = false;
+  int es = 4;
+  char *Kp = nullptr, *Vp = nullptr, *Ks = nullptr, *Vs = nullptr;
   int Pcap = 0, Scap = 0, Smax = 0, P = 0;
 
   // shared activations, Mcap rows
@@ -437,11 +456,26 @@ struct Engine {
   int g = 0;                 // decode: index in stream cache
   int logits_from = 0;       // rows [logits_from, M) get logits
 
-  size_t kv_stride_k() const { return (size_t)Pcap * HD; }
-  float* kp(int l, int h) { return Kp + ((size_t)l * NH + h) * Pcap * HD; }
-  float* vp(int l, int h) { return Vp + ((size_t)l * NH + h) * Pcap * HD; }
-  float* ks(int l, int s, int h) { return Ks + (((size_t)l * Smax + s) * NH + h) * Scap * HD; }
-  float* vs(int l, int s, int h) { return Vs + (((size_t)l * Smax + s) * NH + h) * Scap * HD; }
+  template <class KT> KT* kp(int l, int h) { return reinterpret_cast<KT*>(Kp) + ((size_t)l * NH + h) * Pcap * HD; }
+  template <class KT> KT* vp(int l, int h) { return reinterpret_cast<KT*>(Vp) + ((size_t)l * NH + h) * Pcap * HD; }
+  template <class KT> KT* ks(int l, int s, int h) { return reinterpret_cast<KT*>(Ks) + (((size_t)l * Smax + s) * NH + h) * Scap * HD; }
+  template <class KT> KT* vs(int l, int s, int h) { return reinterpret_cast<KT*>(Vs) + (((size_t)l * Smax + s) * NH + h) * Scap * HD; }
+
+  // decode split-K partials: [NH][chunks][rows][HD + 2] = (max, sum, unnormalized out[HD])
+  float* part = nullptr;
+  size_t part_cap = 0;
+  int part_chunks = 0, part_rows = 0;
+  std::atomic<int>* wq = nullptr;  // 2 work counters per layer (dynamic attention scheduling)
+  void ensure_parts(int rows, int chunks) {
+    const size_t need = (size_t)NH * chunks * rows * (HD + 2);
+    part_chunks = chunks;
+    part_rows = rows;
+    if (need <= part_cap) return;
+    free(part);
+    part_cap = need;
+    part = amalloc<float>(need);
+  }
+  float* part_at(int h, int c, int m) { return part + (((size_t)h * part_chunks + c) * part_rows + m) * (HD + 2); }
 
   void ensure_rows(int m) {
     if (m <= Mcap) return;
@@ -475,8 +509,8 @@ struct Engine {
     if (p <= Pcap) return;
     free(Kp); free(Vp);
     Pcap = p;
-    Kp = amalloc<float>((size_t)NL * NH * p * HD);
-    Vp = amalloc<float>((size_t)NL * NH * p * HD);
+    Kp = amalloc<char>((size_t)NL * NH * p * HD * es);
+    Vp = amalloc<char>((size_t)NL * NH * p * HD * es);
   }
   void ensure_streams(int s, int cap) {
     cap = (int)up16(cap);
@@ -484,33 +518,40 @@ struct Engine {
     free(Ks); free(Vs);
     Smax = std::max(s, Smax);
     Scap = std::max(cap, Scap);
-    Ks = amalloc<float>((size_t)NL * Smax * NH * Scap * HD);
-    Vs = amalloc<float>((size_t)NL * Smax * NH * Scap * HD);
+    Ks = amalloc<char>((size_t)NL * Smax * NH * Scap * HD * es);
+    Vs = amalloc<char>((size_t)NL * Smax * NH * Scap * HD * es);
+  }
+  // Switch the KV element type. Drops every KV buffer (snapshots taken in the
+  // other type are not importable afterwards).
+  void set_kv16(bool on) {
+    free(Kp); free(Vp); free(Ks); free(Vs);
+    Kp = Vp = Ks = Vs = nullptr;
+    Pcap = Scap = Smax = P = 0;
+    kv16 = on;
+    es = on ? 2 : 4;
   }
 
-  // Packed prefix snapshot: per (layer, head), up16(P)*HD floats of blocked K
-  // then P*HD floats of V.
+  // Packed prefix snapshot: per (layer, head), up16(P)*HD elements of blocked K
+  // then P*HD elements of V, in the engine's KV element type (es bytes each).
   size_t kv_unit(int p) const { return up16(p) * HD + (size_t)p * HD; }
-  size_t kv_floats(int p) const { return (size_t)NL * NH * kv_unit(p); }
+  size_t kv_bytes(int p) const { return (size_t)NL * NH * kv_unit(p) * es; }
 
   // (l,h) units [lo, hi) of the snapshot <-> the prompt KV region
-  void kv_export(int p, float* out, int lo, int hi) {
-    const size_t unit = kv_unit(p);
+  void kv_export(int p, char* out, int lo, int hi) {
+    const size_t unit = kv_unit(p) * es, region = (size_t)Pcap * HD * es;
     for (int u = lo; u < hi; ++u) {
-      const int l = u / NH, h = u % NH;
-      float* dst = out + (size_t)u * unit;
-      memcpy(dst, kp(l, h), up16(p) * HD * sizeof(float));
-      memcpy(dst + up16(p) * HD, vp(l, h), (size_t)p * HD * sizeof(float));
+      char* dst = out + (size_t)u * unit;
+      memcpy(dst, Kp + u * region, up16(p) * HD * es);
+      memcpy(dst + up16(p) * HD * es, Vp + u * region, (size_t)p * HD * es);
     }
   }
   // Import positions [0, n) of a snapshot taken at length `stored` (n <= stored).
-  void kv_import(const float* in, int stored, int n, int lo, int hi) {
-    const size_t unit = kv_unit(stored);
+  void kv_import(const char* in, int stored, int n, int lo, int hi) {
+    const size_t unit = kv_unit(stored) * es, region = (size_t)Pcap * HD * es;
     for (int u = lo; u < hi; ++u) {
-      const int l = u / NH, h = u % NH;
-      const float* src = in + (size_t)u * unit;
-      memcpy(kp(l, h), src, up16(n) * HD * sizeof(float));
-      memcpy(vp(l, h), src + up16(stored) * HD, (size_t)n * HD * sizeof(float));
+      const char* src = in + (size_t)u * unit;
+      memcpy(Kp + u * region, src, up16(n) * HD * es);
+      memcpy(Vp + u * region, src + up16(stored) * HD * es, (size_t)n * HD * es);
     }
   }
 
@@ -524,10 +565,12 @@ struct Engine {
     }
     lm.release();
     free(normf); free(cosT); free(sinT);
-    free(Kp); free(Vp); free(Ks); free(Vs);
+    free(Kp); free(Vp); free(Ks); free(Vs); free(part);
+    delete[] wq;
     free(x); free(xn); free(qkv); free(att); free(hbuf); free(expert); free(logits);
     for (auto& t : tl) {
       free(t.xn); free(t.acc); free(t.acc2); free(t.sc); free(t.xs); free(t.ys); free(t.hs); free(t.order);
+      free(t.aq); free(t.akf); free(t.avf); free(t.as); free(t.ao); free(t.am); free(t.al); free(t.ak);
     }
   }
 };
@@ -541,76 +584,368 @@ void rope(float* v, const float* c, const float* s, int half) {
   }
 }
 
-// K for position t goes to its 16-position block: blk[t/16][d][t%16].
-inline void put_k(float* base, int t, const float* k, int HD) {
-  float* b = base + (size_t)(t / 16) * HD * 16 + (t % 16);
-  for (int d = 0; d < HD; ++d) b[d * 16] = k[d];
+// ---------------------------------------------------------------- attention
+// KV elements are fp32 or fp16 (F16C, round-to-nearest-even on store). Every
+// attention read goes through the cache, so prefill, decode and prefix restore
+// all see the same (possibly fp16-rounded) K/V.
+inline __m256 kv_ld8(const float* p) { return _mm256_loadu_ps(p); }
+inline __m256 kv_ld8(const uint16_t* p) { return _mm256_cvtph_ps(_mm_loadu_si128(reinterpret_cast<const __m128i*>(p))); }
+inline void kv_st8(float* p, __m256 v) { _mm256_storeu_ps(p, v); }
+inline void kv_st8(uint16_t* p, __m256 v) {
+  _mm_storeu_si128(reinterpret_cast<__m128i*>(p), _mm256_cvtps_ph(v, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
+}
+inline void kv_st1(float* p, float v) { *p = v; }
+inline void kv_st1(uint16_t* p, float v) { *p = _cvtss_sh(v, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC); }
+
+constexpr int KB = 64;     // key positions per attention block (staged as fp32, L1-resident)
+constexpr int QBMAX = 48;  // query rows per attention work unit
+constexpr int DCH = 256;   // decode: shared-prompt positions per split-K chunk (multiple of KB)
+
+// K for position t goes to its 16-position block: blk[t/16][d][t%16]; V is row-major [t][HD].
+template <class KT>
+inline void put_k(KT* base, int t, const float* k, int HD) {
+  KT* b = base + (size_t)(t / 16) * HD * 16 + (t % 16);
+  for (int d = 0; d < HD; ++d) kv_st1(b + d * 16, k[d]);
+}
+template <class KT>
+inline void put_v(KT* base, int t, const float* v, int HD) {
+  KT* b = base + (size_t)t * HD;
+  for (int d = 0; d < HD; d += 8) kv_st8(b + d, _mm256_loadu_ps(v + d));
 }
 
-// sc[r*ld + t] = q_r . K[t] * scale for t in [0, n) (whole 16-blocks are written,
-// so up to 15 slots past n get scratch values; callers write in increasing order).
-void qk_scores(const float* const* qs, int R, const float* Kb, int n, float* sc, int ld, int HD, float scale) {
-  alignas(32) float tmp[6 * 16];
-  const __m256 s = _mm256_set1_ps(scale);
-  for (int b = 0; b * 16 < n; ++b) {
-    tile_rows(qs, R, F32Src{Kb + (size_t)b * HD * 16, 16}, HD, tmp);
-    for (int r = 0; r < R; ++r) {
-      float* o = sc + (size_t)r * ld + b * 16;
-      _mm256_storeu_ps(o, _mm256_mul_ps(_mm256_load_ps(tmp + r * 16), s));
-      _mm256_storeu_ps(o + 8, _mm256_mul_ps(_mm256_load_ps(tmp + r * 16 + 8), s));
+// fp32 view of n (multiple of 8) KV elements: fp32 storage is used in place,
+// fp16 is converted once into `tmp` and then reused by every query row.
+inline const float* stage(const float* src, size_t, float*) { return src; }
+inline const float* stage(const uint16_t* src, size_t n, float* tmp) {
+  for (size_t i = 0; i < n; i += 32) {
+    _mm_prefetch(reinterpret_cast<const char*>(src + i) + 512, _MM_HINT_T0);
+    _mm256_store_ps(tmp + i, kv_ld8(src + i));
+    _mm256_store_ps(tmp + i + 8, kv_ld8(src + i + 8));
+    _mm256_store_ps(tmp + i + 16, kv_ld8(src + i + 16));
+    _mm256_store_ps(tmp + i + 24, kv_ld8(src + i + 24));
+  }
+  return tmp;
+}
+
+// s[r*KB + j*16 + i] = scale * q_r . K[j*16 + i] for 16-position blocks j < nb16
+// of a blocked fp32 K tile. U independent accumulator sets over d (U | HD) keep
+// the 1-2 row case from being FMA-latency bound.
+template <int RR, int U>
+inline void qk_tile(const float* const* q, const float* kf, int nb16, int HD, float scale, float* s) {
+  const __m256 sc = _mm256_set1_ps(scale);
+  for (int j = 0; j < nb16; ++j) {
+    const float* kb = kf + (size_t)j * HD * 16;
+    __m256 a[U][RR][2];
+#pragma GCC unroll 8
+    for (int u = 0; u < U; ++u)
+#pragma GCC unroll 8
+      for (int r = 0; r < RR; ++r) a[u][r][0] = a[u][r][1] = _mm256_setzero_ps();
+    for (int d = 0; d < HD; d += U) {
+#pragma GCC unroll 8
+      for (int u = 0; u < U; ++u) {
+        const __m256 w0 = _mm256_loadu_ps(kb + (d + u) * 16), w1 = _mm256_loadu_ps(kb + (d + u) * 16 + 8);
+#pragma GCC unroll 8
+        for (int r = 0; r < RR; ++r) {
+          const __m256 xb = _mm256_broadcast_ss(q[r] + d + u);
+          a[u][r][0] = _mm256_fmadd_ps(xb, w0, a[u][r][0]);
+          a[u][r][1] = _mm256_fmadd_ps(xb, w1, a[u][r][1]);
+        }
+      }
+    }
+#pragma GCC unroll 8
+    for (int r = 0; r < RR; ++r) {
+      __m256 s0 = a[0][r][0], s1 = a[0][r][1];
+#pragma GCC unroll 8
+      for (int u = 1; u < U; ++u) {
+        s0 = _mm256_add_ps(s0, a[u][r][0]);
+        s1 = _mm256_add_ps(s1, a[u][r][1]);
+      }
+      _mm256_storeu_ps(s + r * KB + j * 16, _mm256_mul_ps(s0, sc));
+      _mm256_storeu_ps(s + r * KB + j * 16 + 8, _mm256_mul_ps(s1, sc));
     }
   }
 }
 
-// In place: s[t] = exp(s[t] - max) for t < len, 0 for t in [len, zero_to). Returns the sum.
-float softmax_row(float* s, int len, int zero_to) {
-  __m256 mv = _mm256_set1_ps(-INFINITY);
-  int t = 0;
-  for (; t + 8 <= len; t += 8) mv = _mm256_max_ps(mv, _mm256_loadu_ps(s + t));
-  alignas(32) float lanes[8];
-  _mm256_store_ps(lanes, mv);
-  float mx = lanes[0];
-  for (int i = 1; i < 8; ++i) mx = std::max(mx, lanes[i]);
-  for (; t < len; ++t) mx = std::max(mx, s[t]);
-  const int pad = (len + 7) & ~7;
-  for (int i = len; i < pad; ++i) s[i] = -INFINITY;
-  mv = _mm256_set1_ps(mx);
-  __m256 sum = _mm256_setzero_ps();
-  for (t = 0; t < pad; t += 8) {
-    __m256 e = exp256(_mm256_sub_ps(_mm256_loadu_ps(s + t), mv));
-    if (t + 8 > len) {  // mask the padded lanes to exactly 0
-      alignas(32) int32_t mk[8];
-      for (int i = 0; i < 8; ++i) mk[i] = (t + i < len) ? -1 : 0;
-      e = _mm256_and_ps(e, _mm256_castsi256_ps(_mm256_load_si256(reinterpret_cast<const __m256i*>(mk))));
+// o[r][0..HD) += sum_{t < kb} p[r*KB + t] * V[t][:] (row-major fp32 V tile).
+template <int RR, int U>
+inline void pv_tile(const float* p, const float* vf, int kb, int HD, float* o) {
+  for (int d0 = 0; d0 < HD; d0 += 16) {
+    __m256 a[U][RR][2];
+#pragma GCC unroll 8
+    for (int r = 0; r < RR; ++r) {
+      a[0][r][0] = _mm256_loadu_ps(o + r * HD + d0);
+      a[0][r][1] = _mm256_loadu_ps(o + r * HD + d0 + 8);
+#pragma GCC unroll 8
+      for (int u = 1; u < U; ++u) a[u][r][0] = a[u][r][1] = _mm256_setzero_ps();
     }
+    int t = 0;
+    for (; t + U <= kb; t += U) {
+#pragma GCC unroll 8
+      for (int u = 0; u < U; ++u) {
+        const float* v = vf + (size_t)(t + u) * HD + d0;
+        const __m256 w0 = _mm256_loadu_ps(v), w1 = _mm256_loadu_ps(v + 8);
+#pragma GCC unroll 8
+        for (int r = 0; r < RR; ++r) {
+          const __m256 pb = _mm256_broadcast_ss(p + r * KB + t + u);
+          a[u][r][0] = _mm256_fmadd_ps(pb, w0, a[u][r][0]);
+          a[u][r][1] = _mm256_fmadd_ps(pb, w1, a[u][r][1]);
+        }
+      }
+    }
+    for (; t < kb; ++t) {
+      const float* v = vf + (size_t)t * HD + d0;
+      const __m256 w0 = _mm256_loadu_ps(v), w1 = _mm256_loadu_ps(v + 8);
+#pragma GCC unroll 8
+      for (int r = 0; r < RR; ++r) {
+        const __m256 pb = _mm256_broadcast_ss(p + r * KB + t);
+        a[0][r][0] = _mm256_fmadd_ps(pb, w0, a[0][r][0]);
+        a[0][r][1] = _mm256_fmadd_ps(pb, w1, a[0][r][1]);
+      }
+    }
+#pragma GCC unroll 8
+    for (int r = 0; r < RR; ++r) {
+      __m256 s0 = a[0][r][0], s1 = a[0][r][1];
+#pragma GCC unroll 8
+      for (int u = 1; u < U; ++u) {
+        s0 = _mm256_add_ps(s0, a[u][r][0]);
+        s1 = _mm256_add_ps(s1, a[u][r][1]);
+      }
+      _mm256_storeu_ps(o + r * HD + d0, s0);
+      _mm256_storeu_ps(o + r * HD + d0 + 8, s1);
+    }
+  }
+}
+
+inline void qk_rows(int rr, const float* const* q, const float* kf, int nb16, int HD, float scale, float* s) {
+  switch (rr) {
+    case 1: qk_tile<1, 4>(q, kf, nb16, HD, scale, s); break;
+    case 2: qk_tile<2, 2>(q, kf, nb16, HD, scale, s); break;
+    case 3: qk_tile<3, 2>(q, kf, nb16, HD, scale, s); break;
+    case 4: qk_tile<4, 1>(q, kf, nb16, HD, scale, s); break;
+    case 5: qk_tile<5, 1>(q, kf, nb16, HD, scale, s); break;
+    default: qk_tile<6, 1>(q, kf, nb16, HD, scale, s); break;
+  }
+}
+inline void pv_rows(int rr, const float* p, const float* vf, int kb, int HD, float* o) {
+  switch (rr) {
+    case 1: pv_tile<1, 4>(p, vf, kb, HD, o); break;
+    case 2: pv_tile<2, 2>(p, vf, kb, HD, o); break;
+    case 3: pv_tile<3, 2>(p, vf, kb, HD, o); break;
+    case 4: pv_tile<4, 1>(p, vf, kb, HD, o); break;
+    case 5: pv_tile<5, 1>(p, vf, kb, HD, o); break;
+    default: pv_tile<6, 1>(p, vf, kb, HD, o); break;
+  }
+}
+
+// In place over one score row: s[t] = exp(s[t] - m) for t < valid, 0 for
+// t in [valid, kb). Returns the sum. kb <= KB; the row has KB slots.
+inline float exp_row(float* s, int valid, int kb, float m) {
+  const __m256 mv = _mm256_set1_ps(m);
+  __m256 sum = _mm256_setzero_ps();
+  int t = 0;
+  for (; t + 8 <= valid; t += 8) {
+    const __m256 e = exp256(_mm256_sub_ps(_mm256_loadu_ps(s + t), mv));
     _mm256_storeu_ps(s + t, e);
     sum = _mm256_add_ps(sum, e);
   }
-  for (int i = pad; i < zero_to; ++i) s[i] = 0.0f;
+  if (t < valid) {  // masked last vector: lanes >= valid become exactly 0
+    const __m256i lane = _mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7);
+    const __m256 keep = _mm256_castsi256_ps(_mm256_cmpgt_epi32(_mm256_set1_epi32(valid - t), lane));
+    const __m256 e = _mm256_and_ps(exp256(_mm256_sub_ps(_mm256_loadu_ps(s + t), mv)), keep);
+    _mm256_storeu_ps(s + t, e);
+    sum = _mm256_add_ps(sum, e);
+    t += 8;
+  }
+  for (; t < kb; t += 8) _mm256_storeu_ps(s + t, _mm256_setzero_ps());
   return hsum(sum);
 }
 
-// outs[r][0..HD) (=|+=) sum_t ps[r][t] * V[t][:], t in [0, n); V row-major [t][HD].
-void pv(const float* const* ps, int R, const float* Vb, int n, float* const* outs, bool add, int HD) {
-  alignas(32) float tmp[6 * 16];
-  for (int d0 = 0; d0 < HD; d0 += 16) {
-    tile_rows(ps, R, F32Src{Vb + d0, HD}, n, tmp);
-    for (int r = 0; r < R; ++r) {
-      float* o = outs[r] + d0;
-      __m256 a = _mm256_load_ps(tmp + r * 16), b = _mm256_load_ps(tmp + r * 16 + 8);
-      if (add) {
-        a = _mm256_add_ps(a, _mm256_loadu_ps(o));
-        b = _mm256_add_ps(b, _mm256_loadu_ps(o + 8));
+// Online-softmax (flash) attention of R <= QBMAX query rows over key positions
+// [t0, t1) of one KV region (t0 a multiple of 16). Row r sees positions
+// t <= lim[r] (lim ascending; nullptr = no mask). State: T.am / T.al / T.ao,
+// initialised by attn_begin. Each K/V block is staged to fp32 once and then
+// used by every row, so the rows of a unit read each K/V line exactly once.
+inline void attn_begin(Thread& T, int R, int HD) {
+  for (int r = 0; r < R; ++r) {
+    T.am[r] = -INFINITY;
+    T.al[r] = 0.0f;
+  }
+  memset(T.ao, 0, (size_t)R * HD * sizeof(float));
+}
+
+template <class KT>
+void attend(Thread& T, const float* const* qs, int R, const int* lim, const KT* Kb, const KT* Vb, int t0, int t1,
+            int HD, float scale) {
+  float* s = T.as;
+  for (int b0 = t0; b0 < t1; b0 += KB) {
+    if (lim && lim[R - 1] < b0) break;
+    const int kb = std::min(KB, t1 - b0), nb16 = (kb + 15) / 16;
+    const float* kf = stage(Kb + (size_t)b0 * HD, (size_t)nb16 * 16 * HD, T.akf);
+    const float* vf = stage(Vb + (size_t)b0 * HD, (size_t)kb * HD, T.avf);
+    for (int r0 = 0; r0 < R; r0 += 6) {
+      const int rr = std::min(6, R - r0);
+      if (lim && lim[r0 + rr - 1] < b0) continue;  // this row tile is fully masked here (later tiles may not be)
+      float* sr = s + (size_t)r0 * KB;
+      qk_rows(rr, qs + r0, kf, nb16, HD, scale, sr);
+      for (int r = r0; r < r0 + rr; ++r) {
+        float* row = s + (size_t)r * KB;
+        const int valid = lim ? std::min(kb, lim[r] - b0 + 1) : kb;
+        if (valid <= 0) {
+          for (int t = 0; t < kb; t += 8) _mm256_storeu_ps(row + t, _mm256_setzero_ps());
+          continue;
+        }
+        float mx = row[0];
+        {
+          __m256 mv = _mm256_set1_ps(-INFINITY);
+          int t = 0;
+          for (; t + 8 <= valid; t += 8) mv = _mm256_max_ps(mv, _mm256_loadu_ps(row + t));
+          mx = std::max(mx, hsum_max(mv));
+          for (; t < valid; ++t) mx = std::max(mx, row[t]);
+        }
+        const float mold = T.am[r], mnew = std::max(mold, mx);
+        const float sum = exp_row(row, valid, kb, mnew);
+        if (mnew != mold) {
+          const float corr = std::exp(mold - mnew);  // 0 on the first block (mold = -inf)
+          T.al[r] *= corr;
+          if (mold != -INFINITY) {
+            const __m256 cv = _mm256_set1_ps(corr);
+            float* o = T.ao + (size_t)r * HD;
+            for (int d = 0; d < HD; d += 8) _mm256_storeu_ps(o + d, _mm256_mul_ps(_mm256_loadu_ps(o + d), cv));
+          }
+          T.am[r] = mnew;
+        }
+        T.al[r] += sum;
       }
-      _mm256_storeu_ps(o, a);
-      _mm256_storeu_ps(o + 8, b);
+      pv_rows(rr, sr, vf, kb, HD, T.ao + (size_t)r0 * HD);
     }
   }
 }
 
-inline void scale_row(float* o, float s, int n) {
-  __m256 v = _mm256_set1_ps(s);
-  for (int i = 0; i < n; i += 8) _mm256_storeu_ps(o + i, _mm256_mul_ps(_mm256_loadu_ps(o + i), v));
+// Attention for layer l over E.M rows: q/k/v in E.qkv, output in E.att.
+template <class KT>
+void attention(Engine& E, int tid, int l) {
+  Thread& T = E.tl[tid];
+  const int M = E.M, nt = E.nt;
+  const int H = E.H, NH = E.NH, HD = E.HD, QKV = E.QKV;
+  const int half = HD / 2;
+  const float ascale = E.attn_scale;
+  const float* qs[QBMAX];
+  int lim[QBMAX];
+  if (E.decode) {
+    // Flash-decoding split-K: units are (head, chunk of the shared prompt, row
+    // tile) -- every stream's query scores the chunk while it is staged, so the
+    // prompt K/V is read once per step for all streams and spread over all
+    // threads -- plus one unit per (head, row) for that stream's generated
+    // tail, which also does the RoPE + cache append. A second pass merges the
+    // per-chunk (max, sum, out) partials.
+    const int P = E.P, g = E.g, n2 = g + 1, pos = P + g;
+    const int C = (P + DCH - 1) / DCH, RT = (M + QBMAX - 1) / QBMAX;
+    const int npre = NH * C * RT, nunits = npre + NH * M;
+    const float* cs = E.cosT + (size_t)pos * half;
+    const float* sn = E.sinT + (size_t)pos * half;
+    std::atomic<int>& w = E.wq[2 * l];
+    for (int u; (u = w.fetch_add(1, std::memory_order_relaxed)) < nunits;) {
+      int h, c, r0, R;
+      const KT *Kb, *Vb;
+      int t0, t1;
+      if (u < npre) {
+        h = u % NH;
+        c = (u / NH) % C;
+        r0 = (u / NH / C) * QBMAX;
+        R = std::min(QBMAX, M - r0);
+        Kb = E.kp<KT>(l, h);
+        Vb = E.vp<KT>(l, h);
+        t0 = c * DCH;
+        t1 = std::min(P, t0 + DCH);
+      } else {
+        const int v = u - npre;
+        h = v % NH;
+        c = C;
+        r0 = v / NH;
+        R = 1;
+        const int st = E.sid[r0];
+        const float* kv = E.qkv + (size_t)r0 * QKV + H + h * HD;
+        memcpy(T.ak, kv, HD * sizeof(float));
+        rope(T.ak, cs, sn, half);
+        KT* kd = E.ks<KT>(l, st, h);
+        KT* vd = E.vs<KT>(l, st, h);
+        put_k(kd, g, T.ak, HD);
+        put_v(vd, g, kv + H, HD);
+        Kb = kd;
+        Vb = vd;
+        t0 = 0;
+        t1 = n2;
+      }
+      for (int r = 0; r < R; ++r) {
+        float* q = T.aq + (size_t)r * HD;
+        memcpy(q, E.qkv + (size_t)(r0 + r) * QKV + h * HD, HD * sizeof(float));
+        rope(q, cs, sn, half);
+        qs[r] = q;
+      }
+      attn_begin(T, R, HD);
+      attend<KT>(T, qs, R, nullptr, Kb, Vb, t0, t1, HD, ascale);
+      for (int r = 0; r < R; ++r) {
+        float* pp = E.part_at(h, c, r0 + r);
+        pp[0] = T.am[r];
+        pp[1] = T.al[r];
+        memcpy(pp + 2, T.ao + (size_t)r * HD, HD * sizeof(float));
+      }
+    }
+    E.pool.barrier();
+    for (int it = tid; it < M * NH; it += nt) {
+      const int m = it / NH, h = it % NH;
+      float mx = -INFINITY;
+      for (int c = 0; c <= C; ++c) mx = std::max(mx, E.part_at(h, c, m)[0]);
+      float* out = E.att + (size_t)m * H + h * HD;
+      for (int d = 0; d < HD; d += 8) _mm256_storeu_ps(out + d, _mm256_setzero_ps());
+      float L = 0.0f;
+      for (int c = 0; c <= C; ++c) {
+        const float* pp = E.part_at(h, c, m);
+        if (pp[1] == 0.0f) continue;
+        const float f = std::exp(pp[0] - mx);
+        L += pp[1] * f;
+        const __m256 fv = _mm256_set1_ps(f);
+        for (int d = 0; d < HD; d += 8)
+          _mm256_storeu_ps(out + d, _mm256_fmadd_ps(fv, _mm256_loadu_ps(pp + 2 + d), _mm256_loadu_ps(out + d)));
+      }
+      const __m256 iv = _mm256_set1_ps(1.0f / L);
+      for (int d = 0; d < HD; d += 8) _mm256_storeu_ps(out + d, _mm256_mul_ps(_mm256_loadu_ps(out + d), iv));
+    }
+  } else {
+    const int S0 = E.start;
+    for (int it = tid; it < M * NH; it += nt) {
+      int m = it / NH, h = it % NH, pos = S0 + m;
+      float* q = E.qkv + (size_t)m * QKV + h * HD;
+      rope(q, E.cosT + (size_t)pos * half, E.sinT + (size_t)pos * half, half);
+      rope(q + H, E.cosT + (size_t)pos * half, E.sinT + (size_t)pos * half, half);
+      put_k(E.kp<KT>(l, h), pos, q + H, HD);
+      put_v(E.vp<KT>(l, h), pos, q + 2 * H, HD);
+    }
+    E.pool.barrier();
+    // Causal flash attention: units are (query block of QB rows, head), the
+    // most expensive (latest) blocks first, handed out dynamically. Each staged
+    // K/V block of KB positions serves all QB rows.
+    int QB = QBMAX;
+    if ((long)M * NH < 8L * nt * QBMAX) QB = std::min(QBMAX, std::max(6, (int)((M * NH / (8 * nt) + 5) / 6 * 6)));
+    const int nqb = (M + QB - 1) / QB, nunits = nqb * NH;
+    std::atomic<int>& w = E.wq[2 * l + 1];
+    for (int u; (u = w.fetch_add(1, std::memory_order_relaxed)) < nunits;) {
+      const int qb = nqb - 1 - u / NH, h = u % NH;
+      const int i0 = qb * QB, R = std::min(QB, M - i0);
+      for (int r = 0; r < R; ++r) {
+        qs[r] = E.qkv + (size_t)(i0 + r) * QKV + h * HD;
+        lim[r] = S0 + i0 + r;
+      }
+      attn_begin(T, R, HD);
+      attend<KT>(T, qs, R, lim, E.kp<KT>(l, h), E.vp<KT>(l, h), 0, S0 + i0 + R, HD, ascale);
+      for (int r = 0; r < R; ++r) {
+        float* out = E.att + (size_t)(i0 + r) * H + h * HD;
+        const float* o = T.ao + (size_t)r * HD;
+        const __m256 iv = _mm256_set1_ps(1.0f / T.al[r]);
+        for (int d = 0; d < HD; d += 8) _mm256_storeu_ps(out + d, _mm256_mul_ps(_mm256_loadu_ps(o + d), iv));
+      }
+    }
+  }
 }
 
 // Normalized rows for all M rows: per-thread private copy when M is small
@@ -635,11 +970,11 @@ inline int position(const Engine& E, int m) { return E.decode ? E.P + E.g : E.st
 void forward(Engine& E, int tid) {
   Thread& T = E.tl[tid];
   const int M = E.M, nt = E.nt;
-  const int H = E.H, NH = E.NH, HD = E.HD, NE = E.NE, FF = E.FF, V = E.V, QKV = E.QKV;
-  const int half = HD / 2;
-  const float ascale = E.attn_scale;
+  const int H = E.H, NE = E.NE, FF = E.FF, V = E.V, QKV = E.QKV;
   int lo, hi;
 
+  if (tid == 0)
+    for (int i = 0; i < 2 * E.NL; ++i) E.wq[i].store(0, std::memory_order_relaxed);
   // embedding (dequant int8 row * scale, exactly what the reference computes)
   split(M, nt, tid, lo, hi);
   for (int m = lo; m < hi; ++m) {
@@ -674,77 +1009,8 @@ void forward(Engine& E, int tid) {
     gemm(T.xs, T.ys, M, Ly.qkv, lo, hi, false);
     E.pool.barrier();
 
-    float* sc = T.sc;
-    const int ld = T.ld;
-    const float* qs[6];
-    float* outs[6];
-    float sums[6];
-    if (E.decode) {
-      // one item per head: RoPE + cache append for every stream, then the shared
-      // prefix is scored for all streams at once (read once), tails per stream
-      const int n2 = E.g + 1;
-      for (int h = tid; h < NH; h += nt) {
-        float* kpb = E.kp(l, h);
-        float* vpb = E.vp(l, h);
-        for (int m = 0; m < M; ++m) {
-          int s = E.sid[m], pos = position(E, m);
-          float* q = E.qkv + (size_t)m * QKV + h * HD;
-          rope(q, E.cosT + (size_t)pos * half, E.sinT + (size_t)pos * half, half);
-          rope(q + H, E.cosT + (size_t)pos * half, E.sinT + (size_t)pos * half, half);
-          put_k(E.ks(l, s, h), E.g, q + H, HD);
-          memcpy(E.vs(l, s, h) + (size_t)E.g * HD, q + 2 * H, HD * 4);
-        }
-        for (int r0 = 0; r0 < M; r0 += 6) {
-          const int R = std::min(6, M - r0);
-          for (int r = 0; r < R; ++r) {
-            qs[r] = E.qkv + (size_t)(r0 + r) * QKV + h * HD;
-            outs[r] = E.att + (size_t)(r0 + r) * H + h * HD;
-          }
-          if (E.P > 0) qk_scores(qs, R, kpb, E.P, sc, ld, HD, ascale);
-          for (int r = 0; r < R; ++r)
-            qk_scores(qs + r, 1, E.ks(l, E.sid[r0 + r], h), n2, sc + (size_t)r * ld + E.P, ld, HD, ascale);
-          for (int r = 0; r < R; ++r) {
-            sums[r] = softmax_row(sc + (size_t)r * ld, E.P + n2, E.P + n2);
-            qs[r] = sc + (size_t)r * ld;  // reuse as probability rows
-          }
-          if (E.P > 0) pv(qs, R, vpb, E.P, outs, false, HD);
-          for (int r = 0; r < R; ++r) {
-            const float* pr = qs[r] + E.P;
-            pv(&pr, 1, E.vs(l, E.sid[r0 + r], h), n2, outs + r, E.P > 0, HD);
-            scale_row(outs[r], 1.0f / sums[r], HD);
-          }
-        }
-      }
-    } else {
-      const int S0 = E.start;
-      for (int it = tid; it < M * NH; it += nt) {
-        int m = it / NH, h = it % NH, pos = S0 + m;
-        float* q = E.qkv + (size_t)m * QKV + h * HD;
-        rope(q, E.cosT + (size_t)pos * half, E.sinT + (size_t)pos * half, half);
-        rope(q + H, E.cosT + (size_t)pos * half, E.sinT + (size_t)pos * half, half);
-        put_k(E.kp(l, h), pos, q + H, HD);
-        memcpy(E.vp(l, h) + (size_t)pos * HD, q + 2 * H, HD * 4);
-      }
-      E.pool.barrier();
-      // causal attention in 6-query tiles over keys [0, S0 + i0 + R); items
-      // interleave (tile, head) so the growing cost of later tiles spreads out
-      const int tiles = (M + 5) / 6;
-      for (int it = tid; it < tiles * NH; it += nt) {
-        const int tile = it / NH, h = it % NH;
-        const int i0 = tile * 6, R = std::min(6, M - i0), n = S0 + i0 + R;
-        for (int r = 0; r < R; ++r) {
-          qs[r] = E.qkv + (size_t)(i0 + r) * QKV + h * HD;
-          outs[r] = E.att + (size_t)(i0 + r) * H + h * HD;
-        }
-        qk_scores(qs, R, E.kp(l, h), n, sc, ld, HD, ascale);
-        for (int r = 0; r < R; ++r) {
-          sums[r] = softmax_row(sc + (size_t)r * ld, S0 + i0 + r + 1, n);
-          qs[r] = sc + (size_t)r * ld;
-        }
-        pv(qs, R, E.vp(l, h), n, outs, false, HD);
-        for (int r = 0; r < R; ++r) scale_row(outs[r], 1.0f / sums[r], HD);
-      }
-    }
+    if (E.kv16) attention<uint16_t>(E, tid, l);
+    else attention<float>(E, tid, l);
     E.pool.barrier();
 
     for (int m = 0; m < M; ++m) {
@@ -1000,9 +1266,9 @@ struct GenJob {
   Engine* E;
   const int32_t* prompt;
   int T, start, ns, max_new;
-  const float* kv_in;
+  const char* kv_in;
   int kv_in_len;
-  float* kv_out;
+  char* kv_out;
   SampleParams sp;
   std::vector<Stream> st;
   std::vector<int> active;    // stream ids still generating
@@ -1027,7 +1293,7 @@ void setup_decode(GenJob& J, int step) {
   E.logits_from = 0;
 }
 
-void import_prefix(Engine& E, const float* in, int stored, int n, int tid) {
+void import_prefix(Engine& E, const char* in, int stored, int n, int tid) {
   if (!in || n <= 0) return;
   int lo, hi;
   split(E.NL * E.NH, E.nt, tid, lo, hi);
@@ -1035,7 +1301,7 @@ void import_prefix(Engine& E, const float* in, int stored, int n, int tid) {
   E.pool.barrier();
 }
 
-void export_prefix(Engine& E, float* out, int p, int tid) {
+void export_prefix(Engine& E, char* out, int p, int tid) {
   if (!out) return;
   int lo, hi;
   split(E.NL * E.NH, E.nt, tid, lo, hi);
@@ -1115,9 +1381,9 @@ struct FullJob {
   const int32_t* ids;
   int T, prefill;
   float* out;
-  const float* kv_in;
+  const char* kv_in;
   int kv_in_len, start;
-  float* kv_out;
+  char* kv_out;
 };
 
 // Prefill `prefill` tokens, then decode the rest one at a time (single stream),
@@ -1203,9 +1469,18 @@ void* eng_create(int nthreads, int hidden, int heads, int layers, int experts, i
   E->tl.resize(E->nt);
   for (auto& t : E->tl) {
     t.xn = amalloc<float>((size_t)SMALL_M * hidden);
-    t.ld = (int)up16(maxctx) + 64;
-    t.sc = amalloc<float>(std::max<size_t>(vocab, (size_t)6 * t.ld) + 64);
+    t.sc = amalloc<float>((size_t)vocab + 64);
+    t.aq = amalloc<float>((size_t)QBMAX * hd);
+    t.akf = amalloc<float>((size_t)KB * hd);
+    t.avf = amalloc<float>((size_t)KB * hd);
+    t.as = amalloc<float>((size_t)QBMAX * KB);
+    t.ao = amalloc<float>((size_t)QBMAX * hd);
+    t.am = amalloc<float>(QBMAX);
+    t.al = amalloc<float>(QBMAX);
+    t.ak = amalloc<float>(hd);
   }
+  E->wq = new std::atomic<int>[2 * layers];
+  for (int i = 0; i < 2 * layers; ++i) E->wq[i].store(0);
   E->ensure_rows(64);
   E->pool.start(E->nt);
   return E;
@@ -1277,13 +1552,22 @@ void eng_set_rope(void* p, const float* cosT, const float* sinT) {
   memcpy(E->sinT, sinT, n * 4);
 }
 
-// Floats in a prefix snapshot of `p` positions.
-long long eng_kv_floats(void* p, int positions) { return (long long)static_cast<Engine*>(p)->kv_floats(positions); }
+// Bytes in a prefix snapshot of `positions` positions (depends on the KV type).
+long long eng_kv_bytes(void* p, int positions) { return (long long)static_cast<Engine*>(p)->kv_bytes(positions); }
+
+// KV element type: 0 = fp32, 1 = fp16. Drops all KV state; returns the type set.
+int eng_set_kv_type(void* p, int type) {
+  Engine* E = static_cast<Engine*>(p);
+  if (type != 0 && type != 1) return -1;
+  E->set_kv16(type == 1);
+  return type;
+}
+int eng_kv_type(void* p) { return static_cast<Engine*>(p)->kv16 ? 1 : 0; }
 
 // Logits for rows [start, T) of `ids` (out: [T-start][V]). Positions [0, start)
 // come from the snapshot kv_in (taken at kv_in_len >= start). If kv_out is
 // given, the prompt KV [0, T) is exported to it (eng_kv_floats(T) floats).
-int eng_forward(void* p, const int32_t* ids, int T, int start, const float* kv_in, int kv_in_len, float* kv_out,
+int eng_forward(void* p, const int32_t* ids, int T, int start, const void* kv_in, int kv_in_len, void* kv_out,
                 float* out) {
   Engine* E = static_cast<Engine*>(p);
   if (T < 1 || T > E->maxctx || start < 0 || start >= T) return -1;
@@ -1292,7 +1576,7 @@ int eng_forward(void* p, const int32_t* ids, int T, int start, const float* kv_i
   E->ensure_rows(M);
   E->ensure_prefix(T);
   E->ensure_logits(M);
-  FullJob J{E, ids, T, T, out, kv_in, kv_in_len, start, kv_out};
+  FullJob J{E, ids, T, T, out, static_cast<const char*>(kv_in), kv_in_len, start, static_cast<char*>(kv_out)};
   E->tokens = ids + start;
   E->M = M;
   E->start = start;
@@ -1310,6 +1594,7 @@ int eng_forward_incremental(void* p, const int32_t* ids, int T, int prefill, flo
   E->ensure_rows(prefill);
   E->ensure_prefix(prefill);
   E->ensure_streams(1, T - prefill + 1);
+  E->ensure_parts(1, (prefill + DCH - 1) / DCH + 1);
   E->ensure_logits(prefill);
   FullJob J{E, ids, T, prefill, out, nullptr, 0, 0, nullptr};
   E->tokens = ids;
@@ -1329,7 +1614,7 @@ int eng_forward_incremental(void* p, const int32_t* ids, int T, int prefill, flo
 // logprob [ns] (sum of the chosen tokens' post-warp log-probabilities);
 // timing[0]=prefill_s [1]=first token [2]=total [3]=last token, from call entry.
 // Returns the number of decode steps, or < 0 on bad arguments.
-int eng_generate(void* p, const int32_t* prompt, int T, int start, const float* kv_in, int kv_in_len, float* kv_out,
+int eng_generate(void* p, const int32_t* prompt, int T, int start, const void* kv_in, int kv_in_len, void* kv_out,
                  int ns, int max_new, const SampleParams* sp, uint64_t seed, int32_t* out_tokens, int32_t* counts,
                  double* logprob, double* timing) {
   Engine* E = static_cast<Engine*>(p);
@@ -1344,9 +1629,9 @@ int eng_generate(void* p, const int32_t* prompt, int T, int start, const float* 
   J.prompt = prompt;
   J.T = T;
   J.start = start;
-  J.kv_in = kv_in;
+  J.kv_in = static_cast<const char*>(kv_in);
   J.kv_in_len = kv_in_len;
-  J.kv_out = kv_out;
+  J.kv_out = static_cast<char*>(kv_out);
   J.ns = ns;
   J.max_new = max_new;
   J.sp = *sp;
@@ -1363,6 +1648,7 @@ int eng_generate(void* p, const int32_t* prompt, int T, int start, const float* 
   E->ensure_rows(std::max(T - start, ns));
   E->ensure_prefix(T);
   E->ensure_streams(ns, max_new);
+  E->ensure_parts(ns, (T + DCH - 1) / DCH + 1);
   E->ensure_logits(ns);
   E->tokens = prompt + start;
   E->M = T - start;

@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 SOURCE = Path(__file__).resolve().with_name("engine.cpp")
-ABI_VERSION = 3
+ABI_VERSION = 4
 # -march=haswell (AVX2 + FMA + F16C) rather than -march=native: the same build
 # key then means the same instructions and the same float results on any CPU
 # that passes the feature check.
@@ -188,8 +188,12 @@ def _declare(lib: ctypes.CDLL) -> ctypes.CDLL:
     lib.eng_set_vector.argtypes = [vp, i32, i32, vp]
     lib.eng_set_rope.restype = None
     lib.eng_set_rope.argtypes = [vp, vp, vp]
-    lib.eng_kv_floats.restype = ctypes.c_longlong
-    lib.eng_kv_floats.argtypes = [vp, i32]
+    lib.eng_kv_bytes.restype = ctypes.c_longlong
+    lib.eng_kv_bytes.argtypes = [vp, i32]
+    lib.eng_set_kv_type.restype = i32
+    lib.eng_set_kv_type.argtypes = [vp, i32]
+    lib.eng_kv_type.restype = i32
+    lib.eng_kv_type.argtypes = [vp]
     lib.eng_forward.restype = i32
     lib.eng_forward.argtypes = [vp, vp, i32, i32, vp, i32, vp, vp]
     lib.eng_forward_incremental.restype = i32
