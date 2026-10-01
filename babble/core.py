@@ -26,6 +26,7 @@ from typing import Callable, Protocol, Sequence
 from .blocklist import Blocklist, row_fingerprint
 from .config import CORRECTION_MARKER, Settings
 from .conversation import (
+    USER_PREFIX,
     ConversationTurn,
     conversation_prompt,
     used_history,
@@ -249,6 +250,11 @@ class Reply:
     # The author may continue this exchange as a conversation (both grants),
     # so `Babble.prewarm` may pre-prefill the next turn's transcript.
     continues: bool = False
+
+
+#: Stand-in for "a medium-sized next message" (~256 BPE tokens) when
+#: `Babble.prewarm` checks whether the next turn would trim the window.
+PREWARM_PROBE = "a " * 255 + "a"
 
 
 def _accepts_kwarg(fn: Callable, name: str) -> bool:
@@ -812,7 +818,19 @@ class Babble:
             max_turns=self.settings.conversation_max_turns,
             overflow_keep=self._overflow_keep(),
         )
-        return warm(self._generation_prompt(turns, ""))
+        likely = self._generation_prompt(turns, "")
+        info = warm(likely)
+        # Near the token cap, a longer next message trims the window first,
+        # which a warm of `likely` cannot serve. Warm that trimmed window too
+        # when a medium-sized message would already cause it.
+        probed = self._generation_prompt(turns, PREWARM_PROBE)
+        if probed.endswith(PREWARM_PROBE):
+            alt = probed[: len(probed) - len(PREWARM_PROBE)]
+            if alt != likely and alt.endswith(USER_PREFIX):
+                result = warm(alt)
+                if isinstance(info, dict):
+                    info = {**info, "alt": result}
+        return info
 
     def _conversation_history(
         self, msg: IncomingMessage, *, allowed: bool

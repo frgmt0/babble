@@ -57,22 +57,22 @@ def _serialize(history: Iterable[ConversationTurn], current_user: str) -> str:
 
 def _trim_to_floor(
     kept: list[ConversationTurn],
-    current_user: str,
     fits_low: Callable[[str], bool],
 ) -> list[ConversationTurn]:
-    """Drop oldest turns until the transcript fits the low watermark.
+    """Drop oldest turns until the *history* fits the low watermark.
 
-    Called only once the transcript has overflowed its real cap. If even the
-    current message alone does not fit the low watermark, give up on the
-    chunked trim and return ``kept`` unchanged, so the caller's ordinary
-    one-turn-at-a-time trim keeps as much history as the real cap allows.
+    Called only once the transcript has overflowed its real cap. The floor is
+    measured on the history alone (serialized up to the trailing ``user: ``),
+    not on the current message, so where the window lands after a trim does
+    not depend on how long the message that triggered it was: the window is
+    predictable before the next message arrives, which is what lets the bot
+    pre-prefill it. The caller's ordinary one-turn-at-a-time trim then makes
+    room for an unusually long current message, exactly as before.
     """
 
     trimmed = list(kept)
-    while trimmed and not fits_low(_serialize(trimmed, current_user)):
+    while trimmed and not fits_low(_serialize(trimmed, "")):
         trimmed.pop(0)
-    if not trimmed and not fits_low(_serialize((), current_user)):
-        return list(kept)
     return trimmed
 
 
@@ -161,11 +161,7 @@ def conversation_prompt(
         raise ValueError("conversation character budget is too small for the user role")
 
     if kept and len(_serialize(kept, current_user)) > cap:
-        kept = _trim_to_floor(
-            kept,
-            current_user,
-            lambda value: len(value) <= overflow_floor(cap, overflow_keep),
-        )
+        kept = _trim_to_floor(kept, lambda value: len(value) <= overflow_floor(cap, overflow_keep))
     while kept and len(_serialize(kept, current_user)) > cap:
         kept.pop(0)
 
@@ -218,7 +214,7 @@ def conversation_prompt_for_token_budget(
         def fits_low(value: str) -> bool:
             return (char_cap <= 0 or len(value) <= low_chars) and token_count(value) <= low_tokens
 
-        kept = _trim_to_floor(kept, current_user, fits_low)
+        kept = _trim_to_floor(kept, fits_low)
         prompt = _serialize(kept, current_user)
     while kept and not fits(prompt):
         kept.pop(0)

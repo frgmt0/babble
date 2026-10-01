@@ -468,6 +468,7 @@ def test_char_formatter_overflow_keep_matches_until_overflow():
 def test_prewarm_text_is_the_exact_prefix_of_the_next_prompt(settings, log):
     _enable(settings)
     settings.conversation_max_turns = 3
+    settings.conversation_max_tokens = 10_000  # far from the cap: one warm per reply
     settings.conversation_overflow_keep = 0.5
     gen = _CountingFormatterGenerator()
     brain = Babble(settings, generator=gen, log=log)
@@ -484,6 +485,38 @@ def test_prewarm_text_is_the_exact_prefix_of_the_next_prompt(settings, log):
         if i:
             # what was warmed after the previous reply is how this prompt starts
             assert gen.prompts[-1] == gen.warmed[-2] + f"turn {i}"
+
+
+def test_prewarm_near_the_token_cap_also_warms_the_trimmed_window(settings, log):
+    from babble.core import PREWARM_PROBE
+
+    _enable(settings)
+    settings.conversation_max_turns = 50
+    settings.conversation_max_chars = 0
+    settings.conversation_max_tokens = 2000
+    settings.conversation_overflow_keep = 0.5
+    gen = _CountingFormatterGenerator()
+    brain = Babble(settings, generator=gen, log=log)
+    gateway = FakeDiscord(brain)
+    gateway.onboard(ALICE)
+    replies = _capture_replies(brain)
+
+    last, alts = None, 0
+    for i in range(60):
+        # every fifth message is long enough to force a trim on its own
+        text = f"turn {i}" + (" " + "x" * 400 if i % 5 == 4 else "")
+        if i:
+            warmed = list(gen.warmed[-2:]) if "alt" in info else [gen.warmed[-1]]
+        last = gateway.ping(ALICE, text, reply_to=last.id if last else None)[0]
+        if i:
+            # whichever way the window went, one of the warms is its prefix
+            assert any(gen.prompts[-1] == w + text for w in warmed), i
+        info = brain.prewarm(replies[-1])
+        if "alt" in info:
+            alts += 1
+            assert len(gen.warmed[-1]) < len(gen.warmed[-2])
+    trims = sum(not b.startswith(a[: a.rindex("user: ")]) for a, b in zip(gen.prompts, gen.prompts[1:]))
+    assert alts and trims >= 2 and len(PREWARM_PROBE) > 300
 
 
 def test_prewarm_is_skipped_without_retained_context(settings, log):
