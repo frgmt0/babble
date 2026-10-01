@@ -57,6 +57,13 @@ DODGES = (
 # Dodges only when they are the entire reply ("what" opens real answers too).
 EXACT_DODGES = ("why", "what", "huh", "hmm", "maybe")
 
+QUESTION_OPENERS = frozenset({
+    "what", "why", "how", "who", "where", "when", "which", "whose",
+    "do", "does", "did", "dont", "doesnt", "didnt", "are", "arent", "is", "isnt", "am", "can", "cant",
+    "could", "would", "will", "wont", "should", "shall", "have", "has", "had", "may", "might",
+    "wanna", "u", "you", "ur", "and", "but", "so", "or", "huh", "hmm", "eh", "really", "wait",
+    "lol", "well", "idk", "any", "anything", "got",
+})
 ECHO_OVERLAP = 0.6
 REPEAT_MIN_TOKENS = 8
 
@@ -89,6 +96,7 @@ def tokens(text: str) -> list[str]:
     s = str(text or "").lower()
     s = s.replace("’", "'").replace("‘", "'")
     s = re.sub(r"(?<=\d),(?=\d{3}\b)", "", s)  # 1,000 -> 1000
+    s = re.sub(r"(?<=\d)\.(?=\d)", "p", s)  # 12.5 stays one token ("12p5"), never "12"
     s = re.sub(r"'s\b", "", s)  # russia's -> russia, what's -> what
     s = s.replace("'", "")  # don't -> dont, i'm -> im
     s = re.sub(r"[^a-z0-9]+", " ", s)
@@ -158,10 +166,18 @@ def is_non_answer(response: str) -> bool:
         for d in DODGES:
             if joined == d or joined.startswith(d + " "):
                 return True
-    # Only questions: every sentence-ish chunk ends with "?".
+    # Only questions: every sentence ends with "?" and every comma clause in
+    # it opens like a question ("pretty good, you?" carries an answer).
     chunks = [c.strip() for c in re.split(r"(?<=[.!?])\s+|\n+", text) if c.strip()]
     chunks = [c for c in chunks if tokens(c)]
-    return bool(chunks) and all(c.rstrip(" \"')").endswith("?") for c in chunks)
+    if not chunks or not all(c.rstrip(" \"')").endswith("?") for c in chunks):
+        return False
+    for chunk in chunks:
+        for clause in re.split(r"[,;:]", chunk):
+            ct = tokens(clause)
+            if ct and ct[0] not in QUESTION_OPENERS:
+                return False
+    return True
 
 
 def is_repetitive(response: str) -> bool:
