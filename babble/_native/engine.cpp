@@ -15,7 +15,10 @@
 // so one kernel serves both decode (M = number of streams, weights streamed
 // once from DRAM for all streams) and prefill (M = prompt tokens, the panel
 // stays in L1 while every 6-row tile of activations passes over it). The
-// per-row scale is applied once in the epilogue.
+// per-row scale is applied once in the epilogue. Prefill-sized row blocks
+// (>= gemm_min_rows) instead run on a per-thread repacked copy of the panel:
+// fp32 by default (bit-identical results), or -- opt-in, BABBLE_NATIVE_GEMM --
+// int8 (W8A8, a quality trade) / int16 (W8A16) activations; see GemmMode.
 //
 // Threading: a small pool whose threads all execute the same forward code and
 // meet at spin barriers (~5 per layer). A whole generate() -- prefill, every
