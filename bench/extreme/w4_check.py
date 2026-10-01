@@ -87,8 +87,43 @@ def samplecmp(w4: str = "", head2: str = "", n_prompts: int = 120, freq: float =
     return out
 
 
+def evalnll(w4: str = "") -> dict:
+    """Live-shape quality on the w4 eval set: prompt prefilled (int8), response decoded
+    token by token through the engine (int4 copies when `w4` is set). Response-token
+    NLL and top-1 vs the int8 fp32 reference stats from `w4_quant_study.py ref`."""
+    import torch
+
+    from babble.nativeserve import NativeEngine
+
+    W = Path(os.environ.get("W4_DIR", "/tmp/maxperf/w4"))
+    eng = NativeEngine(MODEL_DIR, threads=int(os.environ.get("NATIVE_THREADS", "4")), w4=w4, head2="")
+    data = torch.load(W / "evalset.pt")["eval"]
+    ref_stats = torch.load(W / "ref-eval-stats.pt")
+    out = {}
+    tot = {"all": [0.0, 0.0, 0, 0]}
+    for s, r in zip(data, ref_stats):
+        ids, a = s["ids"], s["sep_at"]
+        lg = eng.decode_logits(ids, prefill=a + 1)[a:-1]
+        tgt = torch.tensor(ids[a + 1 :])
+        lp = lg.log_softmax(-1).gather(1, tgt.unsqueeze(1)).squeeze(1)
+        agree = int((lg.argmax(-1) == r["argmax"][a:-1]).sum())
+        for k in ("all", s["src"]):
+            t = tot.setdefault(k, [0.0, 0.0, 0, 0])
+            t[0] += -float(r["tlp"][a:].sum())
+            t[1] += -float(lp.sum())
+            t[2] += len(tgt)
+            t[3] += agree
+    for k, (rn, cn, n, ag) in tot.items():
+        out[f"dnll_{k}"] = (cn - rn) / n
+        out[f"top1_{k}"] = ag / n
+        out[f"tokens_{k}"] = n
+    return {"w4": w4, **out}
+
+
 if __name__ == "__main__":
-    if sys.argv[1] == "samplecmp":
+    if sys.argv[1] == "evalnll":
+        print(evalnll(w4=os.environ.get("BABBLE_NATIVE_W4", "")))
+    elif sys.argv[1] == "samplecmp":
         print(samplecmp(w4=os.environ.get("BABBLE_NATIVE_W4", ""), head2=os.environ.get("BABBLE_NATIVE_HEAD2", ""),
                         freq=float(os.environ.get("W4_FREQ", "0"))))
     else:
