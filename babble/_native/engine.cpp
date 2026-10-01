@@ -361,35 +361,57 @@ inline void panel_rows(const float* const* xs, int M, const int8_t* P, int K, fl
 
 // ------------------------------------------------------------- int4 decode
 constexpr int Q4_MAX_M = 4;  // decode GEMMs with at most this many rows use the int4 copy
+int g_q4_pf = 512;           // int4 panel prefetch distance, bytes (BABBLE_W4_PF while tuning)
 
-// 8 nibble bytes of one k-row -> cols 0..7 (w0) and 8..15 (w1) as fp32 ints in [-8, 7]
+// 8 nibble bytes of one k-row -> cols 0..7 (w0) and 8..15 (w1) as fp32 q+8 in [0, 15].
+// One zero-extending load-shuffle, an and, a shift and two converts: the -8 offset is
+// folded into the group epilogue (q4_xsum) instead of being paid per weight.
 inline void q4_load(const uint8_t* q, __m256& w0, __m256& w1) {
-  const __m128i m0f = _mm_set1_epi8(0x0F), m8 = _mm_set1_epi8(8);
-  __m128i v = _mm_loadl_epi64(reinterpret_cast<const __m128i*>(q));
-  __m128i lo = _mm_sub_epi8(_mm_and_si128(v, m0f), m8);
-  __m128i hi = _mm_sub_epi8(_mm_and_si128(_mm_srli_epi16(v, 4), m0f), m8);
-  w0 = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(lo));
-  w1 = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(hi));
+  const __m256i d = _mm256_cvtepu8_epi32(_mm_loadl_epi64(reinterpret_cast<const __m128i*>(q)));
+  w0 = _mm256_cvtepi32_ps(_mm256_and_si256(d, _mm256_set1_epi32(0x0F)));
+  w1 = _mm256_cvtepi32_ps(_mm256_srli_epi32(d, 4));
 }
 
-// out[m][0..16) = sum_g scale_g * sum_{k in g} xs[m][k] * q[k]   (scales applied)
+// xsum[m * (K/G) + g] = -8 * sum of xs[m][g*G .. (g+1)*G): the offset term of each group.
+inline void q4_xsum(const float* const* xs, int M, int K, int G, float* xsum) {
+  const int ng = K / G;
+  for (int m = 0; m < M; ++m)
+    for (int g = 0; g < ng; ++g) {
+      const float* x = xs[m] + g * G;
+      __m256 a = _mm256_setzero_ps();
+      int k = 0;
+      for (; k + 8 <= G; k += 8) a = _mm256_add_ps(a, _mm256_loadu_ps(x + k));
+      float s = hsum(a);
+      for (; k < G; ++k) s += x[k];
+      xsum[m * ng + g] = -8.0f * s;
+    }
+}
+
+// out[m][0..16) = sum_g scale_g * (sum_{k in g} xs[m][k] * (q[k]+8) + xsum[m][g])   (scales applied)
 template <int M, int U>
-inline void q4k16(const float* const* xs, const uint8_t* P, int K, int G, size_t gbytes, float* __restrict out) {
-  __m256 acc[M][2];
+inline void q4k16(const float* const* xs, const uint8_t* P, int K, int G, size_t gbytes, const float* xsum,
+                  float* __restrict out) {
+  // the per-group results accumulate in `out` (memory), not registers: at M = 4 a second
+  // register set would spill out of the 16 YMM registers
 #pragma GCC unroll 8
-  for (int m = 0; m < M; ++m) acc[m][0] = acc[m][1] = _mm256_setzero_ps();
+  for (int m = 0; m < M; ++m) {
+    _mm256_storeu_ps(out + m * 16, _mm256_setzero_ps());
+    _mm256_storeu_ps(out + m * 16 + 8, _mm256_setzero_ps());
+  }
   const float* x[M];
 #pragma GCC unroll 8
   for (int m = 0; m < M; ++m) x[m] = xs[m];
-  for (int k0 = 0; k0 < K; k0 += G) {
-    const uint8_t* gb = P + (size_t)(k0 / G) * gbytes;
+  const int ng = K / G;
+  const uint8_t* gb = P;
+  for (int g = 0; g < ng; ++g, gb += gbytes) {
+    const int k0 = g * G;
     __m256 a[U][M][2];
 #pragma GCC unroll 8
     for (int u = 0; u < U; ++u)
 #pragma GCC unroll 8
       for (int m = 0; m < M; ++m) a[u][m][0] = a[u][m][1] = _mm256_setzero_ps();
     for (int k = 0; k < G; k += U) {
-      if (((k * 8) & 63) == 0) _mm_prefetch(reinterpret_cast<const char*>(gb + k * 8 + PREFETCH), _MM_HINT_T0);
+      if (((k * 8) & 63) == 0) _mm_prefetch(reinterpret_cast<const char*>(gb + k * 8 + g_q4_pf), _MM_HINT_T0);
 #pragma GCC unroll 8
       for (int u = 0; u < U; ++u) {
         __m256 w0, w1;
@@ -407,33 +429,30 @@ inline void q4k16(const float* const* xs, const uint8_t* P, int K, int G, size_t
     __m256 s1 = _mm256_cvtph_ps(_mm_loadu_si128(reinterpret_cast<const __m128i*>(sc + 8)));
 #pragma GCC unroll 8
     for (int m = 0; m < M; ++m) {
-      __m256 p0 = a[0][m][0], p1 = a[0][m][1];
+      const __m256 off = _mm256_set1_ps(xsum[m * ng + g]);
+      __m256 p0 = _mm256_add_ps(a[0][m][0], off), p1 = _mm256_add_ps(a[0][m][1], off);
 #pragma GCC unroll 8
       for (int u = 1; u < U; ++u) {
         p0 = _mm256_add_ps(p0, a[u][m][0]);
         p1 = _mm256_add_ps(p1, a[u][m][1]);
       }
-      acc[m][0] = _mm256_fmadd_ps(p0, s0, acc[m][0]);
-      acc[m][1] = _mm256_fmadd_ps(p1, s1, acc[m][1]);
+      _mm256_storeu_ps(out + m * 16, _mm256_fmadd_ps(p0, s0, _mm256_loadu_ps(out + m * 16)));
+      _mm256_storeu_ps(out + m * 16 + 8, _mm256_fmadd_ps(p1, s1, _mm256_loadu_ps(out + m * 16 + 8)));
     }
-  }
-#pragma GCC unroll 8
-  for (int m = 0; m < M; ++m) {
-    _mm256_storeu_ps(out + m * 16, acc[m][0]);
-    _mm256_storeu_ps(out + m * 16 + 8, acc[m][1]);
   }
 }
 
-// M <= Q4_MAX_M rows over one int4 panel (scales applied).
-inline void q4_panel_rows(const float* const* xs, int M, const Q4& W, int nb, float* out) {
+// M <= Q4_MAX_M rows over one int4 panel (scales applied); xsum from q4_xsum.
+inline void q4_panel_rows(const float* const* xs, int M, const Q4& W, int nb, const float* xsum, float* out) {
   const uint8_t* P = W.panel(nb);
   switch (M) {
-    case 1: q4k16<1, 4>(xs, P, W.K, W.G, W.gbytes, out); break;
-    case 2: q4k16<2, 2>(xs, P, W.K, W.G, W.gbytes, out); break;
-    case 3: q4k16<3, 2>(xs, P, W.K, W.G, W.gbytes, out); break;
-    default: q4k16<4, 1>(xs, P, W.K, W.G, W.gbytes, out); break;
+    case 1: q4k16<1, 4>(xs, P, W.K, W.G, W.gbytes, xsum, out); break;
+    case 2: q4k16<2, 2>(xs, P, W.K, W.G, W.gbytes, xsum, out); break;
+    case 3: q4k16<3, 2>(xs, P, W.K, W.G, W.gbytes, xsum, out); break;
+    default: q4k16<4, 1>(xs, P, W.K, W.G, W.gbytes, xsum, out); break;
   }
 }
+
 
 // y[m][col..col+16) (=|+=) acc   (int4 path: scales already applied)
 inline void epilogue_noscale(const float* acc, int M, float* const* ys, int col, bool add) {
@@ -538,6 +557,8 @@ struct Thread {
   std::vector<float> p;                   // sampler probabilities
   std::vector<float> kth;                 // top-k scratch for large k
   std::vector<int> cand;                  // two-stage head candidates
+  float h2_gap = 0.0f;                    // two-stage head: last threshold gap below the max
+  float* q4s = nullptr;                   // int4 kernels: per-(row, group) offset sums
 };
 
 struct Engine {
@@ -678,7 +699,7 @@ struct Engine {
     free(Kp); free(Vp); free(Ks); free(Vs);
     free(x); free(xn); free(qkv); free(att); free(hbuf); free(expert); free(logits);
     for (auto& t : tl) {
-      free(t.xn); free(t.acc); free(t.acc2); free(t.sc); free(t.xs); free(t.ys); free(t.hs); free(t.order);
+      free(t.xn); free(t.acc); free(t.acc2); free(t.sc); free(t.xs); free(t.ys); free(t.hs); free(t.order); free(t.q4s);
     }
   }
 };
@@ -805,10 +826,11 @@ void forward(Engine& E, int tid) {
   // int4 copies (if loaded) serve decode only: the prompt KV stays int8-exact
   bool q4_ok = E.decode;
   // y rows (=|+=) xs rows . W^T over this thread's panels [nb0, nb1), row-blocked
-  auto gemm =[&](const float* const* xs, float* const* ys, int rows, const Mat& W, int nb0, int nb1, bool add) {
+  auto gemm = [&](const float* const* xs, float* const* ys, int rows, const Mat& W, int nb0, int nb1, bool add) {
     if (W.q4 && q4_ok && rows <= Q4_MAX_M) {
+      q4_xsum(xs, rows, W.K, W.q4->G, T.q4s);
       for (int nb = nb0; nb < nb1; ++nb) {
-        q4_panel_rows(xs, rows, *W.q4, nb, T.acc);
+        q4_panel_rows(xs, rows, *W.q4, nb, T.q4s, T.acc);
         epilogue_noscale(T.acc, rows, ys, nb * 16, add);
       }
       return;
@@ -988,9 +1010,10 @@ void forward(Engine& E, int tid) {
       for (int m0 = 0; m0 < cnt[e]; m0 += MC) {
         const int mc = std::min(MC, cnt[e] - m0);
         for (int j = u0[e]; j < u1[e]; ++j) {
-          if (q4) {
-            q4_panel_rows(xs + m0, mc, *W.q4, 2 * j, T.acc);
-            q4_panel_rows(xs + m0, mc, *W.q4, 2 * j + 1, T.acc2);
+          if (q4) {  // cnt[e] <= Q4_MAX_M < MC: a single row block, m0 == 0
+            if (j == u0[e]) q4_xsum(xs, mc, H, W.q4->G, T.q4s);
+            q4_panel_rows(xs + m0, mc, *W.q4, 2 * j, T.q4s, T.acc);
+            q4_panel_rows(xs + m0, mc, *W.q4, 2 * j + 1, T.q4s, T.acc2);
           } else {
             panel_rows(xs + m0, mc, W.panel(2 * j), H, T.acc);
             panel_rows(xs + m0, mc, W.panel(2 * j + 1), H, T.acc2);
@@ -1040,8 +1063,9 @@ void forward(Engine& E, int tid) {
   q4_ok = true;  // sampled logits (prefill last row or decode) all come from the same head
   if (E.head2_n > 0 && E.head2_call && E.lm_screen && R <= Q4_MAX_M) {
     // stage 1: int4 screen; stage 2 (head2_fix, per row, before sampling) rescores
+    q4_xsum(T.xs, R, H, E.lm_screen->G, T.q4s);
     for (int nb = lo; nb < hi; ++nb) {
-      q4_panel_rows(T.xs, R, *E.lm_screen, nb, T.acc);
+      q4_panel_rows(T.xs, R, *E.lm_screen, nb, T.q4s, T.acc);
       epilogue_noscale(T.acc, R, T.ys, nb * 16, false);
     }
     if (tid == 0) E.head2_pending = true;
@@ -1063,19 +1087,20 @@ inline float head_dot(const Engine& E, int row, const float* x) {
   return hsum(_mm256_add_ps(a0, a1)) * E.lm.s[row];
 }
 
-// Stage 2 of the two-stage head for one row of screen logits `lg` with final
-// hidden `x`. Candidates = every penalized token (uniq: prompt + generated,
-// exact anyway since penalties only lower scores) U the screen's top-N of the
-// rest; candidates get exact int8 logits. Let kth = the k-th best exact
-// post-penalty candidate score (k = top_k, or 1 for greedy) and m = the best
-// screen score left outside. If kth - m >= delta, every token outside the
-// candidates scores below kth unless its screen error exceeds delta, so the
-// sampler's top-k set, probabilities and best-of score are those of the exact
-// head. Otherwise the whole row is recomputed exactly (fallback). Rows left
-// with screen values outside the candidates never reach the top-k.
+// Stage 2 of the two-stage head for one row of screen logits `lg` (final
+// hidden `x`). The screen row is penalized exactly like warp() does
+// (repetition, frequency/presence, no-repeat-ngram bans) in a scratch copy;
+// a threshold tau is found so that 256..512-ish tokens have a penalized screen
+// score above it, and those candidates get exact int8 logits written into `lg`.
+// Let kth = the k-th best exact post-penalty candidate score (k = top_k, 1 for
+// greedy) and `outside` = the best penalized screen score left out. If
+// kth - outside >= delta, no outside token can enter the sampler's top-k unless
+// its screen error exceeds delta (x1.15 for penalized negatives), so the
+// top-k set, its probabilities and the best-of score equal the exact head's.
+// Otherwise the whole row is recomputed exactly (fallback). Outside tokens keep
+// their screen values, which warp() then penalizes below kth as well.
 void head2_fix(Engine& E, float* lg, const float* x, const int32_t* uniq, int nu, const int32_t* cnt,
-               const int32_t* hist, int hlen,
-               const SampleParams& sp, Thread& T) {
+               const int32_t* hist, int hlen, const SampleParams& sp, Thread& T) {
   const int V = E.V;
   const int k = sp.greedy ? 1 : sp.top_k;
   E.head2_calls.fetch_add(1, std::memory_order_relaxed);
@@ -1083,57 +1108,97 @@ void head2_fix(Engine& E, float* lg, const float* x, const int32_t* uniq, int nu
     E.head2_fallbacks.fetch_add(1, std::memory_order_relaxed);
     for (int i = 0; i < V; ++i) lg[i] = head_dot(E, i, x);
   };
-  if (k <= 0 || k >= V || E.head2_n + nu >= V) return full();
-  // screen top-N among unpenalized tokens: penalized ones are exiled to -inf in a scratch copy
-  auto& sv = T.sv;
-  sv.clear();
-  const float NEG = -INFINITY;
+  const int N = E.head2_n;
+  if (k <= 0 || k > N || 4 * N >= V) return full();
   float* buf = T.sc;
   memcpy(buf, lg, (size_t)V * sizeof(float));
-  for (int i = 0; i < nu; ++i) buf[uniq[i]] = NEG;
-  auto& kth = T.kth;
-  kth.assign(buf, buf + V);
-  const int N = E.head2_n;
-  std::nth_element(kth.begin(), kth.begin() + N, kth.end(), std::greater<float>());
-  const float tau = kth[N];  // (N+1)-th best screen value: the best one left outside if ties are excluded
-  // candidates: screen > tau (at most N), plus penalized
-  std::vector<int>& cand = T.cand;
-  cand.clear();
-  float outside = tau;
-  for (int i = 0; i < V; ++i)
-    if (buf[i] > tau) cand.push_back(i);
-  for (int i = 0; i < nu; ++i) cand.push_back(uniq[i]);
-  E.head2_cands.fetch_add((long)cand.size(), std::memory_order_relaxed);
-  // no-repeat-ngram bans (exactly warp's rule) are marked NaN in the scratch row
+  const float rp = sp.repetition_penalty;
+  const bool fp = sp.frequency_penalty != 0.0f || sp.presence_penalty != 0.0f;
+  auto pen = [&](int t, float v) {
+    if (cnt && cnt[t] > 0) {
+      if (rp != 1.0f) v = v < 0 ? v * rp : v / rp;
+      if (fp) v -= (float)cnt[t] * sp.frequency_penalty + sp.presence_penalty;
+    }
+    return v;
+  };
+  for (int i = 0; i < nu; ++i) buf[uniq[i]] = pen(uniq[i], buf[uniq[i]]);
   const int n = sp.no_repeat_ngram;
   if (n == 1) {
-    for (int i = 0; i < nu; ++i) buf[uniq[i]] = NAN;
+    for (int i = 0; i < nu; ++i) buf[uniq[i]] = -INFINITY;
   } else if (n > 1 && hlen >= n) {
     const int32_t* tail = hist + hlen - (n - 1);
     for (int i = 0; i + n <= hlen; ++i) {
       bool eq = true;
       for (int j = 0; j < n - 1 && eq; ++j) eq = hist[i + j] == tail[j];
-      if (eq) buf[hist[i + n - 1]] = NAN;
+      if (eq) buf[hist[i + n - 1]] = -INFINITY;
     }
   }
-  // exact logits for the candidates; their post-penalty values give the k-th best
-  // candidate score, a lower bound on the true k-th best (bans only lower it)
-  auto& pen = T.p;
-  pen.clear();
-  const bool fp = sp.frequency_penalty != 0.0f || sp.presence_penalty != 0.0f;
-  for (int c : cand) {
-    float v = head_dot(E, c, x);
-    lg[c] = v;
-    if (std::isnan(buf[c])) continue;  // banned: -inf, never in the top-k
-    if (cnt && cnt[c] > 0) {
-      if (sp.repetition_penalty != 1.0f) v = v < 0 ? v * sp.repetition_penalty : v / sp.repetition_penalty;
-      if (fp) v -= (float)cnt[c] * sp.frequency_penalty + sp.presence_penalty;
+  // threshold search: count(buf > tau) in [N, 2N], tau = max - gap
+  __m256 mv = _mm256_set1_ps(-INFINITY);
+  for (int i = 0; i < V; i += 8) mv = _mm256_max_ps(mv, _mm256_loadu_ps(buf + i));
+  alignas(32) float lanes[8];
+  _mm256_store_ps(lanes, mv);
+  float mx = lanes[0];
+  for (int i = 1; i < 8; ++i) mx = std::max(mx, lanes[i]);
+  if (!std::isfinite(mx)) return full();
+  auto count_above = [&](float tau) {
+    const __m256 t = _mm256_set1_ps(tau);
+    int c = 0;
+    for (int i = 0; i < V; i += 8) c += __builtin_popcount(_mm256_movemask_ps(_mm256_cmp_ps(_mm256_loadu_ps(buf + i), t, _CMP_GT_OQ)));
+    return c;
+  };
+  float lo = 0.0f, hi = 0.0f, gap = T.h2_gap > 0 ? T.h2_gap : 8.0f;
+  int c = 0;
+  for (int it = 0; it < 40; ++it) {
+    c = count_above(mx - gap);
+    if (c < N) {
+      lo = gap;
+      gap = hi > 0 ? 0.5f * (lo + hi) : gap * 1.5f;
+    } else if (c > 2 * N) {
+      hi = gap;
+      gap = 0.5f * (lo + hi);
+    } else {
+      break;
     }
-    pen.push_back(v);
   }
-  if ((int)pen.size() < k) return full();
-  std::nth_element(pen.begin(), pen.begin() + (k - 1), pen.end(), std::greater<float>());
-  if (!(pen[k - 1] - outside >= E.head2_delta)) return full();
+  if (c < N || c > 2 * N) return full();
+  T.h2_gap = gap;
+  const float tau = mx - gap;
+  // candidates (penalized screen > tau) and the best penalized screen value left out
+  std::vector<int>& cand = T.cand;
+  cand.clear();
+  const __m256 tv = _mm256_set1_ps(tau);
+  __m256 ov = _mm256_set1_ps(-INFINITY);
+  for (int i = 0; i < V; i += 8) {
+    __m256 v = _mm256_loadu_ps(buf + i);
+    __m256 gt = _mm256_cmp_ps(v, tv, _CMP_GT_OQ);
+    ov = _mm256_max_ps(ov, _mm256_blendv_ps(v, _mm256_set1_ps(-INFINITY), gt));
+    int m = _mm256_movemask_ps(gt);
+    while (m) {
+      cand.push_back(i + __builtin_ctz(m));
+      m &= m - 1;
+    }
+  }
+  _mm256_store_ps(lanes, ov);
+  float outside = lanes[0];
+  for (int i = 1; i < 8; ++i) outside = std::max(outside, lanes[i]);
+  E.head2_cands.fetch_add((long)cand.size(), std::memory_order_relaxed);
+  // exact logits for the candidates; penalized values for the margin test
+  auto& pv = T.p;
+  pv.clear();
+  const int H = E.H;
+  for (size_t j = 0; j < cand.size(); ++j) {
+    if (j + 4 < cand.size()) {
+      const char* nx = reinterpret_cast<const char*>(E.lm_rows + (size_t)cand[j + 4] * H);
+      for (int b = 0; b < H; b += 64) _mm_prefetch(nx + b, _MM_HINT_T0);
+    }
+    const int t = cand[j];
+    const float v = head_dot(E, t, x);
+    lg[t] = v;
+    pv.push_back(pen(t, v));
+  }
+  std::nth_element(pv.begin(), pv.begin() + (k - 1), pv.end(), std::greater<float>());
+  if (!(pv[k - 1] - outside >= E.head2_delta)) return full();
 }
 
 // ------------------------------------------------------------------ sampling
@@ -1462,6 +1527,7 @@ void* eng_create(int nthreads, int hidden, int heads, int layers, int experts, i
       maxctx < 16 || vocab < 2)
     return nullptr;
   Engine* E = new Engine();
+  if (const char* pf = getenv("BABBLE_W4_PF")) g_q4_pf = std::max(0, atoi(pf));
   E->H = hidden;
   E->NH = heads;
   E->HD = hd;
@@ -1495,6 +1561,7 @@ void* eng_create(int nthreads, int hidden, int heads, int layers, int experts, i
     t.xn = amalloc<float>((size_t)SMALL_M * hidden);
     t.ld = (int)up16(maxctx) + 64;
     t.sc = amalloc<float>(std::max<size_t>(vocab, (size_t)6 * t.ld) + 64);
+    t.q4s = amalloc<float>((size_t)Q4_MAX_M * (std::max(hidden, inter) / 4 + 1));
   }
   E->ensure_rows(64);
   E->pool.start(E->nt);
