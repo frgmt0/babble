@@ -79,6 +79,33 @@ def parse_w4(spec: str) -> tuple[frozenset, int] | None:
     return W4_SCOPES[scope], g
 
 
+def parse_head2(spec: str) -> tuple[int, float, int] | None:
+    """`BABBLE_NATIVE_HEAD2` = "" / "0" / "off" (default) or "<N>[:<delta>[:<group>]]".
+
+    Opt-in two-stage lm_head for sampled tokens: an int4 (group-wise, default
+    g64) screen of the tied head picks the top-N unpenalized tokens; those plus
+    every penalized token get exact int8 logits. If the k-th best exact
+    candidate is not at least `delta` (default 0.5 logits) above the best
+    screen score left outside, the row falls back to the full exact head.
+    Reads ~half the head bytes per step. Exact whenever no outside token's
+    screen error exceeds the margin; measured coverage on 7k real positions was
+    100% at N=256 (docs: track w4 NOTES).
+    """
+    spec = (spec or "").strip().lower()
+    if spec in ("", "0", "off", "none", "false"):
+        return None
+    parts = spec.split(":")
+    try:
+        n = int(parts[0])
+        delta = float(parts[1]) if len(parts) > 1 and parts[1] else 0.5
+        group = int(parts[2]) if len(parts) > 2 and parts[2] else 64
+    except ValueError as exc:
+        raise NativeUnavailable(f"BABBLE_NATIVE_HEAD2={spec!r}: expected N[:delta[:group]]") from exc
+    if n < 1 or group < 4 or group % 4 or not math.isfinite(delta):
+        raise NativeUnavailable(f"BABBLE_NATIVE_HEAD2={spec!r}: bad value")
+    return n, delta, group
+
+
 def quantize_q4(q: torch.Tensor, scale: torch.Tensor, group: int) -> tuple[torch.Tensor, torch.Tensor]:
     """int8 rows (q * per-row scale) -> symmetric int4 [-8, 7] + fp32 group scales (fp16-exact)."""
     w = q.to(torch.float32) * scale.reshape(-1, 1)
@@ -113,7 +140,9 @@ class NativeOutput:
 class NativeEngine:
     """One loaded model in the C++ engine. Not thread-safe; serialize calls."""
 
-    def __init__(self, model_dir: Path | str, *, threads: int = 4, w4: str | None = None) -> None:
+    def __init__(
+        self, model_dir: Path | str, *, threads: int = 4, w4: str | None = None, head2: str | None = None
+    ) -> None:
         from safetensors import safe_open
 
         model_dir = Path(model_dir)
@@ -140,6 +169,9 @@ class NativeEngine:
         self.w4 = parse_w4(os.environ.get("BABBLE_NATIVE_W4", "") if w4 is None else w4)
         if self.w4 is not None and (c.hidden % self.w4[1] or c.inter % self.w4[1]):
             raise NativeUnavailable(f"BABBLE_NATIVE_W4 group {self.w4[1]} does not divide hidden/inter")
+        self.head2 = parse_head2(os.environ.get("BABBLE_NATIVE_HEAD2", "") if head2 is None else head2)
+        if self.head2 is not None and c.hidden % self.head2[2]:
+            raise NativeUnavailable(f"BABBLE_NATIVE_HEAD2 group {self.head2[2]} does not divide hidden")
         self.lib, self.build = _native.load()
         self.threads = max(1, int(threads))
 
@@ -205,6 +237,13 @@ class NativeEngine:
 
         # tied lm_head: the embedding panel serves both
         mat(7, -1, -1, "model.embed_tokens.weight")
+        if self.head2 is not None:
+            n, delta, group = self.head2
+            emb = get("model.embed_tokens.weight").contiguous()
+            q4, s4 = quantize_q4(emb, get("model.embed_tokens.weight.scale").to(torch.float32).reshape(-1), group)
+            rc = lib.eng_set_matrix_q4(h, 8, -1, -1, _ptr(q4), _ptr(s4), emb.shape[0], emb.shape[1], group)
+            if rc != 0 or lib.eng_set_head2(h, n, delta) != 0:
+                raise NativeUnavailable(f"two-stage head rejected (rc={rc})")
         vec(3, 0, dense("model.norm.weight"), c.hidden)
         for layer in range(c.n_layers):
             p = f"model.layers.{layer}"
@@ -224,6 +263,12 @@ class NativeEngine:
         cos, sin = freqs.cos().contiguous(), freqs.sin().contiguous()
         lib.eng_set_rope(h, _ptr(cos), _ptr(sin))
         self._params = params
+
+    def head2_stats(self) -> dict[str, int]:
+        """Cumulative two-stage head counters: rows fixed, full-head fallbacks, candidates rescored."""
+        out = (ctypes.c_longlong * 3)()
+        self.lib.eng_head2_stats(self._h, out)
+        return {"rows": out[0], "fallbacks": out[1], "candidates": out[2]}
 
     def close(self) -> None:
         h, self._h = getattr(self, "_h", None), None

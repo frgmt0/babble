@@ -41,5 +41,56 @@ def decode(ids):
     return engine().decode_logits(ids, prefill=1)
 
 
+def samplecmp(w4: str = "", head2: str = "", n_prompts: int = 120, freq: float = 0.0) -> dict:
+    """Live-shape best-of-4 sampling, exact engine vs candidate engine, same seeds.
+
+    Prompts: the w4 eval set's prompts (real-looking chat, up to 8 turns), each
+    `<bos> prompt <sep>`. If the candidate's post-warp distribution equals the
+    exact one, every sampled token and every candidate's summed logprob match.
+    """
+    import torch
+
+    from babble.leanserve import SamplingConfig
+    from babble.nativeserve import NativeEngine
+
+    th = int(os.environ.get("NATIVE_THREADS", "4"))
+    exact = NativeEngine(MODEL_DIR, threads=th, w4="", head2="")
+    cand = NativeEngine(MODEL_DIR, threads=th, w4=w4, head2=head2)
+    data = torch.load(Path(os.environ.get("W4_DIR", "/tmp/maxperf/w4")) / "evalset.pt")["eval"]
+    step = max(1, len(data) // n_prompts)
+    cfg = SamplingConfig(temperature=0.5, top_k=40, top_p=0.9, repetition_penalty=1.15,
+                         no_repeat_ngram_size=4, frequency_penalty=freq)
+    eos = 16383
+    same_tok = same_streams = streams = tokens = 0
+    max_dlp = 0.0
+    best_same = 0
+    for i, s in enumerate(data[::step][:n_prompts]):
+        ids = s["ids"][: s["sep_at"] + 1]
+        a = exact.generate(ids, n=4, max_new=64, sampling=cfg, eos_id=eos, seed=1000 + i)
+        b = cand.generate(ids, n=4, max_new=64, sampling=cfg, eos_id=eos, seed=1000 + i)
+        best_same += int(a.best == b.best)
+        for ta, tb, la, lb in zip(a.tokens, b.tokens, a.mean_logprob, b.mean_logprob):
+            streams += 1
+            same_streams += int(list(ta) == list(tb))
+            k = 0
+            while k < min(len(ta), len(tb)) and ta[k] == tb[k]:
+                k += 1
+            same_tok += k
+            tokens += len(ta)
+            if list(ta) == list(tb):
+                max_dlp = max(max_dlp, abs(la - lb))
+    out = {"w4": w4, "head2": head2, "freq": freq, "prompts": n_prompts, "streams": streams,
+           "identical_streams": same_streams / streams, "identical_prefix_tokens": same_tok / tokens,
+           "tokens": tokens, "same_best": best_same / n_prompts, "max_dmean_logprob_identical": max_dlp}
+    if head2:
+        out["head2_stats"] = cand.head2_stats()
+    return out
+
+
 if __name__ == "__main__":
-    print(os.environ.get("BABBLE_NATIVE_W4", ""), sys.argv[1], ref.compare(globals()[sys.argv[1]]))
+    if sys.argv[1] == "samplecmp":
+        print(samplecmp(w4=os.environ.get("BABBLE_NATIVE_W4", ""), head2=os.environ.get("BABBLE_NATIVE_HEAD2", ""),
+                        freq=float(os.environ.get("W4_FREQ", "0"))))
+    else:
+        print(os.environ.get("BABBLE_NATIVE_W4", ""), os.environ.get("BABBLE_NATIVE_HEAD2", ""), sys.argv[1],
+              ref.compare(globals()[sys.argv[1]]))

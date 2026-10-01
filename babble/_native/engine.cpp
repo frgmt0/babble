@@ -537,6 +537,7 @@ struct Thread {
   std::vector<std::pair<float, int>> sv;  // sampler survivors
   std::vector<float> p;                   // sampler probabilities
   std::vector<float> kth;                 // top-k scratch for large k
+  std::vector<int> cand;                  // two-stage head candidates
 };
 
 struct Engine {
@@ -549,6 +550,16 @@ struct Engine {
   std::vector<Layer> L;
   float* normf = nullptr;
   Mat lm;  // tied embedding / lm_head, panel layout
+  // Two-stage head (BABBLE_NATIVE_HEAD2, opt-in): an int4 screen of the tied
+  // head picks candidates, which are rescored exactly from a row-major int8
+  // copy; see head2_fix.
+  Q4* lm_screen = nullptr;
+  int8_t* lm_rows = nullptr;  // [V][H] row-major copy of the int8 head
+  int head2_n = 0;            // screen candidates per row (0 = off)
+  float head2_delta = 0.0f;   // required margin (raw logit units) or full exact fallback
+  bool head2_pending = false; // E.logits rows hold screen values awaiting head2_fix
+  bool head2_call = false;    // this call fixes screen rows (generate, incremental check)
+  std::atomic<long> head2_calls{0}, head2_fallbacks{0}, head2_cands{0};
   float* cosT = nullptr;
   float* sinT = nullptr;  // [maxctx][HD/2]
 
@@ -658,6 +669,11 @@ struct Engine {
       for (auto& m : Ly.w2) m.release();
     }
     lm.release();
+    if (lm_screen) {
+      lm_screen->release();
+      delete lm_screen;
+    }
+    free(lm_rows);
     free(normf); free(cosT); free(sinT);
     free(Kp); free(Vp); free(Ks); free(Vs);
     free(x); free(xn); free(qkv); free(att); free(hbuf); free(expert); free(logits);
@@ -1022,8 +1038,102 @@ void forward(Engine& E, int tid) {
   }
   split(V / 16, nt, tid, lo, hi);
   q4_ok = true;  // sampled logits (prefill last row or decode) all come from the same head
-  gemm(T.xs, T.ys, R, E.lm, lo, hi, false);
+  if (E.head2_n > 0 && E.head2_call && E.lm_screen && R <= Q4_MAX_M) {
+    // stage 1: int4 screen; stage 2 (head2_fix, per row, before sampling) rescores
+    for (int nb = lo; nb < hi; ++nb) {
+      q4_panel_rows(T.xs, R, *E.lm_screen, nb, T.acc);
+      epilogue_noscale(T.acc, R, T.ys, nb * 16, false);
+    }
+    if (tid == 0) E.head2_pending = true;
+  } else {
+    gemm(T.xs, T.ys, R, E.lm, lo, hi, false);
+    if (tid == 0) E.head2_pending = false;
+  }
   E.pool.barrier();
+}
+
+// exact int8 head row . x
+inline float head_dot(const Engine& E, int row, const float* x) {
+  const int8_t* w = E.lm_rows + (size_t)row * E.H;
+  __m256 a0 = _mm256_setzero_ps(), a1 = _mm256_setzero_ps();
+  for (int k = 0; k < E.H; k += 16) {
+    a0 = _mm256_fmadd_ps(_mm256_loadu_ps(x + k), ld8(w + k), a0);
+    a1 = _mm256_fmadd_ps(_mm256_loadu_ps(x + k + 8), ld8(w + k + 8), a1);
+  }
+  return hsum(_mm256_add_ps(a0, a1)) * E.lm.s[row];
+}
+
+// Stage 2 of the two-stage head for one row of screen logits `lg` with final
+// hidden `x`. Candidates = every penalized token (uniq: prompt + generated,
+// exact anyway since penalties only lower scores) U the screen's top-N of the
+// rest; candidates get exact int8 logits. Let kth = the k-th best exact
+// post-penalty candidate score (k = top_k, or 1 for greedy) and m = the best
+// screen score left outside. If kth - m >= delta, every token outside the
+// candidates scores below kth unless its screen error exceeds delta, so the
+// sampler's top-k set, probabilities and best-of score are those of the exact
+// head. Otherwise the whole row is recomputed exactly (fallback). Rows left
+// with screen values outside the candidates never reach the top-k.
+void head2_fix(Engine& E, float* lg, const float* x, const int32_t* uniq, int nu, const int32_t* cnt,
+               const int32_t* hist, int hlen,
+               const SampleParams& sp, Thread& T) {
+  const int V = E.V;
+  const int k = sp.greedy ? 1 : sp.top_k;
+  E.head2_calls.fetch_add(1, std::memory_order_relaxed);
+  auto full = [&] {
+    E.head2_fallbacks.fetch_add(1, std::memory_order_relaxed);
+    for (int i = 0; i < V; ++i) lg[i] = head_dot(E, i, x);
+  };
+  if (k <= 0 || k >= V || E.head2_n + nu >= V) return full();
+  // screen top-N among unpenalized tokens: penalized ones are exiled to -inf in a scratch copy
+  auto& sv = T.sv;
+  sv.clear();
+  const float NEG = -INFINITY;
+  float* buf = T.sc;
+  memcpy(buf, lg, (size_t)V * sizeof(float));
+  for (int i = 0; i < nu; ++i) buf[uniq[i]] = NEG;
+  auto& kth = T.kth;
+  kth.assign(buf, buf + V);
+  const int N = E.head2_n;
+  std::nth_element(kth.begin(), kth.begin() + N, kth.end(), std::greater<float>());
+  const float tau = kth[N];  // (N+1)-th best screen value: the best one left outside if ties are excluded
+  // candidates: screen > tau (at most N), plus penalized
+  std::vector<int>& cand = T.cand;
+  cand.clear();
+  float outside = tau;
+  for (int i = 0; i < V; ++i)
+    if (buf[i] > tau) cand.push_back(i);
+  for (int i = 0; i < nu; ++i) cand.push_back(uniq[i]);
+  E.head2_cands.fetch_add((long)cand.size(), std::memory_order_relaxed);
+  // no-repeat-ngram bans (exactly warp's rule) are marked NaN in the scratch row
+  const int n = sp.no_repeat_ngram;
+  if (n == 1) {
+    for (int i = 0; i < nu; ++i) buf[uniq[i]] = NAN;
+  } else if (n > 1 && hlen >= n) {
+    const int32_t* tail = hist + hlen - (n - 1);
+    for (int i = 0; i + n <= hlen; ++i) {
+      bool eq = true;
+      for (int j = 0; j < n - 1 && eq; ++j) eq = hist[i + j] == tail[j];
+      if (eq) buf[hist[i + n - 1]] = NAN;
+    }
+  }
+  // exact logits for the candidates; their post-penalty values give the k-th best
+  // candidate score, a lower bound on the true k-th best (bans only lower it)
+  auto& pen = T.p;
+  pen.clear();
+  const bool fp = sp.frequency_penalty != 0.0f || sp.presence_penalty != 0.0f;
+  for (int c : cand) {
+    float v = head_dot(E, c, x);
+    lg[c] = v;
+    if (std::isnan(buf[c])) continue;  // banned: -inf, never in the top-k
+    if (cnt && cnt[c] > 0) {
+      if (sp.repetition_penalty != 1.0f) v = v < 0 ? v * sp.repetition_penalty : v / sp.repetition_penalty;
+      if (fp) v -= (float)cnt[c] * sp.frequency_penalty + sp.presence_penalty;
+    }
+    pen.push_back(v);
+  }
+  if ((int)pen.size() < k) return full();
+  std::nth_element(pen.begin(), pen.begin() + (k - 1), pen.end(), std::greater<float>());
+  if (!(pen[k - 1] - outside >= E.head2_delta)) return full();
 }
 
 // ------------------------------------------------------------------ sampling
@@ -1207,6 +1317,14 @@ void gen_body(void* arg, int tid) {
   // prefill the (suffix of the) shared prompt once; only the last row needs logits
   forward(E, tid);
   if (tid == 0) J.t_prefill = now_s();
+  if (E.head2_pending) {  // one shared prompt row; every stream's history is the prompt
+    if (tid == 0) {
+      const Stream& S0 = J.st[0];
+      head2_fix(E, E.logits, T.xn, S0.uniq.data(), (int)S0.uniq.size(), S0.cnt.data(), S0.hist.data(),
+                (int)S0.hist.size(), J.sp, T);
+    }
+    E.pool.barrier();
+  }
 
   for (int s = tid; s < J.ns; s += E.nt) {
     int tok = sample(E.logits, J.st[s], J.sp, T, V);
@@ -1237,6 +1355,11 @@ void gen_body(void* arg, int tid) {
     forward(E, tid);
     for (int r = tid; r < B; r += E.nt) {
       int s = J.active[r];
+      if (E.head2_pending) {
+        const Stream& S = J.st[s];
+        head2_fix(E, E.logits + (size_t)r * V, T.xn + (size_t)r * E.H, S.uniq.data(), (int)S.uniq.size(), S.cnt.data(),
+                  S.hist.data(), (int)S.hist.size(), J.sp, T);
+      }
       int tok = sample(E.logits + (size_t)r * V, J.st[s], J.sp, T, V);
       J.out_tokens[(size_t)s * J.max_new + step] = tok;
       J.cur[s] = tok;
@@ -1281,7 +1404,19 @@ void incr_body(void* arg, int tid) {
   Engine& E = *J.E;
   const int V = E.V;
   static const int zero = 0;
+  // two-stage head: no history/penalties here, the live top-k (40) for the margin
+  auto fix = [&] {
+    if (tid != 0 || !E.head2_pending) return;
+    SampleParams sp{};
+    sp.top_k = 40;
+    sp.repetition_penalty = 1.0f;
+    sp.temperature = 1.0f;
+    sp.top_p = 1.0f;
+    for (int r = 0; r < E.M - E.logits_from; ++r)
+      head2_fix(E, E.logits + (size_t)r * V, E.tl[0].xn + (size_t)r * E.H, nullptr, 0, nullptr, nullptr, 0, sp, E.tl[0]);
+  };
   forward(E, tid);  // prefill, set up by the caller
+  fix();
   for (int i = J.prefill; i < J.T; ++i) {
     if (tid == 0) {
       memcpy(J.out + (size_t)(i == J.prefill ? 0 : i - 1) * V, E.logits, (size_t)(i == J.prefill ? J.prefill : 1) * V * 4);
@@ -1296,6 +1431,7 @@ void incr_body(void* arg, int tid) {
     }
     E.pool.barrier();
     forward(E, tid);
+    fix();
     E.pool.barrier();
   }
   if (tid == 0) {
@@ -1415,6 +1551,23 @@ int eng_set_matrix_q4(void* p, int kind, int layer, int expert, const int8_t* q,
   Engine* E = static_cast<Engine*>(p);
   const int H = E->H, FF = E->FF;
   if (group < 4 || group % 4 || cols % group) return -4;
+  if (kind == 8) {  // two-stage head screen (the int8 head must already be set)
+    if (rows != E->V || cols != H) return -1;
+    if (!E->lm_screen) {
+      E->lm_screen = new Q4();
+      E->lm_screen->alloc(E->V, H, group);
+    } else if (E->lm_screen->G != group) {
+      return -4;
+    }
+    const int ng = cols / group;
+    for (int r = 0; r < rows; ++r) E->lm_screen->put_row(r, q + (size_t)r * cols, scale + (size_t)r * ng);
+    if (!E->lm_rows) E->lm_rows = amalloc<int8_t>((size_t)E->V * H);
+    for (int r = 0; r < E->V; ++r) {  // row-major copy of the int8 head for exact rescoring
+      const int8_t* base = E->lm.p + (size_t)(r / 16) * H * 16 + (r % 16);
+      for (int k = 0; k < H; ++k) E->lm_rows[(size_t)r * H + k] = base[k * 16];
+    }
+    return 0;
+  }
   if (kind != 7 && (layer < 0 || layer >= E->NL)) return -3;
   if ((kind == 4 || kind == 5 || kind == 6) && (expert < 0 || expert >= E->NE)) return -3;
   Layer* Ly = kind != 7 ? &E->L[layer] : nullptr;
@@ -1458,6 +1611,24 @@ int eng_set_matrix_q4(void* p, int kind, int layer, int expert, const int8_t* q,
   const int ng = cols / group;
   for (int r = 0; r < rows; ++r) M->q4->put_row(dst(r), q + (size_t)r * cols, scale + (size_t)r * ng);
   return 0;
+}
+
+// Two-stage head on (n > 0 candidates, margin delta) or off (n = 0). Needs the
+// kind-8 screen. Returns 0, or -1 without a screen.
+int eng_set_head2(void* p, int n, float delta) {
+  Engine* E = static_cast<Engine*>(p);
+  if (n > 0 && !E->lm_screen) return -1;
+  E->head2_n = std::max(0, n);
+  E->head2_delta = delta;
+  return 0;
+}
+
+// out[0] rows fixed, out[1] full-head fallbacks, out[2] candidates rescored (cumulative)
+void eng_head2_stats(void* p, long long* out) {
+  Engine* E = static_cast<Engine*>(p);
+  out[0] = E->head2_calls.load();
+  out[1] = E->head2_fallbacks.load();
+  out[2] = E->head2_cands.load();
 }
 
 // kind: 0=ln1 1=ln2 2=router[NE*H] (dequantized fp32) 3=final norm
@@ -1506,6 +1677,7 @@ int eng_forward(void* p, const int32_t* ids, int T, int start, const float* kv_i
   E->start = start;
   E->decode = false;
   E->logits_from = 0;
+  E->head2_call = false;
   E->pool.run(full_body, &J);
   memcpy(out, E->logits, (size_t)M * E->V * 4);
   return 0;
@@ -1525,6 +1697,7 @@ int eng_forward_incremental(void* p, const int32_t* ids, int T, int prefill, flo
   E->start = 0;
   E->decode = false;
   E->logits_from = 0;
+  E->head2_call = true;
   E->pool.run(incr_body, &J);
   return 0;
 }
@@ -1577,6 +1750,7 @@ int eng_generate(void* p, const int32_t* prompt, int T, int start, const float* 
   E->start = start;
   E->decode = false;
   E->logits_from = T - start - 1;
+  E->head2_call = true;
   E->pool.run(gen_body, &J);
   double t_end = now_s();
   for (int s = 0; s < ns; ++s) {

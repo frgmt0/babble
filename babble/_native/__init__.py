@@ -186,6 +186,10 @@ def _declare(lib: ctypes.CDLL) -> ctypes.CDLL:
     lib.eng_set_matrix.argtypes = [vp, i32, i32, i32, vp, vp, i32, i32]
     lib.eng_set_matrix_q4.restype = i32
     lib.eng_set_matrix_q4.argtypes = [vp, i32, i32, i32, vp, vp, i32, i32, i32]
+    lib.eng_set_head2.restype = i32
+    lib.eng_set_head2.argtypes = [vp, i32, f32]
+    lib.eng_head2_stats.restype = None
+    lib.eng_head2_stats.argtypes = [vp, vp]
     lib.eng_set_vector.restype = i32
     lib.eng_set_vector.argtypes = [vp, i32, i32, vp]
     lib.eng_set_rope.restype = None
