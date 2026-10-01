@@ -31,6 +31,7 @@ import contextlib
 import ctypes
 import json
 import math
+import os
 import threading
 import time
 from dataclasses import dataclass
@@ -45,6 +46,78 @@ from .cpu_runtime import configure_cpu, force_cpu_device
 from .hfserve import HFGenerationStats, HFServeError
 from .leanserve import LeanConfig, LeanGenerator, PrefixKVCache, SamplingConfig
 from .logs import EventLog, NullLog
+
+
+# BABBLE_NATIVE_W4 scopes -> eng_set_matrix kinds (0-2 qkv, 3 o, 4-6 experts, 7 tied head)
+W4_SCOPES = {
+    "all": frozenset(range(8)),
+    "noh": frozenset(range(7)),
+    "exp": frozenset((4, 5, 6)),
+    "attn": frozenset((0, 1, 2, 3)),
+}
+
+
+def parse_w4(spec: str) -> tuple[frozenset, int] | None:
+    """`BABBLE_NATIVE_W4` = "" / "0" / "off" (default) or "<scope>[:<group>]".
+
+    Opt-in QUALITY TRADE: decode GEMMs (<= 4 rows) read an int4 group-wise copy
+    of the scoped matrices (round-to-nearest from the int8 snapshot, symmetric,
+    fp16 group scales); prefill keeps the int8 panels. Scopes: all | noh (all
+    but the tied lm_head) | exp (experts) | attn. Group defaults to 64.
+    """
+    spec = (spec or "").strip().lower()
+    if spec in ("", "0", "off", "none", "false"):
+        return None
+    scope, _, group = spec.partition(":")
+    if scope not in W4_SCOPES:
+        raise NativeUnavailable(f"BABBLE_NATIVE_W4={spec!r}: scope must be one of {sorted(W4_SCOPES)}")
+    try:
+        g = int(group or 64)
+    except ValueError as exc:
+        raise NativeUnavailable(f"BABBLE_NATIVE_W4={spec!r}: bad group") from exc
+    if g < 4 or g % 4:
+        raise NativeUnavailable(f"BABBLE_NATIVE_W4={spec!r}: group must be a multiple of 4")
+    return W4_SCOPES[scope], g
+
+
+def parse_head2(spec: str) -> tuple[int, float, int] | None:
+    """`BABBLE_NATIVE_HEAD2` = "" / "0" / "off" (default) or "<N>[:<delta>[:<group>]]".
+
+    Opt-in two-stage lm_head for sampled rows: an int4 (group-wise, default
+    g64) screen of the tied head is penalized like the sampler does
+    (repetition, frequency/presence, no-repeat-ngram), and the N..2N best
+    tokens get exact int8 logits. If the k-th best exact (penalized) candidate
+    is not at least `delta` (default 0.5 logits) above the best screen score
+    left outside, the row falls back to the full exact head. Reads about half
+    the head bytes per step. Sampling is exact whenever no outside token's
+    screen error exceeds the margin: on 120 real prompts x best-of-4 every
+    token matched the exact head, with 0 fallbacks (track w4 NOTES). Greedy
+    uses k = 1; top_k > N, or top-k off, always takes the exact head.
+    """
+    spec = (spec or "").strip().lower()
+    if spec in ("", "0", "off", "none", "false"):
+        return None
+    parts = spec.split(":")
+    try:
+        n = int(parts[0])
+        delta = float(parts[1]) if len(parts) > 1 and parts[1] else 0.5
+        group = int(parts[2]) if len(parts) > 2 and parts[2] else 64
+    except ValueError as exc:
+        raise NativeUnavailable(f"BABBLE_NATIVE_HEAD2={spec!r}: expected N[:delta[:group]]") from exc
+    if n < 1 or group < 4 or group % 4 or not math.isfinite(delta):
+        raise NativeUnavailable(f"BABBLE_NATIVE_HEAD2={spec!r}: bad value")
+    return n, delta, group
+
+
+def quantize_q4(q: torch.Tensor, scale: torch.Tensor, group: int) -> tuple[torch.Tensor, torch.Tensor]:
+    """int8 rows (q * per-row scale) -> symmetric int4 [-8, 7] + fp32 group scales (fp16-exact)."""
+    w = q.to(torch.float32) * scale.reshape(-1, 1)
+    rows, cols = w.shape
+    wg = w.reshape(rows, cols // group, group)
+    # fp16-exact scales (what the engine stores); the floor keeps all-zero groups finite
+    s = (wg.abs().amax(-1, keepdim=True) / 7.0).clamp_min(1e-4).half().float()
+    q4 = torch.clamp(torch.round(wg / s), -8, 7).to(torch.int8).reshape(rows, cols).contiguous()
+    return q4, s.reshape(rows, cols // group).contiguous()
 
 
 def _ptr(t: torch.Tensor | None) -> int | None:
@@ -70,7 +143,9 @@ class NativeOutput:
 class NativeEngine:
     """One loaded model in the C++ engine. Not thread-safe; serialize calls."""
 
-    def __init__(self, model_dir: Path | str, *, threads: int = 4) -> None:
+    def __init__(
+        self, model_dir: Path | str, *, threads: int = 4, w4: str | None = None, head2: str | None = None
+    ) -> None:
         from safetensors import safe_open
 
         model_dir = Path(model_dir)
@@ -94,6 +169,12 @@ class NativeEngine:
         if raw.get("attention_bias") or raw.get("mlp_bias"):
             raise NativeUnavailable("attention/mlp bias is not implemented")
         self.cfg = c
+        self.w4 = parse_w4(os.environ.get("BABBLE_NATIVE_W4", "") if w4 is None else w4)
+        if self.w4 is not None and (c.hidden % self.w4[1] or c.inter % self.w4[1]):
+            raise NativeUnavailable(f"BABBLE_NATIVE_W4 group {self.w4[1]} does not divide hidden/inter")
+        self.head2 = parse_head2(os.environ.get("BABBLE_NATIVE_HEAD2", "") if head2 is None else head2)
+        if self.head2 is not None and c.hidden % self.head2[2]:
+            raise NativeUnavailable(f"BABBLE_NATIVE_HEAD2 group {self.head2[2]} does not divide hidden")
         self.lib, self.build = _native.load()
         self.threads = max(1, int(threads))
 
@@ -137,6 +218,11 @@ class NativeEngine:
             if rc != 0:
                 raise NativeUnavailable(f"{name} {tuple(q.shape)} does not fit the engine geometry (rc={rc})")
             params += q.numel()
+            if self.w4 is not None and kind in self.w4[0]:
+                q4, s4 = quantize_q4(q, s, self.w4[1])
+                rc = lib.eng_set_matrix_q4(h, kind, layer, expert, _ptr(q4), _ptr(s4), q.shape[0], q.shape[1], self.w4[1])
+                if rc != 0:
+                    raise NativeUnavailable(f"{name}: int4 copy rejected (rc={rc})")
 
         def dense(name: str) -> torch.Tensor:
             v = get(name)
@@ -154,6 +240,13 @@ class NativeEngine:
 
         # tied lm_head: the embedding panel serves both
         mat(7, -1, -1, "model.embed_tokens.weight")
+        if self.head2 is not None:
+            n, delta, group = self.head2
+            emb = get("model.embed_tokens.weight").contiguous()
+            q4, s4 = quantize_q4(emb, get("model.embed_tokens.weight.scale").to(torch.float32).reshape(-1), group)
+            rc = lib.eng_set_matrix_q4(h, 8, -1, -1, _ptr(q4), _ptr(s4), emb.shape[0], emb.shape[1], group)
+            if rc != 0 or lib.eng_set_head2(h, n, delta) != 0:
+                raise NativeUnavailable(f"two-stage head rejected (rc={rc})")
         vec(3, 0, dense("model.norm.weight"), c.hidden)
         for layer in range(c.n_layers):
             p = f"model.layers.{layer}"
@@ -173,6 +266,12 @@ class NativeEngine:
         cos, sin = freqs.cos().contiguous(), freqs.sin().contiguous()
         lib.eng_set_rope(h, _ptr(cos), _ptr(sin))
         self._params = params
+
+    def head2_stats(self) -> dict[str, int]:
+        """Cumulative two-stage head counters: rows fixed, full-head fallbacks, candidates rescored."""
+        out = (ctypes.c_longlong * 3)()
+        self.lib.eng_head2_stats(self._h, out)
+        return {"rows": out[0], "fallbacks": out[1], "candidates": out[2]}
 
     def close(self) -> None:
         h, self._h = getattr(self, "_h", None), None
@@ -372,6 +471,8 @@ class NativeGenerator(LeanGenerator):
             native_build="compiled" if build.built else "cached",
             native_build_s=round(build.build_s, 2),
             native_lib=str(build.path),
+            native_w4=os.environ.get("BABBLE_NATIVE_W4", "") if self.engine.w4 else "",
+            native_head2=os.environ.get("BABBLE_NATIVE_HEAD2", "") if self.engine.head2 else "",
             load_s=round(load_s, 2),
             prefix_cache_mb=self.prefix_cache.max_bytes // (1024 * 1024),
             prefix_cache_entries=self.prefix_cache.max_entries,
@@ -561,10 +662,16 @@ class NativeGenerator(LeanGenerator):
         if self.prefix_cache.enabled:
             opts.append(f"prefix KV cache ({self.prefix_cache.max_bytes // (1024 * 1024)} MB)")
         opts.append("frequency/presence penalties on" if self._extra_penalties else "frequency/presence penalties off")
+        if self.engine.head2:
+            opts.append(f"two-stage lm_head (N={self.engine.head2[0]})")
+        dtype = "int8/fp32"
+        if self.engine.w4:
+            dtype = f"int8/fp32 + int4 g{self.engine.w4[1]} decode (QUALITY TRADE)"
+            opts.append("int4 decode weights (BABBLE_NATIVE_W4, lossy)")
         return {
             "model": self.model_id,
             "params": self.param_count,
-            "dtype": "int8/fp32",
+            "dtype": dtype,
             "backend": "hf-native",
             "runtime": "native",
             "optimizations": tuple(opts),
