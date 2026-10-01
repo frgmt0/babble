@@ -193,6 +193,7 @@ struct Mat {  // [N/16][K][16] int8 + scale[N]
   int8_t* p = nullptr;
   float* s = nullptr;
   int N = 0, K = 0;
+  bool i8safe = true;  // no -128 entries: the a8 sign trick (vpsignb) needs |w| <= 127
   void alloc(int n, int k) {
     N = n;
     K = k;
@@ -208,7 +209,10 @@ struct Mat {  // [N/16][K][16] int8 + scale[N]
   const int8_t* panel(int nb) const { return p + (size_t)nb * K * 16; }
   void put_row(int dst, const int8_t* src, float scale) {
     int8_t* base = p + (size_t)(dst / 16) * K * 16 + (dst % 16);
-    for (int k = 0; k < K; ++k) base[k * 16] = src[k];
+    for (int k = 0; k < K; ++k) {
+      base[k * 16] = src[k];
+      if (src[k] == -128) i8safe = false;
+    }
     s[dst] = scale;
   }
 };
@@ -314,6 +318,175 @@ inline void panel_rows(const float* const* xs, int M, const int8_t* P, int K, fl
   tile_rows(xs, M, I8Src{P}, K, out);
 }
 
+// ------------------------------------------------- prefill GEMM modes (W8A32 / W8A8 / W8A16)
+// For row blocks of at least `gemm_min_rows` rows, a panel is first repacked
+// into a per-thread scratch (once per panel per row block, amortized over the
+// block's rows), then a kernel with no in-loop dequantization runs over it:
+//
+//  G_FP32: scratch = the panel dequantized to fp32 [K][16]; same k16 FMA
+//          kernel in the same order => bit-identical to the in-register path.
+//  G_A8:   W8A8. Rows are quantized per token (symmetric, qmax 127) and the
+//          panel is regrouped to [K/4][16 cols][4 k] for vpmaddubsw:
+//          u8 = |a| and s8 = sign(w, a) (vpsignb), so every s16 pair sum is
+//          |a0||w0| + |a1||w1| <= 2*127*127 = 32258 < 32767 (never saturates;
+//          needs |w| <= 127, i.e. Mat::i8safe), then vpmaddwd with ones -> s32.
+//  G_A16:  W8A16. Rows quantized per token to int16 with
+//          qmax = min(16383, (2^31-1) / (127 K)) so the s32 accumulator cannot
+//          overflow; panel widened to s16 pairs [K/2][16][2] for vpmaddwd.
+// The per-row activation scale is folded into the kernel's fp32 store, the
+// per-channel weight scale in the usual epilogue.
+enum GemmMode { G_FP32 = 0, G_A8 = 1, G_A16 = 2 };
+enum GemmKind { GK_QKV = 0, GK_O = 1, GK_W13 = 2, GK_W2 = 3, GK_N = 4 };
+
+void repack_f32(const int8_t* p, int K, float* dst) {
+  for (int k = 0; k < K; ++k) {
+    _mm256_store_ps(dst + k * 16, ld8(p + k * 16));
+    _mm256_store_ps(dst + k * 16 + 8, ld8(p + k * 16 + 8));
+  }
+}
+
+void repack_a8(const int8_t* p, int K, int8_t* dst) {
+  for (int k = 0; k < K; k += 4) {
+    const __m128i r0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(p + (k + 0) * 16));
+    const __m128i r1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(p + (k + 1) * 16));
+    const __m128i r2 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(p + (k + 2) * 16));
+    const __m128i r3 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(p + (k + 3) * 16));
+    const __m128i a = _mm_unpacklo_epi8(r0, r1), b = _mm_unpacklo_epi8(r2, r3);  // cols 0-7
+    const __m128i c = _mm_unpackhi_epi8(r0, r1), d = _mm_unpackhi_epi8(r2, r3);  // cols 8-15
+    __m128i* o = reinterpret_cast<__m128i*>(dst + k * 16);
+    _mm_store_si128(o + 0, _mm_unpacklo_epi16(a, b));  // cols 0-3 x k0..k3
+    _mm_store_si128(o + 1, _mm_unpackhi_epi16(a, b));  // cols 4-7
+    _mm_store_si128(o + 2, _mm_unpacklo_epi16(c, d));  // cols 8-11
+    _mm_store_si128(o + 3, _mm_unpackhi_epi16(c, d));  // cols 12-15
+  }
+}
+
+void repack_a16(const int8_t* p, int K, int16_t* dst) {
+  for (int k = 0; k < K; k += 2) {
+    const __m128i r0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(p + k * 16));
+    const __m128i r1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(p + (k + 1) * 16));
+    __m256i* o = reinterpret_cast<__m256i*>(dst + k * 16);
+    _mm256_store_si256(o, _mm256_cvtepi8_epi16(_mm_unpacklo_epi8(r0, r1)));      // cols 0-7 x (k, k+1)
+    _mm256_store_si256(o + 1, _mm256_cvtepi8_epi16(_mm_unpackhi_epi8(r0, r1)));  // cols 8-15
+  }
+}
+
+inline __m256i bcast4(const void* p) {
+  int32_t v;
+  memcpy(&v, p, 4);
+  return _mm256_set1_epi32(v);
+}
+
+// Quantized row r: signed values at q[r][0..K), and for G_A8 |values| at q[r][K..2K).
+template <int R>
+inline void ka8(const int8_t* const* q, const float* sc, const int8_t* wp, int K, float* __restrict out) {
+  __m256i a[R][2];
+#pragma GCC unroll 8
+  for (int r = 0; r < R; ++r) a[r][0] = a[r][1] = _mm256_setzero_si256();
+  const __m256i ones = _mm256_set1_epi16(1);
+  for (int k = 0; k < K; k += 4) {
+    const __m256i w0 = _mm256_load_si256(reinterpret_cast<const __m256i*>(wp + k * 16));
+    const __m256i w1 = _mm256_load_si256(reinterpret_cast<const __m256i*>(wp + k * 16 + 32));
+#pragma GCC unroll 8
+    for (int r = 0; r < R; ++r) {
+      const __m256i s = bcast4(q[r] + k), u = bcast4(q[r] + K + k);
+      a[r][0] = _mm256_add_epi32(a[r][0], _mm256_madd_epi16(_mm256_maddubs_epi16(u, _mm256_sign_epi8(w0, s)), ones));
+      a[r][1] = _mm256_add_epi32(a[r][1], _mm256_madd_epi16(_mm256_maddubs_epi16(u, _mm256_sign_epi8(w1, s)), ones));
+    }
+  }
+#pragma GCC unroll 8
+  for (int r = 0; r < R; ++r) {
+    const __m256 s = _mm256_set1_ps(sc[r]);
+    _mm256_storeu_ps(out + r * 16, _mm256_mul_ps(_mm256_cvtepi32_ps(a[r][0]), s));
+    _mm256_storeu_ps(out + r * 16 + 8, _mm256_mul_ps(_mm256_cvtepi32_ps(a[r][1]), s));
+  }
+}
+
+template <int R>
+inline void ka16(const int8_t* const* q, const float* sc, const int16_t* wp, int K, float* __restrict out) {
+  __m256i a[R][2];
+#pragma GCC unroll 8
+  for (int r = 0; r < R; ++r) a[r][0] = a[r][1] = _mm256_setzero_si256();
+  for (int k = 0; k < K; k += 2) {
+    const __m256i w0 = _mm256_load_si256(reinterpret_cast<const __m256i*>(wp + k * 16));
+    const __m256i w1 = _mm256_load_si256(reinterpret_cast<const __m256i*>(wp + k * 16 + 16));
+#pragma GCC unroll 8
+    for (int r = 0; r < R; ++r) {
+      const __m256i s = bcast4(reinterpret_cast<const int16_t*>(q[r]) + k);
+      a[r][0] = _mm256_add_epi32(a[r][0], _mm256_madd_epi16(s, w0));
+      a[r][1] = _mm256_add_epi32(a[r][1], _mm256_madd_epi16(s, w1));
+    }
+  }
+#pragma GCC unroll 8
+  for (int r = 0; r < R; ++r) {
+    const __m256 s = _mm256_set1_ps(sc[r]);
+    _mm256_storeu_ps(out + r * 16, _mm256_mul_ps(_mm256_cvtepi32_ps(a[r][0]), s));
+    _mm256_storeu_ps(out + r * 16 + 8, _mm256_mul_ps(_mm256_cvtepi32_ps(a[r][1]), s));
+  }
+}
+
+void rows_a8(const int8_t* const* q, const float* sc, int M, const int8_t* wp, int K, float* out) {
+  for (int m0 = 0; m0 < M; m0 += 4) {
+    float* o = out + m0 * 16;
+    switch (std::min(4, M - m0)) {
+      case 1: ka8<1>(q + m0, sc + m0, wp, K, o); break;
+      case 2: ka8<2>(q + m0, sc + m0, wp, K, o); break;
+      case 3: ka8<3>(q + m0, sc + m0, wp, K, o); break;
+      default: ka8<4>(q + m0, sc + m0, wp, K, o); break;
+    }
+  }
+}
+
+void rows_a16(const int8_t* const* q, const float* sc, int M, const int16_t* wp, int K, float* out) {
+  for (int m0 = 0; m0 < M; m0 += 6) {
+    float* o = out + m0 * 16;
+    switch (std::min(6, M - m0)) {
+      case 1: ka16<1>(q + m0, sc + m0, wp, K, o); break;
+      case 2: ka16<2>(q + m0, sc + m0, wp, K, o); break;
+      case 3: ka16<3>(q + m0, sc + m0, wp, K, o); break;
+      case 4: ka16<4>(q + m0, sc + m0, wp, K, o); break;
+      case 5: ka16<5>(q + m0, sc + m0, wp, K, o); break;
+      default: ka16<6>(q + m0, sc + m0, wp, K, o); break;
+    }
+  }
+}
+
+inline int a16_qmax(int K) { return (int)std::min<long>(16383, 2147483647L / (127L * K)); }
+
+// Quantize one fp32 row (K a multiple of 32) per token: q (+ |q| for A8) and its scale.
+float quant_row(const float* x, int K, int mode, int8_t* q) {
+  __m256 mx = _mm256_setzero_ps();
+  const __m256 absmask = _mm256_castsi256_ps(_mm256_set1_epi32(0x7fffffff));
+  for (int k = 0; k < K; k += 8) mx = _mm256_max_ps(mx, _mm256_and_ps(_mm256_loadu_ps(x + k), absmask));
+  alignas(32) float l[8];
+  _mm256_store_ps(l, mx);
+  float amax = l[0];
+  for (int i = 1; i < 8; ++i) amax = std::max(amax, l[i]);
+  const float qmax = mode == G_A8 ? 127.0f : (float)a16_qmax(K);
+  const float scale = amax > 0 ? amax / qmax : 0.0f;
+  const __m256 inv = _mm256_set1_ps(amax > 0 ? qmax / amax : 0.0f);
+  const __m256 lo = _mm256_set1_ps(-qmax), hi = _mm256_set1_ps(qmax);
+  auto qv = [&](int k) {
+    return _mm256_cvtps_epi32(_mm256_min_ps(hi, _mm256_max_ps(lo, _mm256_mul_ps(_mm256_loadu_ps(x + k), inv))));
+  };
+  if (mode == G_A8) {
+    const __m256i perm = _mm256_setr_epi32(0, 4, 1, 5, 2, 6, 3, 7);
+    for (int k = 0; k < K; k += 32) {
+      __m256i p01 = _mm256_packs_epi32(qv(k), qv(k + 8)), p23 = _mm256_packs_epi32(qv(k + 16), qv(k + 24));
+      __m256i b = _mm256_permutevar8x32_epi32(_mm256_packs_epi16(p01, p23), perm);
+      _mm256_storeu_si256(reinterpret_cast<__m256i*>(q + k), b);
+      _mm256_storeu_si256(reinterpret_cast<__m256i*>(q + K + k), _mm256_abs_epi8(b));
+    }
+  } else {
+    int16_t* q16 = reinterpret_cast<int16_t*>(q);
+    for (int k = 0; k < K; k += 16) {
+      __m256i p = _mm256_permute4x64_epi64(_mm256_packs_epi32(qv(k), qv(k + 8)), 0xD8);
+      _mm256_storeu_si256(reinterpret_cast<__m256i*>(q16 + k), p);
+    }
+  }
+  return scale;
+}
+
 // y[m][nb*16 + j] (=|+=) scale * acc
 inline void epilogue(const float* acc, int M, const float* scale, float* const* ys, int col, bool add) {
   __m256 s0 = _mm256_loadu_ps(scale), s1 = _mm256_loadu_ps(scale + 8);
@@ -394,6 +567,9 @@ struct Thread {
   float* acc2 = nullptr;
   float* sc = nullptr;   // attention scores (6 rows x ld) / sampler scratch (>= V)
   int ld = 0;
+  float* wp = nullptr;          // repacked panel scratch (Kq x 16 fp32)
+  const int8_t** qr = nullptr;  // quantized activation rows (gather of Engine::aq)
+  float* qsc = nullptr;         // their per-row scales
   const float** xs = nullptr;
   float** ys = nullptr;
   float** hs = nullptr;
@@ -425,6 +601,13 @@ struct Engine {
   float *x = nullptr, *xn = nullptr, *qkv = nullptr, *att = nullptr, *hbuf = nullptr;
   int* expert = nullptr;
   float* logits = nullptr;
+  // prefill GEMM modes (see GemmMode): per kind, and the row-count crossover
+  int gmode[GK_N] = {G_FP32, G_FP32, G_FP32, G_FP32};
+  int gemm_min_rows = 16;
+  bool repack_fp32 = true;  // G_FP32 row blocks use the dequantized-panel kernel
+  int Kq = 0;               // max(H, FF): quantized row stride is 2*Kq bytes
+  int8_t* aq = nullptr;     // Mcap quantized rows
+  float* asc = nullptr;     // Mcap row scales
   int Lcap = 0;  // logits rows
   std::vector<Thread> tl;
 
@@ -445,8 +628,10 @@ struct Engine {
 
   void ensure_rows(int m) {
     if (m <= Mcap) return;
-    free(x); free(xn); free(qkv); free(att); free(hbuf); free(expert);
+    free(x); free(xn); free(qkv); free(att); free(hbuf); free(expert); free(aq); free(asc);
     Mcap = m;
+    aq = amalloc<int8_t>((size_t)m * 2 * Kq);
+    asc = amalloc<float>(m);
     x = amalloc<float>((size_t)m * H);
     xn = amalloc<float>((size_t)m * H);
     qkv = amalloc<float>((size_t)m * QKV);
@@ -454,7 +639,9 @@ struct Engine {
     hbuf = amalloc<float>((size_t)m * FF);
     expert = amalloc<int>(m);
     for (auto& t : tl) {
-      free(t.acc); free(t.acc2); free(t.xs); free(t.ys); free(t.hs); free(t.order);
+      free(t.acc); free(t.acc2); free(t.xs); free(t.ys); free(t.hs); free(t.order); free(t.qr); free(t.qsc);
+      t.qr = amalloc<const int8_t*>(m);
+      t.qsc = amalloc<float>(m);
       t.acc = amalloc<float>((size_t)m * 16 + 96);
       t.acc2 = amalloc<float>((size_t)m * 16 + 96);
       t.xs = amalloc<const float*>(m);
@@ -525,9 +712,10 @@ struct Engine {
     lm.release();
     free(normf); free(cosT); free(sinT);
     free(Kp); free(Vp); free(Ks); free(Vs);
-    free(x); free(xn); free(qkv); free(att); free(hbuf); free(expert); free(logits);
+    free(x); free(xn); free(qkv); free(att); free(hbuf); free(expert); free(logits); free(aq); free(asc);
     for (auto& t : tl) {
       free(t.xn); free(t.acc); free(t.acc2); free(t.sc); free(t.xs); free(t.ys); free(t.hs); free(t.order);
+      free(t.wp); free(t.qr); free(t.qsc);
     }
   }
 };
@@ -629,6 +817,42 @@ float* normed(Engine& E, int tid, const float* w) {
   return E.xn;
 }
 
+// Per-token activation quantization of rows [0, E.M) of `base` (stride ld, K
+// cols) into E.aq / E.asc for GEMM `kind`, if that GEMM runs quantized this
+// pass. Same decision on every thread (it barriers).
+bool quantize(Engine& E, int tid, int kind, const float* base, int ld, int K) {
+  const int mode = E.gmode[kind];
+  if (mode == G_FP32 || E.M <= SMALL_M || E.M < E.gemm_min_rows || K % 32) return false;
+  int lo, hi;
+  split(E.M, E.nt, tid, lo, hi);
+  for (int m = lo; m < hi; ++m) E.asc[m] = quant_row(base + (size_t)m * ld, K, mode, E.aq + (size_t)m * 2 * E.Kq);
+  E.pool.barrier();
+  return true;
+}
+
+// out[r*16 + j] = rows x panel nb of W (no weight scale), for mc rows.
+// qr/qsc: the rows' quantized form when `mode` is not G_FP32.
+inline void panel_block(const Engine& E, Thread& T, const float* const* xs, const int8_t* const* qr, const float* qsc,
+                        int mc, const Mat& W, int nb, int mode, float* out) {
+  const int K = W.K;
+  if (mc < E.gemm_min_rows) {
+    panel_rows(xs, mc, W.panel(nb), K, out);
+  } else if (mode == G_A8 && W.i8safe) {
+    int8_t* wp = reinterpret_cast<int8_t*>(T.wp);
+    repack_a8(W.panel(nb), K, wp);
+    rows_a8(qr, qsc, mc, wp, K, out);
+  } else if (mode == G_A16) {
+    int16_t* wp = reinterpret_cast<int16_t*>(T.wp);
+    repack_a16(W.panel(nb), K, wp);
+    rows_a16(qr, qsc, mc, wp, K, out);
+  } else if (E.repack_fp32) {
+    repack_f32(W.panel(nb), K, T.wp);
+    tile_rows(xs, mc, F32Src{T.wp, 16}, K, out);
+  } else {
+    panel_rows(xs, mc, W.panel(nb), K, out);
+  }
+}
+
 inline int position(const Engine& E, int m) { return E.decode ? E.P + E.g : E.start + m; }
 
 // One forward pass over E.M rows (prompt tokens, or one token per stream).
@@ -651,27 +875,37 @@ void forward(Engine& E, int tid) {
   }
   E.pool.barrier();
 
-  // y rows (=|+=) xs rows . W^T over this thread's panels [nb0, nb1), row-blocked
-  auto gemm = [&](const float* const* xs, float* const* ys, int rows, const Mat& W, int nb0, int nb1, bool add) {
+  // y rows (=|+=) xs rows . W^T over this thread's panels [nb0, nb1), row-blocked.
+  // mode != G_FP32: T.qr/T.qsc hold the rows' quantized form.
+  auto gemm = [&](const float* const* xs, float* const* ys, int rows, const Mat& W, int nb0, int nb1, bool add,
+                  int mode = G_FP32, const int8_t* const* qr = nullptr, const float* qsc = nullptr) {
     for (int m0 = 0; m0 < rows; m0 += MC) {
       int mc = std::min(MC, rows - m0);
       for (int nb = nb0; nb < nb1; ++nb) {
-        panel_rows(xs + m0, mc, W.panel(nb), W.K, T.acc);
+        panel_block(E, T, xs + m0, qr ? qr + m0 : nullptr, qsc ? qsc + m0 : nullptr, mc, W, nb, mode, T.acc);
         epilogue(T.acc, mc, W.s + nb * 16, ys + m0, nb * 16, add);
       }
     }
+  };
+  auto qrows_identity = [&](int kind) {
+    for (int m = 0; m < M; ++m) {
+      T.qr[m] = E.aq + (size_t)m * 2 * E.Kq;
+      T.qsc[m] = E.asc[m];
+    }
+    return E.gmode[kind];
   };
 
   for (int l = 0; l < E.NL; ++l) {
     Layer& Ly = E.L[l];
     // ---- attention
     float* xn = normed(E, tid, Ly.ln1);
+    const int mq = quantize(E, tid, GK_QKV, xn, H, H) ? qrows_identity(GK_QKV) : G_FP32;
     for (int m = 0; m < M; ++m) {
       T.xs[m] = xn + (size_t)m * H;
       T.ys[m] = E.qkv + (size_t)m * QKV;
     }
     split(QKV / 16, nt, tid, lo, hi);
-    gemm(T.xs, T.ys, M, Ly.qkv, lo, hi, false);
+    gemm(T.xs, T.ys, M, Ly.qkv, lo, hi, false, mq, T.qr, T.qsc);
     E.pool.barrier();
 
     float* sc = T.sc;
@@ -747,16 +981,18 @@ void forward(Engine& E, int tid) {
     }
     E.pool.barrier();
 
+    const int mo = quantize(E, tid, GK_O, E.att, H, H) ? qrows_identity(GK_O) : G_FP32;
     for (int m = 0; m < M; ++m) {
       T.xs[m] = E.att + (size_t)m * H;
       T.ys[m] = E.x + (size_t)m * H;
     }
     split(H / 16, nt, tid, lo, hi);
-    gemm(T.xs, T.ys, M, Ly.o, lo, hi, true);
+    gemm(T.xs, T.ys, M, Ly.o, lo, hi, true, mo, T.qr, T.qsc);
     E.pool.barrier();
 
     // ---- MoE: router softmax top-1 => weight exactly 1.0, argmax of logits
     xn = normed(E, tid, Ly.ln2);
+    const int m13 = quantize(E, tid, GK_W13, xn, H, H) ? E.gmode[GK_W13] : G_FP32;
     auto route = [&](int m) {
       const float* xr = xn + (size_t)m * H;
       int best = 0;
@@ -794,6 +1030,8 @@ void forward(Engine& E, int tid) {
       T.xs[i] = xn + (size_t)m * H;
       T.hs[i] = E.hbuf + (size_t)m * FF;
       T.ys[i] = E.x + (size_t)m * H;
+      T.qr[i] = E.aq + (size_t)m * 2 * E.Kq;
+      T.qsc[i] = E.asc[m];
     }
     // Units (expert, 16-col block) weighted by rows routed; this thread owns the
     // units whose cost midpoint falls in its share. Returns [u0, u1) per expert.
@@ -825,8 +1063,10 @@ void forward(Engine& E, int tid) {
       for (int m0 = 0; m0 < cnt[e]; m0 += MC) {
         const int mc = std::min(MC, cnt[e] - m0);
         for (int j = u0[e]; j < u1[e]; ++j) {
-          panel_rows(xs + m0, mc, W.panel(2 * j), H, T.acc);
-          panel_rows(xs + m0, mc, W.panel(2 * j + 1), H, T.acc2);
+          const int8_t* const* qr = T.qr + T.off[e] + m0;
+          const float* qsc = T.qsc + T.off[e] + m0;
+          panel_block(E, T, xs + m0, qr, qsc, mc, W, 2 * j, m13, T.acc);
+          panel_block(E, T, xs + m0, qr, qsc, mc, W, 2 * j + 1, m13, T.acc2);
           __m256 s1a = _mm256_loadu_ps(W.s + 32 * j), s1b = _mm256_loadu_ps(W.s + 32 * j + 8);
           __m256 s3a = _mm256_loadu_ps(W.s + 32 * j + 16), s3b = _mm256_loadu_ps(W.s + 32 * j + 24);
           for (int m = 0; m < mc; ++m) {
@@ -842,10 +1082,18 @@ void forward(Engine& E, int tid) {
       }
     }
     E.pool.barrier();
+    // w2 input: the SwiGLU rows (rows are in E.hbuf by original index; the
+    // quantized copy is gathered through T.order like the others)
+    int m2 = G_FP32;
+    if (quantize(E, tid, GK_W2, E.hbuf, FF, FF)) {
+      m2 = E.gmode[GK_W2];
+      for (int i = 0; i < M; ++i) T.qsc[i] = E.asc[T.order[i]];
+    }
     my_units(H / 16, u0, u1);
     for (int e = 0; e < NE; ++e) {
       if (u0[e] == u1[e]) continue;
-      gemm((const float* const*)(T.hs + T.off[e]), T.ys + T.off[e], cnt[e], Ly.w2[e], u0[e], u1[e], true);
+      gemm((const float* const*)(T.hs + T.off[e]), T.ys + T.off[e], cnt[e], Ly.w2[e], u0[e], u1[e], true, m2,
+           T.qr + T.off[e], T.qsc + T.off[e]);
     }
     E.pool.barrier();
   }
@@ -1157,6 +1405,44 @@ void full_body(void* arg, int tid) {
   export_prefix(*J.E, J.kv_out, J.T, tid);
 }
 
+// BABBLE_NATIVE_GEMM: "fp32" (default) | "a8" | "a16" | "fp32-noprepack", or a
+// per-GEMM list such as "qkv=a8,o=a8,w13=a8,w2=fp32".
+// BABBLE_NATIVE_GEMM_MIN_ROWS: row blocks below this use the in-register
+// dequant kernel (decode-sized M is bandwidth-bound; repacking would not pay).
+int mode_of(const char* s, size_t n) {
+  if (n == 2 && !strncmp(s, "a8", 2)) return G_A8;
+  if (n == 3 && !strncmp(s, "a16", 3)) return G_A16;
+  return G_FP32;
+}
+
+void parse_gemm_env(Engine& E) {
+  if (const char* r = getenv("BABBLE_NATIVE_GEMM_MIN_ROWS")) {
+    int v = atoi(r);
+    if (v > 0) E.gemm_min_rows = v;
+  }
+  const char* g = getenv("BABBLE_NATIVE_GEMM");
+  if (!g || !*g) return;
+  if (!strcmp(g, "fp32-noprepack")) {
+    E.repack_fp32 = false;
+    return;
+  }
+  if (!strchr(g, '=')) {
+    for (int k = 0; k < GK_N; ++k) E.gmode[k] = mode_of(g, strlen(g));
+    return;
+  }
+  static const char* names[GK_N] = {"qkv", "o", "w13", "w2"};
+  for (const char* p = g; *p;) {
+    const char* end = strchr(p, ',');
+    size_t len = end ? (size_t)(end - p) : strlen(p);
+    const char* eq = (const char*)memchr(p, '=', len);
+    if (eq)
+      for (int k = 0; k < GK_N; ++k)
+        if ((size_t)(eq - p) == strlen(names[k]) && !strncmp(p, names[k], eq - p))
+          E.gmode[k] = mode_of(eq + 1, len - (eq + 1 - p));
+    p += len + (end ? 1 : 0);
+  }
+}
+
 }  // namespace
 
 extern "C" {
@@ -1205,7 +1491,10 @@ void* eng_create(int nthreads, int hidden, int heads, int layers, int experts, i
     t.xn = amalloc<float>((size_t)SMALL_M * hidden);
     t.ld = (int)up16(maxctx) + 64;
     t.sc = amalloc<float>(std::max<size_t>(vocab, (size_t)6 * t.ld) + 64);
+    t.wp = amalloc<float>((size_t)std::max(hidden, inter) * 16 + 64);
   }
+  E->Kq = std::max(hidden, inter);
+  parse_gemm_env(*E);
   E->ensure_rows(64);
   E->pool.start(E->nt);
   return E;
