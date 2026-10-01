@@ -3,8 +3,9 @@
     python bench/extreme/reference.py check bench.extreme.nativeserve_check:full
     python bench/extreme/reference.py check bench.extreme.nativeserve_check:decode
     python bench/extreme/reference.py check bench.extreme.nativeserve_check:prefix
+    python bench/extreme/reference.py check bench.extreme.nativeserve_check:verify
 
-All three go through a `NativeGenerator` built by `hfserve.make_generator`
+All four go through a `NativeGenerator` built by `hfserve.make_generator`
 (BABBLE_HF_RUNTIME=native), i.e. the engine the bot would serve with:
 
 * ``full``   -- one batched prefill over the whole sequence (the prompt path);
@@ -57,3 +58,10 @@ def prefix(ids):
     head, kv = eng.forward(ids[:cut], export=True)
     tail, _ = eng.forward(ids, start=cut, kv_in=kv, kv_in_len=cut)
     return torch.cat([head, tail])
+
+
+def verify(ids):
+    """Speculative-decoding verify path: 4-row chunks of one stream through the
+    decode forward with per-row cache positions, each chunk first fed as junk
+    and rolled back (a rejected draft), then fed for real."""
+    return generator().engine.verify_logits(ids, prefill=1, chunk=4, junk=True)

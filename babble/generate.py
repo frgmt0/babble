@@ -941,6 +941,7 @@ class CheckpointGenerator:
         max_turns: int,
         max_tokens: int,
         max_chars: int,
+        overflow_keep: float = 1.0,
     ) -> str:
         """Format a transcript inside this checkpoint's exact token budget."""
 
@@ -962,4 +963,5 @@ class CheckpointGenerator:
             max_chars=max_chars,
             max_tokens=prompt_budget,
             token_count=lambda text: len(tok.encode(text)),
+            overflow_keep=overflow_keep,
         )

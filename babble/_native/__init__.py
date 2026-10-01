@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 SOURCE = Path(__file__).resolve().with_name("engine.cpp")
-ABI_VERSION = 3
+ABI_VERSION = 4
 # -march=haswell (AVX2 + FMA + F16C) rather than -march=native: the same build
 # key then means the same instructions and the same float results on any CPU
 # that passes the feature check.
@@ -184,12 +184,22 @@ def _declare(lib: ctypes.CDLL) -> ctypes.CDLL:
     lib.eng_destroy.argtypes = [vp]
     lib.eng_set_matrix.restype = i32
     lib.eng_set_matrix.argtypes = [vp, i32, i32, i32, vp, vp, i32, i32]
+    lib.eng_set_matrix_q4.restype = i32
+    lib.eng_set_matrix_q4.argtypes = [vp, i32, i32, i32, vp, vp, i32, i32, i32]
+    lib.eng_set_head2.restype = i32
+    lib.eng_set_head2.argtypes = [vp, i32, f32]
+    lib.eng_head2_stats.restype = None
+    lib.eng_head2_stats.argtypes = [vp, vp]
     lib.eng_set_vector.restype = i32
     lib.eng_set_vector.argtypes = [vp, i32, i32, vp]
     lib.eng_set_rope.restype = None
     lib.eng_set_rope.argtypes = [vp, vp, vp]
-    lib.eng_kv_floats.restype = ctypes.c_longlong
-    lib.eng_kv_floats.argtypes = [vp, i32]
+    lib.eng_kv_bytes.restype = ctypes.c_longlong
+    lib.eng_kv_bytes.argtypes = [vp, i32]
+    lib.eng_set_kv_type.restype = i32
+    lib.eng_set_kv_type.argtypes = [vp, i32]
+    lib.eng_kv_type.restype = i32
+    lib.eng_kv_type.argtypes = [vp]
     lib.eng_forward.restype = i32
     lib.eng_forward.argtypes = [vp, vp, i32, i32, vp, i32, vp, vp]
     lib.eng_forward_incremental.restype = i32
@@ -200,6 +210,18 @@ def _declare(lib: ctypes.CDLL) -> ctypes.CDLL:
         i32, i32, ctypes.POINTER(SampleParams), ctypes.c_uint64,  # ns, max_new, params, seed
         vp, vp, vp, vp,  # out_tokens, counts, logprob, timing
     ]
+    lib.eng_spec_begin.restype = vp
+    lib.eng_spec_begin.argtypes = [
+        vp, vp, i32, i32, vp, i32, vp,  # engine, prompt, T, start, kv_in, kv_in_len, kv_out
+        i32, i32, i32, ctypes.POINTER(SampleParams), ctypes.c_uint64,  # ns, max_new, kmax, params, seed
+        vp, vp,  # first_tokens, timing
+    ]
+    lib.eng_spec_step.restype = i32
+    lib.eng_spec_step.argtypes = [vp, vp, vp, vp, vp]  # session, drafts, nd, out, nout
+    lib.eng_spec_end.restype = None
+    lib.eng_spec_end.argtypes = [vp, vp, vp]  # session, counts, logprob
+    lib.eng_forward_verify.restype = i32
+    lib.eng_forward_verify.argtypes = [vp, vp, i32, i32, i32, i32, vp]
     lib.eng_warp_probs.restype = i32
     lib.eng_warp_probs.argtypes = [vp, i32, vp, i32, ctypes.POINTER(SampleParams), vp]
     return lib

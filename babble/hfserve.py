@@ -350,6 +350,7 @@ class HFGenerator:
         max_turns: int,
         max_tokens: int,
         max_chars: int,
+        overflow_keep: float = 1.0,
     ) -> str:
         """Serialize complete turns within this model's exact token budget."""
         from .conversation import conversation_prompt_for_token_budget
@@ -369,6 +370,7 @@ class HFGenerator:
             token_count=lambda text: len(
                 self.tokenizer.encode(text, add_special_tokens=False).ids
             ),
+            overflow_keep=overflow_keep,
         )
 
     def _generate(

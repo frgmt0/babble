@@ -55,6 +55,27 @@ def _serialize(history: Iterable[ConversationTurn], current_user: str) -> str:
     return "\n".join(lines)
 
 
+def _trim_to_floor(
+    kept: list[ConversationTurn],
+    fits_low: Callable[[str], bool],
+) -> list[ConversationTurn]:
+    """Drop oldest turns until the *history* fits the low watermark.
+
+    Called only once the transcript has overflowed its real cap. The floor is
+    measured on the history alone (serialized up to the trailing ``user: ``),
+    not on the current message, so where the window lands after a trim does
+    not depend on how long the message that triggered it was: the window is
+    predictable before the next message arrives, which is what lets the bot
+    pre-prefill it. The caller's ordinary one-turn-at-a-time trim then makes
+    room for an unusually long current message, exactly as before.
+    """
+
+    trimmed = list(kept)
+    while trimmed and not fits_low(_serialize(trimmed, "")):
+        trimmed.pop(0)
+    return trimmed
+
+
 def bounded_history(
     history: Sequence[ConversationTurn],
     *,
@@ -66,12 +87,62 @@ def bounded_history(
     return tuple(history[-limit:]) if limit else ()
 
 
+def overflow_floor(cap: int, overflow_keep: float) -> int:
+    """The low watermark an overflowing window is trimmed down to.
+
+    ``overflow_keep`` is the fraction of a cap kept after an overflow; 1.0 (or
+    more) means "just under the cap", i.e. slide one turn at a time.
+    """
+
+    keep = float(overflow_keep)
+    if keep >= 1.0 or cap <= 0:
+        return cap
+    return max(1, int(cap * keep)) if keep > 0 else 0
+
+
+def windowed_turns(
+    turns: Sequence[ConversationTurn], *, max_turns: int, overflow_keep: float = 1.0
+) -> tuple[ConversationTurn, ...]:
+    """Bound a chain's turns, trimming in one chunk when it overflows.
+
+    With ``overflow_keep`` 1.0 this is exactly `bounded_history`: every turn
+    past the cap drops the oldest one, so the transcript's prefix changes on
+    every turn and a prefix KV cache can never hit. With e.g. 0.5, a chain
+    that reaches ``max_turns + 1`` turns is cut back to ``max_turns // 2`` and
+    then grows again, so the following turns extend a stable prefix.
+    """
+
+    limit = max(0, int(max_turns))
+    if len(turns) <= limit:
+        return tuple(turns)
+    floor = overflow_floor(limit, overflow_keep)
+    if floor >= limit:
+        return bounded_history(turns, max_turns=limit)
+    return tuple(turns[-floor:]) if floor else ()
+
+
+def used_history(
+    history: Sequence[ConversationTurn], current_user: str, prompt: str
+) -> tuple[ConversationTurn, ...]:
+    """The suffix of ``history`` a formatter actually serialized into ``prompt``.
+
+    Formatters only ever drop whole turns from the front (and, as a last
+    resort, crop the current message, in which case no history is used).
+    """
+
+    for start in range(len(history) + 1):
+        if prompt == _serialize(history[start:], current_user):
+            return tuple(history[start:])
+    return ()
+
+
 def conversation_prompt(
     history: Sequence[ConversationTurn],
     current_user: str,
     *,
     max_turns: int,
     max_chars: int,
+    overflow_keep: float = 1.0,
 ) -> str:
     """Serialize a bounded chronological transcript ending at ``current_user``.
 
@@ -89,6 +160,8 @@ def conversation_prompt(
     if cap < len(USER_PREFIX):
         raise ValueError("conversation character budget is too small for the user role")
 
+    if kept and len(_serialize(kept, current_user)) > cap:
+        kept = _trim_to_floor(kept, lambda value: len(value) <= overflow_floor(cap, overflow_keep))
     while kept and len(_serialize(kept, current_user)) > cap:
         kept.pop(0)
 
@@ -112,6 +185,7 @@ def conversation_prompt_for_token_budget(
     max_chars: int,
     max_tokens: int,
     token_count: Callable[[str], int],
+    overflow_keep: float = 1.0,
 ) -> str:
     """Fit the transcript without letting token truncation split role framing.
 
@@ -133,6 +207,15 @@ def conversation_prompt_for_token_budget(
 
     kept = list(bounded_history(history, max_turns=max_turns))
     prompt = _serialize(kept, current_user)
+    if kept and not fits(prompt):
+        low_tokens = max(1, overflow_floor(token_cap, overflow_keep))
+        low_chars = overflow_floor(char_cap, overflow_keep)
+
+        def fits_low(value: str) -> bool:
+            return (char_cap <= 0 or len(value) <= low_chars) and token_count(value) <= low_tokens
+
+        kept = _trim_to_floor(kept, fits_low)
+        prompt = _serialize(kept, current_user)
     while kept and not fits(prompt):
         kept.pop(0)
         prompt = _serialize(kept, current_user)

@@ -593,9 +593,16 @@ class PrefixKVCache:
             n = _common_prefix(entry.ids, ids)
             if n > best_len:
                 best_key, best, best_len = key, entry, n
-        if best_key is not None:
+        # Only a real match counts as a use. Every role transcript shares its
+        # first few tokens (``<bos>user: ``); refreshing an entry for that
+        # would keep a dead conversation's snapshot alive and evict a live one
+        # (a stale 1.5k-token entry outliving the warm next turn it shadows).
+        if best_key is not None and best_len >= min(self.MIN_REFRESH_TOKENS, ids.numel()):
             self._entries.move_to_end(best_key)
         return best, best_len
+
+    #: A lookup sharing fewer tokens than this with an entry does not refresh it.
+    MIN_REFRESH_TOKENS = 16
 
     def record(self, reused: int) -> None:
         if reused > 0:
@@ -828,7 +835,7 @@ class LeanGenerator:
         self.max_position_embeddings = self.model.cfg.max_pos
         self.prefix_cache = PrefixKVCache(
             max_entries=int(getattr(settings, "lean_prefix_cache_entries", 32)),
-            max_bytes=int(getattr(settings, "lean_prefix_cache_mb", 128)) * 1024 * 1024,
+            max_bytes=int(getattr(settings, "lean_prefix_cache_mb", 512)) * 1024 * 1024,
         )
         self._lock = threading.Lock()
         self._extra_penalties = _flag("BABBLE_HF_FREQUENCY_PENALTIES")
@@ -866,7 +873,9 @@ class LeanGenerator:
             tokens = tokens[-budget:]
         return torch.tensor([[self.bos_id, *tokens, self.sep_id]], dtype=torch.long)
 
-    def conversation_prompt(self, history, current_user: str, *, max_turns: int, max_tokens: int, max_chars: int) -> str:
+    def conversation_prompt(
+        self, history, current_user: str, *, max_turns: int, max_tokens: int, max_chars: int, overflow_keep: float = 1.0
+    ) -> str:
         from .conversation import conversation_prompt_for_token_budget
 
         return conversation_prompt_for_token_budget(
@@ -876,6 +885,7 @@ class LeanGenerator:
             max_chars=max_chars,
             max_tokens=min(max(1, self._prompt_budget()), max(1, int(max_tokens))),
             token_count=lambda text: len(self.tokenizer.encode(text, add_special_tokens=False).ids),
+            overflow_keep=overflow_keep,
         )
 
     # ---- generation ----------------------------------------------------------
