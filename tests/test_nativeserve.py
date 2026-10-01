@@ -466,7 +466,7 @@ def test_prewarm_leaves_only_the_new_message_to_prefill(native_settings) -> None
     warm_text = gen.conversation_prompt(history, "", **kw)
     info = gen.prewarm(warm_text)
     L = len(gen.tokenizer.encode(warm_text, add_special_tokens=False).ids) + 1
-    assert info["tokens"] == L and info["chunks"] >= 2 and not info["yielded"]
+    assert info["tokens"] == L and info["chunks"] >= 2 and info["yielded"] == 0 and info["done"]
     assert info["reused"] + info["prefilled"] == L
     assert gen.prefix_cache.stats()["entries"] == 1  # each chunk replaced the last
     assert gen.prewarm(warm_text)["prefilled"] == 0  # idempotent
@@ -485,8 +485,8 @@ def test_prewarm_leaves_only_the_new_message_to_prefill(native_settings) -> None
 def test_prewarm_yields_to_a_waiting_generation(native_settings) -> None:
     gen = make_generator(native_settings)
     gen._waiting = 1  # a real reply is queued for the engine
-    info = gen.prewarm("user: w1 w2 w3\nassistant: w4\nuser: ")
-    assert info["yielded"] and info["chunks"] == 0 and len(gen.prefix_cache) == 0
+    info = gen.prewarm("user: w1 w2 w3\nassistant: w4\nuser: ", deadline_s=0.2)
+    assert info["yielded"] == 1 and info["chunks"] == 0 and not info["done"] and len(gen.prefix_cache) == 0
     gen._waiting = 0
     native_settings.lean_prefix_cache_mb = 0
     assert make_generator(native_settings).prewarm("user: w1")["chunks"] == 0
@@ -517,9 +517,10 @@ def test_generation_preempts_a_running_prewarm(native_settings) -> None:
     warm = threading.Thread(target=lambda: out.update(gen.prewarm(text)))
     warm.start()
     started.wait(10)
-    gen("w1 w2")  # queues behind at most one chunk, then the warm stops
+    gen("w1 w2")  # queues behind at most one chunk; the warm resumes after it
     warm.join(30)
-    assert out["yielded"] and out["chunks"] < out["tokens"]
+    # it stepped aside for the reply, then finished the warm afterwards
+    assert out["yielded"] >= 1 and out["done"] and out["chunks"] >= out["tokens"] - 1
 
 
 @needs_native

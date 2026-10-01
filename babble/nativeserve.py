@@ -358,7 +358,7 @@ class NativeGenerator(LeanGenerator):
         # background pre-prefill delays a reply by at most one chunk.
         self._waiting = 0
         self._waiting_lock = threading.Lock()
-        self._prewarm = dict(calls=0, tokens=0, chunks=0, yielded=0, skipped=0, seconds=0.0)
+        self._prewarm = dict(calls=0, tokens=0, chunks=0, yielded=0, incomplete=0, skipped=0, seconds=0.0)
         from .leanserve import _flag
 
         self._extra_penalties = _flag("BABBLE_HF_FREQUENCY_PENALTIES")
@@ -411,18 +411,23 @@ class NativeGenerator(LeanGenerator):
     #: cores: the longest a real reply can wait behind a background warm.
     PREWARM_CHUNK = 128
 
-    def prewarm(self, text: str) -> dict:
+    #: A warm still not done after this long (a backlog of real replies) is dropped.
+    PREWARM_DEADLINE_S = 30.0
+
+    def prewarm(self, text: str, *, deadline_s: float | None = None) -> dict:
         """Prefill ``<bos> text`` into the prefix cache, off the hot path.
 
         ``text`` is the start of a prompt the bot expects to serve soon (the
         next turn's transcript up to and including ``user: ``). Whatever part
         of it the cache already holds is reused; the rest is prefilled in
-        `PREWARM_CHUNK`-token steps, each stored as a snapshot, so the work is
-        never lost even when a real request preempts it. Never raises: this
-        is an optimization, and a failure only costs the next reply a longer
-        prefill.
+        `PREWARM_CHUNK`-token steps, each stored as a snapshot. Between steps
+        it steps aside for any real generation waiting on the engine, then
+        resumes from its stored progress once that one is done (another
+        channel's reply must not cancel this channel's warm). Never raises:
+        this is an optimization, and a failure only costs the next reply a
+        longer prefill.
         """
-        info = dict(tokens=0, reused=0, prefilled=0, chunks=0, yielded=False, ms=0.0)
+        info = dict(tokens=0, reused=0, prefilled=0, chunks=0, yielded=0, done=False, busy_ms=0.0, ms=0.0)
         cache = self.prefix_cache
         if not cache.enabled:
             return info
@@ -441,21 +446,29 @@ class NativeGenerator(LeanGenerator):
                 self._prewarm["skipped"] += 1
                 return info
             ids_t = torch.tensor(ids, dtype=torch.long)
+            limit = started + (self.PREWARM_DEADLINE_S if deadline_s is None else float(deadline_s))
             first = True
             while True:
                 if self._waiting:
-                    info["yielded"] = True
+                    # A real reply is queued: let it have the engine, and wait
+                    # until it holds the lock (waiting drops to 0 on acquire);
+                    # `with self._lock` below then waits for it to finish.
+                    info["yielded"] += 1
+                    while self._waiting and time.perf_counter() < limit:
+                        time.sleep(0.002)
+                if time.perf_counter() >= limit:
                     break
                 with self._lock:
                     if self._waiting:
-                        info["yielded"] = True
-                        break
+                        continue
                     entry, common = cache.lookup(ids_t)
                     if first:
                         info["reused"] = min(common, L)
                         first = False
                     if common >= L:
+                        info["done"] = True
                         break
+                    busy = time.perf_counter()
                     reused = common if entry is not None else 0
                     end = min(L, reused + self.PREWARM_CHUNK)
                     kv_in, stored = (entry.k[0], int(entry.ids.numel())) if reused > 0 else (None, 0)
@@ -467,14 +480,17 @@ class NativeGenerator(LeanGenerator):
                     cache.store(ids_t[:end], [kv_out], [])
                     info["prefilled"] += end - reused
                     info["chunks"] += 1
+                    info["busy_ms"] += (time.perf_counter() - busy) * 1000
         except Exception as exc:  # pragma: no cover - never let warming hurt serving
             self.log.event("bot.error", where="prewarm", error=f"{type(exc).__name__}: {exc}")
         info["ms"] = round((time.perf_counter() - started) * 1000, 2)
+        info["busy_ms"] = round(info["busy_ms"], 2)
         p = self._prewarm
         p["tokens"] += info["prefilled"]
         p["chunks"] += info["chunks"]
-        p["yielded"] += int(info["yielded"])
-        p["seconds"] += info["ms"] / 1000
+        p["yielded"] += info["yielded"]
+        p["incomplete"] += int(not info["done"])
+        p["seconds"] += info["busy_ms"] / 1000
         return info
 
     def prewarm_stats(self) -> dict:
