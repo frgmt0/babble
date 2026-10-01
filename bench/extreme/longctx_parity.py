@@ -83,6 +83,8 @@ def main() -> None:
         head, snap = eng.forward(ids[:cut], export=True)
         tail, _ = eng.forward(ids, start=cut, kv_in=snap, kv_in_len=cut)
         report(f"{cut} snapshot + {n - cut} prefill", torch.cat([head, tail]))
+        if hasattr(eng, "verify_logits"):  # speculative-decoding verify path, 4 rows per step
+            report(f"{prefill} prefill + verify x4", eng.verify_logits(ids, prefill=prefill, chunk=4, junk=True))
         eng.close()
 
 
