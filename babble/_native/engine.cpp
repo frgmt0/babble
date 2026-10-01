@@ -630,11 +630,11 @@ inline const float* stage(const uint16_t* src, size_t n, float* tmp) {
 // s[r*KB + j*16 + i] = scale * q_r . K[j*16 + i] for 16-position blocks j < nb16
 // of a blocked fp32 K tile. U independent accumulator sets over d (U | HD) keep
 // the 1-2 row case from being FMA-latency bound.
-template <int RR, int U>
-inline void qk_tile(const float* const* q, const float* kf, int nb16, int HD, float scale, float* s) {
+template <int RR, int U, class ST>
+inline void qk_tile(const float* const* q, const ST* kf, int nb16, int HD, float scale, float* s) {
   const __m256 sc = _mm256_set1_ps(scale);
   for (int j = 0; j < nb16; ++j) {
-    const float* kb = kf + (size_t)j * HD * 16;
+    const ST* kb = kf + (size_t)j * HD * 16;
     __m256 a[U][RR][2];
 #pragma GCC unroll 8
     for (int u = 0; u < U; ++u)
@@ -643,7 +643,7 @@ inline void qk_tile(const float* const* q, const float* kf, int nb16, int HD, fl
     for (int d = 0; d < HD; d += U) {
 #pragma GCC unroll 8
       for (int u = 0; u < U; ++u) {
-        const __m256 w0 = _mm256_loadu_ps(kb + (d + u) * 16), w1 = _mm256_loadu_ps(kb + (d + u) * 16 + 8);
+        const __m256 w0 = kv_ld8(kb + (d + u) * 16), w1 = kv_ld8(kb + (d + u) * 16 + 8);
 #pragma GCC unroll 8
         for (int r = 0; r < RR; ++r) {
           const __m256 xb = _mm256_broadcast_ss(q[r] + d + u);
@@ -667,8 +667,8 @@ inline void qk_tile(const float* const* q, const float* kf, int nb16, int HD, fl
 }
 
 // o[r][0..HD) += sum_{t < kb} p[r*KB + t] * V[t][:] (row-major fp32 V tile).
-template <int RR, int U>
-inline void pv_tile(const float* p, const float* vf, int kb, int HD, float* o) {
+template <int RR, int U, class ST>
+inline void pv_tile(const float* p, const ST* vf, int kb, int HD, float* o) {
   for (int d0 = 0; d0 < HD; d0 += 16) {
     __m256 a[U][RR][2];
 #pragma GCC unroll 8
@@ -682,8 +682,8 @@ inline void pv_tile(const float* p, const float* vf, int kb, int HD, float* o) {
     for (; t + U <= kb; t += U) {
 #pragma GCC unroll 8
       for (int u = 0; u < U; ++u) {
-        const float* v = vf + (size_t)(t + u) * HD + d0;
-        const __m256 w0 = _mm256_loadu_ps(v), w1 = _mm256_loadu_ps(v + 8);
+        const ST* v = vf + (size_t)(t + u) * HD + d0;
+        const __m256 w0 = kv_ld8(v), w1 = kv_ld8(v + 8);
 #pragma GCC unroll 8
         for (int r = 0; r < RR; ++r) {
           const __m256 pb = _mm256_broadcast_ss(p + r * KB + t + u);
@@ -693,8 +693,8 @@ inline void pv_tile(const float* p, const float* vf, int kb, int HD, float* o) {
       }
     }
     for (; t < kb; ++t) {
-      const float* v = vf + (size_t)t * HD + d0;
-      const __m256 w0 = _mm256_loadu_ps(v), w1 = _mm256_loadu_ps(v + 8);
+      const ST* v = vf + (size_t)t * HD + d0;
+      const __m256 w0 = kv_ld8(v), w1 = kv_ld8(v + 8);
 #pragma GCC unroll 8
       for (int r = 0; r < RR; ++r) {
         const __m256 pb = _mm256_broadcast_ss(p + r * KB + t);
@@ -716,24 +716,26 @@ inline void pv_tile(const float* p, const float* vf, int kb, int HD, float* o) {
   }
 }
 
-inline void qk_rows(int rr, const float* const* q, const float* kf, int nb16, int HD, float scale, float* s) {
+template <class ST>
+inline void qk_rows(int rr, const float* const* q, const ST* kf, int nb16, int HD, float scale, float* s) {
   switch (rr) {
-    case 1: qk_tile<1, 4>(q, kf, nb16, HD, scale, s); break;
-    case 2: qk_tile<2, 2>(q, kf, nb16, HD, scale, s); break;
-    case 3: qk_tile<3, 2>(q, kf, nb16, HD, scale, s); break;
-    case 4: qk_tile<4, 1>(q, kf, nb16, HD, scale, s); break;
-    case 5: qk_tile<5, 1>(q, kf, nb16, HD, scale, s); break;
-    default: qk_tile<6, 1>(q, kf, nb16, HD, scale, s); break;
+    case 1: qk_tile<1, 4, ST>(q, kf, nb16, HD, scale, s); break;
+    case 2: qk_tile<2, 2, ST>(q, kf, nb16, HD, scale, s); break;
+    case 3: qk_tile<3, 2, ST>(q, kf, nb16, HD, scale, s); break;
+    case 4: qk_tile<4, 1, ST>(q, kf, nb16, HD, scale, s); break;
+    case 5: qk_tile<5, 1, ST>(q, kf, nb16, HD, scale, s); break;
+    default: qk_tile<6, 1, ST>(q, kf, nb16, HD, scale, s); break;
   }
 }
-inline void pv_rows(int rr, const float* p, const float* vf, int kb, int HD, float* o) {
+template <class ST>
+inline void pv_rows(int rr, const float* p, const ST* vf, int kb, int HD, float* o) {
   switch (rr) {
-    case 1: pv_tile<1, 4>(p, vf, kb, HD, o); break;
-    case 2: pv_tile<2, 2>(p, vf, kb, HD, o); break;
-    case 3: pv_tile<3, 2>(p, vf, kb, HD, o); break;
-    case 4: pv_tile<4, 1>(p, vf, kb, HD, o); break;
-    case 5: pv_tile<5, 1>(p, vf, kb, HD, o); break;
-    default: pv_tile<6, 1>(p, vf, kb, HD, o); break;
+    case 1: pv_tile<1, 4, ST>(p, vf, kb, HD, o); break;
+    case 2: pv_tile<2, 2, ST>(p, vf, kb, HD, o); break;
+    case 3: pv_tile<3, 2, ST>(p, vf, kb, HD, o); break;
+    case 4: pv_tile<4, 1, ST>(p, vf, kb, HD, o); break;
+    case 5: pv_tile<5, 1, ST>(p, vf, kb, HD, o); break;
+    default: pv_tile<6, 1, ST>(p, vf, kb, HD, o); break;
   }
 }
 
@@ -780,13 +782,19 @@ void attend(Thread& T, const float* const* qs, int R, const int* lim, const KT* 
   for (int b0 = t0; b0 < t1; b0 += KB) {
     if (lim && lim[R - 1] < b0) break;
     const int kb = std::min(KB, t1 - b0), nb16 = (kb + 15) / 16;
-    const float* kf = stage(Kb + (size_t)b0 * HD, (size_t)nb16 * 16 * HD, T.akf);
-    const float* vf = stage(Vb + (size_t)b0 * HD, (size_t)kb * HD, T.avf);
+    // one row tile (decode): read the stored K/V directly; several row tiles
+    // (prefill): convert the block to fp32 once and reuse it for every tile
+    const bool direct = R <= 6;
+    const KT* kd = Kb + (size_t)b0 * HD;
+    const KT* vd = Vb + (size_t)b0 * HD;
+    const float* kf = direct ? nullptr : stage(kd, (size_t)nb16 * 16 * HD, T.akf);
+    const float* vf = direct ? nullptr : stage(vd, (size_t)kb * HD, T.avf);
     for (int r0 = 0; r0 < R; r0 += 6) {
       const int rr = std::min(6, R - r0);
       if (lim && lim[r0 + rr - 1] < b0) continue;  // this row tile is fully masked here (later tiles may not be)
       float* sr = s + (size_t)r0 * KB;
-      qk_rows(rr, qs + r0, kf, nb16, HD, scale, sr);
+      if (direct) qk_rows(rr, qs + r0, kd, nb16, HD, scale, sr);
+      else qk_rows(rr, qs + r0, kf, nb16, HD, scale, sr);
       for (int r = r0; r < r0 + rr; ++r) {
         float* row = s + (size_t)r * KB;
         const int valid = lim ? std::min(kb, lim[r] - b0 + 1) : kb;
@@ -816,7 +824,8 @@ void attend(Thread& T, const float* const* qs, int R, const int* lim, const KT* 
         }
         T.al[r] += sum;
       }
-      pv_rows(rr, sr, vf, kb, HD, T.ao + (size_t)r0 * HD);
+      if (direct) pv_rows(rr, sr, vd, kb, HD, T.ao + (size_t)r0 * HD);
+      else pv_rows(rr, sr, vf, kb, HD, T.ao + (size_t)r0 * HD);
     }
   }
 }

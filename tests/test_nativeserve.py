@@ -59,7 +59,9 @@ def _quantize(w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     return q, scale
 
 
-def _write_snapshot(out: Path, *, hidden: int = 64, heads: int = 4, inter: int = 96, seed: int = 1234) -> Path:
+def _write_snapshot(
+    out: Path, *, hidden: int = 64, heads: int = 4, inter: int = 96, seed: int = 1234, max_pos: int = 256
+) -> Path:
     from safetensors.torch import save_file
     from tokenizers import Tokenizer
     from tokenizers.models import WordLevel
@@ -76,7 +78,7 @@ def _write_snapshot(out: Path, *, hidden: int = 64, heads: int = 4, inter: int =
         num_key_value_heads=heads,
         num_local_experts=3,
         num_experts_per_tok=1,
-        max_position_embeddings=256,
+        max_position_embeddings=max_pos,
         rms_norm_eps=1e-5,
         tie_word_embeddings=True,
         initializer_range=0.15,
@@ -136,11 +138,27 @@ def hf_model(snapshot):
 
 @pytest.fixture(scope="module")
 def engine(snapshot):
+    """fp32 KV: the engine's arithmetic, checked against transformers to 1e-4."""
     if not NATIVE_OK:
         pytest.skip(WHY)
-    eng = NativeEngine(snapshot, threads=3)
+    eng = NativeEngine(snapshot, threads=3, kv="fp32")
     yield eng
     eng.close()
+
+
+@pytest.fixture(scope="module")
+def engine16(snapshot):
+    """fp16 KV (the serving default)."""
+    if not NATIVE_OK:
+        pytest.skip(WHY)
+    eng = NativeEngine(snapshot, threads=3, kv="fp16")
+    yield eng
+    eng.close()
+
+
+@pytest.fixture(scope="module")
+def long_snapshot(tmp_path_factory) -> Path:
+    return _write_snapshot(tmp_path_factory.mktemp("tiny-mixtral-native-long"), max_pos=1024, seed=99)
 
 
 def _ids(n: int, seed: int = 0) -> list[int]:
@@ -224,6 +242,84 @@ def test_prefix_restore_uses_only_the_matching_part_of_a_longer_snapshot(engine)
     # and a snapshot of *different* tokens really is different (the test has teeth)
     wrong, _ = engine.forward(b, start=40, kv_in=kv, kv_in_len=len(a))
     assert float((wrong - full[40:]).abs().max()) > 1e-3
+
+
+# --------------------------------------------------------------------------
+# KV element type (BABBLE_NATIVE_KV) and long-context attention tiling
+# --------------------------------------------------------------------------
+
+
+@needs_native
+def test_kv_type_default_env_and_snapshot_size(snapshot, engine, engine16, monkeypatch) -> None:
+    from babble.hfserve import HFServeError
+
+    monkeypatch.delenv("BABBLE_NATIVE_KV", raising=False)
+    eng = NativeEngine(snapshot, threads=1)
+    assert eng.kv == "fp16" and eng.lib.eng_kv_type(eng._h) == 1
+    eng.close()
+    monkeypatch.setenv("BABBLE_NATIVE_KV", "FP32")
+    eng = NativeEngine(snapshot, threads=1)
+    assert eng.kv == "fp32" and eng.lib.eng_kv_type(eng._h) == 0
+    eng.close()
+    monkeypatch.setenv("BABBLE_NATIVE_KV", "int4")
+    with pytest.raises(HFServeError):
+        NativeEngine(snapshot, threads=1)
+    # an fp16 snapshot is exactly half the size; the buffer is raw bytes
+    for n in (1, 17, 60):
+        assert 2 * engine16.kv_bytes(n) == engine.kv_bytes(n)
+        assert engine16.new_snapshot(n).numel() == engine16.kv_bytes(n)
+
+
+@needs_native
+def test_fp16_kv_paths_agree_with_transformers_and_each_other(engine16, hf_model) -> None:
+    ids = _ids(60, 21)
+    ref = _hf_logits(hf_model, ids)
+    full = engine16.full_logits(ids)
+    # fp16 K/V rounding only: small logit drift, same argmax everywhere
+    assert float((full - ref).abs().max()) < 2e-2
+    assert bool((full.argmax(-1) == ref.argmax(-1)).all())
+    # every path reads the same rounded cache, so they agree to float rounding
+    for prefill in (1, 9, len(ids)):
+        got = engine16.decode_logits(ids, prefill=prefill)
+        # (a 1e-7 path difference can flip an fp16 rounding of a later K/V)
+        assert float((got - full).abs().max()) <= 2e-3, prefill
+    for cut in (1, 16, 37):
+        head, kv = engine16.forward(ids[:cut], export=True)
+        tail, _ = engine16.forward(ids, start=cut, kv_in=kv, kv_in_len=cut)
+        assert float((torch.cat([head, tail]) - full).abs().max()) <= 1e-3, cut
+
+
+@needs_native
+def test_long_context_tiling_matches_transformers(long_snapshot) -> None:
+    """700 tokens: prefill uses multi-row-tile flash blocks, decode merges
+    several split-K chunks of the shared prompt (DCH=256) plus the tail."""
+    hf = _load_int8(long_snapshot)[0]
+    ids = _ids(700, 8)
+    ref = _hf_logits(hf, ids)
+    eng = NativeEngine(long_snapshot, threads=3, kv="fp32")
+    try:
+        assert torch.allclose(eng.full_logits(ids), ref, atol=1e-4, rtol=1e-4)
+        for prefill in (600, 257):
+            got = eng.decode_logits(ids, prefill=prefill)
+            assert torch.allclose(got, ref, atol=1e-4, rtol=1e-4), (prefill, float((got - ref).abs().max()))
+        head, kv = eng.forward(ids[:513], export=True)
+        tail, _ = eng.forward(ids, start=513, kv_in=kv, kv_in_len=513)
+        assert torch.allclose(torch.cat([head, tail]), ref, atol=1e-4, rtol=1e-4)
+        # 4 streams over a 3-chunk prompt == 1 stream
+        kw = dict(max_new=24, sampling=GREEDY, eos_id=EOS, seed=0, greedy=True, stop_at_eos=False)
+        one = eng.generate(ids[:650], n=1, **kw).tokens[0]
+        assert all(t == one for t in eng.generate(ids[:650], n=4, **kw).tokens)
+    finally:
+        eng.close()
+    eng = NativeEngine(long_snapshot, threads=3, kv="fp16")
+    try:
+        full = eng.full_logits(ids)
+        assert float((full - ref).abs().max()) < 2e-2
+        assert float((full.argmax(-1) == ref.argmax(-1)).float().mean()) >= 0.995
+        got = eng.decode_logits(ids, prefill=600)
+        assert float((got - full).abs().max()) <= 2e-3
+    finally:
+        eng.close()
 
 
 @needs_native
