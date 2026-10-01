@@ -593,9 +593,16 @@ class PrefixKVCache:
             n = _common_prefix(entry.ids, ids)
             if n > best_len:
                 best_key, best, best_len = key, entry, n
-        if best_key is not None:
+        # Only a real match counts as a use. Every role transcript shares its
+        # first few tokens (``<bos>user: ``); refreshing an entry for that
+        # would keep a dead conversation's snapshot alive and evict a live one
+        # (a stale 1.5k-token entry outliving the warm next turn it shadows).
+        if best_key is not None and best_len >= min(self.MIN_REFRESH_TOKENS, ids.numel()):
             self._entries.move_to_end(best_key)
         return best, best_len
+
+    #: A lookup sharing fewer tokens than this with an entry does not refresh it.
+    MIN_REFRESH_TOKENS = 16
 
     def record(self, reused: int) -> None:
         if reused > 0:
