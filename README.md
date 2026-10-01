@@ -1412,7 +1412,7 @@ aggregate tok/s, 400 vs 1000 MB).
 | `BABBLE_HF_RUNTIME` | `transformers` | `native` selects this engine |
 | `BABBLE_INFER_THREADS` | `4` | Engine thread count. 2-3 threads already saturate memory bandwidth, and 8 (hyperthreads) is slower. |
 | `BABBLE_NATIVE_CACHE` | `~/.cache/babble/native` | Where the compiled engine is cached. It is kept outside the repo and outside /tmp. |
-| `BABBLE_NATIVE_KV` | `q16` | KV cache storage. `q16` keeps K as int16 with a per-position scale and V as fp16, which halves long-context attention bandwidth and snapshot size and stays within ~4e-3 logits of fp32 at 2048 tokens. `fp32` is the full-precision cache. `fp16` is for comparison only, because it moves some long-context logits by ~1. See `docs/reports/NATIVE_KV_2026-09-30.md`. |
+| `BABBLE_NATIVE_KV` | `q16` | KV cache storage. `q16` keeps K as int16 with a per-position scale and V as fp16, which halves long-context attention bandwidth and snapshot size and passes the lossless gate. It is typically within ~5e-3 logits of fp32, but on some prompts the rounding flips a near-tie top-1 MoE route, which moves a few per cent of later positions by up to ~4 logits (0.08% argmax flips over 38.9k real-text positions). `fp32` is the full-precision cache. `fp16` is for comparison only, because it moves some long-context logits by ~1. See `docs/reports/NATIVE_KV_2026-09-30.md`. |
 | `BABBLE_LEAN_PREFIX_CACHE_MB` / `_ENTRIES` | `512` / `32` | The cross-turn prefix KV cache, shared with lean |
 | `BABBLE_HF_FREQUENCY_PENALTIES` | off | Same gate as the other runtimes, implemented in the engine |
 

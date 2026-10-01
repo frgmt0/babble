@@ -756,7 +756,7 @@ class NativeGenerator(LeanGenerator):
         self._lock = threading.Lock()
         # Real generations waiting for `_lock`. `prewarm` works in chunks and
         # gives the engine up between them whenever this is non-zero, so a
-        # background pre-prefill delays a reply by at most one chunk.
+        # background pre-prefill delays a reply by at most about one chunk (plus a few lock hand-offs).
         self._waiting = 0
         self._waiting_lock = threading.Lock()
         self._prewarm = dict(calls=0, tokens=0, chunks=0, yielded=0, incomplete=0, skipped=0, seconds=0.0)

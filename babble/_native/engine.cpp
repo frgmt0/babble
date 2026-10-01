@@ -1051,11 +1051,9 @@ inline const char* stage_k(const char* src, int nb16, int HD, size_t kblk, float
 }
 inline const float* stage_v(const float* src, size_t, float*) { return src; }
 inline const float* stage_v(const uint16_t* src, size_t n, float* tmp) {
-  for (size_t i = 0; i < n; i += 32) {
+  for (size_t i = 0; i < n; i += 16) {  // n = kb * HD is a multiple of 16, not always of 32
     _mm256_store_ps(tmp + i, kv_ld8(src + i));
     _mm256_store_ps(tmp + i + 8, kv_ld8(src + i + 8));
-    _mm256_store_ps(tmp + i + 16, kv_ld8(src + i + 16));
-    _mm256_store_ps(tmp + i + 24, kv_ld8(src + i + 24));
   }
   return tmp;
 }
