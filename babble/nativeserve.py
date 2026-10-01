@@ -396,6 +396,7 @@ class NativeGenerator(LeanGenerator):
             native_build="compiled" if build.built else "cached",
             native_build_s=round(build.build_s, 2),
             native_lib=str(build.path),
+            native_kv=self.engine.kv,
             load_s=round(load_s, 2),
             prefix_cache_mb=self.prefix_cache.max_bytes // (1024 * 1024),
             prefix_cache_entries=self.prefix_cache.max_entries,
