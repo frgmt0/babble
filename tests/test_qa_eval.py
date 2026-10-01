@@ -80,6 +80,7 @@ def test_echo_substring_and_overlap():
     assert is_echo("the capital is france", q)  # 3/4 tokens from the question
     assert not is_echo("paris", q)
     assert not is_echo("", q)
+    assert is_echo("I am tired", "i'm so tired")  # contraction-aware
 
 
 def test_non_answer():

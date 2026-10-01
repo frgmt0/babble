@@ -50,7 +50,7 @@ NO_WORDS = frozenset({"no", "nope", "nah", "never", "not", "dont", "doesnt", "is
 
 DODGES = (
     "idk", "i dont know", "i do not know", "dont know", "dunno", "no idea", "not sure",
-    "im not sure", "i have no idea", "no clue", "i have no clue", "who knows", "i cant say",
+    "i am not sure", "i have no idea", "no clue", "i have no clue", "who knows", "i cant say",
     "i cant tell", "why do you ask", "i forgot", "i dont remember",
     "you tell me", "idc", "i dont care", "not telling",
 )
@@ -98,7 +98,9 @@ def tokens(text: str) -> list[str]:
     s = re.sub(r"(?<=\d),(?=\d{3}\b)", "", s)  # 1,000 -> 1000
     s = re.sub(r"(?<=\d)\.(?=\d)", "p", s)  # 12.5 stays one token ("12p5"), never "12"
     s = re.sub(r"'s\b", "", s)  # russia's -> russia, what's -> what
-    s = s.replace("'", "")  # don't -> dont, i'm -> im
+    s = re.sub(r"\bi'?m\b", "i am", s)  # "i'm bored" vs "I am bored" is still an echo
+    s = re.sub(r"\byou'?re\b", "you are", s)
+    s = s.replace("'", "")  # don't -> dont, can't -> cant
     s = re.sub(r"[^a-z0-9]+", " ", s)
     return _fold_numbers(s.split())
 

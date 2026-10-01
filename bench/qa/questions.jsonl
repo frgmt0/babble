@@ -151,7 +151,7 @@
 {"id": "about_bot-011", "category": "about_bot", "question": "are you a real person", "answers": ["no", "bot", "booper"], "must_not": ["i am human", "i'm human", "im human", "i am a human", "i'm a human", "im a human", "i am a real person", "i'm a real person", "im a real person"]}
 {"id": "about_bot-012", "category": "about_bot", "question": "is this a bot?", "answers": ["yes", "booper"]}
 {"id": "about_bot-013", "category": "about_bot", "question": "are you a person or a bot", "answers": ["bot", "booper"], "must_not": ["i am human", "i'm human", "im human", "i am a human", "i'm a human", "im a human", "i am a real person", "i'm a real person", "im a real person"]}
-{"id": "about_bot-014", "category": "about_bot", "question": "are you an ai?", "answers": ["yes", "bot", "booper"]}
+{"id": "about_bot-014", "category": "about_bot", "question": "are you an ai?", "answers": ["yes", "ai", "bot", "booper"]}
 {"id": "about_bot-015", "category": "about_bot", "question": "what are you", "answers": ["bot", "booper"]}
 {"id": "about_bot-016", "category": "about_bot", "question": "introduce yourself", "answers": ["booper", "bot"]}
 {"id": "about_bot-017", "category": "about_bot", "question": "who am i talking to?", "answers": ["booper", "bot"]}
