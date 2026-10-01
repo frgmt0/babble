@@ -812,21 +812,42 @@ inline void pv_rows(int rr, const float* p, const ST* vf, int kb, int HD, float*
   }
 }
 
-// In place over one score row: s[t] = exp(s[t] - m) for t < valid, 0 for
-// t in [valid, kb). Returns the sum. kb <= KB; the row has KB slots.
+// 2^x for x <= 0 (attention scores are kept in the log2 domain: the q.K scale
+// carries log2(e)). Round-to-nearest range reduction and a degree-6 fit of 2^f
+// on [-1/2, 1/2]: max relative error 1e-7 (~1.6 ulp). Inputs below -125 are
+// clamped (the result, < 2^-125, is negligible next to the row max's 1 and
+// stays a normal float).
+inline __m256 exp2_neg(__m256 x) {
+  x = _mm256_max_ps(x, _mm256_set1_ps(-125.0f));
+  const __m256 n = _mm256_round_ps(x, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
+  const __m256 f = _mm256_sub_ps(x, n);
+  __m256 p = _mm256_set1_ps(1.5337577497120947e-04f);
+  p = _mm256_fmadd_ps(p, f, _mm256_set1_ps(1.3399859890341759e-03f));
+  p = _mm256_fmadd_ps(p, f, _mm256_set1_ps(9.6185198053717613e-03f));
+  p = _mm256_fmadd_ps(p, f, _mm256_set1_ps(5.5503290146589279e-02f));
+  p = _mm256_fmadd_ps(p, f, _mm256_set1_ps(2.4022646248340607e-01f));
+  p = _mm256_fmadd_ps(p, f, _mm256_set1_ps(6.9314718246459961e-01f));
+  p = _mm256_fmadd_ps(p, f, _mm256_set1_ps(1.0f));
+  const __m256i e = _mm256_slli_epi32(_mm256_cvtps_epi32(n), 23);
+  return _mm256_castsi256_ps(_mm256_add_epi32(_mm256_castps_si256(p), e));
+}
+constexpr float LOG2E = 1.4426950408889634f;
+
+// In place over one score row (log2 domain): s[t] = 2^(s[t] - m) for t < valid,
+// 0 for t in [valid, kb). Returns the sum. kb <= KB; the row has KB slots.
 inline float exp_row(float* s, int valid, int kb, float m) {
   const __m256 mv = _mm256_set1_ps(m);
   __m256 sum = _mm256_setzero_ps();
   int t = 0;
   for (; t + 8 <= valid; t += 8) {
-    const __m256 e = exp256(_mm256_sub_ps(_mm256_loadu_ps(s + t), mv));
+    const __m256 e = exp2_neg(_mm256_sub_ps(_mm256_loadu_ps(s + t), mv));
     _mm256_storeu_ps(s + t, e);
     sum = _mm256_add_ps(sum, e);
   }
   if (t < valid) {  // masked last vector: lanes >= valid become exactly 0
     const __m256i lane = _mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7);
     const __m256 keep = _mm256_castsi256_ps(_mm256_cmpgt_epi32(_mm256_set1_epi32(valid - t), lane));
-    const __m256 e = _mm256_and_ps(exp256(_mm256_sub_ps(_mm256_loadu_ps(s + t), mv)), keep);
+    const __m256 e = _mm256_and_ps(exp2_neg(_mm256_sub_ps(_mm256_loadu_ps(s + t), mv)), keep);
     _mm256_storeu_ps(s + t, e);
     sum = _mm256_add_ps(sum, e);
     t += 8;
@@ -886,7 +907,7 @@ void attend(Thread& T, const float* const* qs, int R, const int* lim, const char
         const float mold = T.am[r], mnew = std::max(mold, mx);
         const float sum = exp_row(row, valid, kb, mnew);
         if (mnew != mold) {
-          const float corr = std::exp(mold - mnew);  // 0 on the first block (mold = -inf)
+          const float corr = std::exp2(mold - mnew);  // 0 on the first block (mold = -inf)
           T.al[r] *= corr;
           if (mold != -INFINITY) {
             const __m256 cv = _mm256_set1_ps(corr);
@@ -910,7 +931,7 @@ void attention(Engine& E, int tid, int l) {
   const int M = E.M, nt = E.nt;
   const int H = E.H, NH = E.NH, HD = E.HD, QKV = E.QKV;
   const int half = HD / 2;
-  const float ascale = E.attn_scale;
+  const float ascale = E.attn_scale * LOG2E;  // scores in the log2 domain (exp2 softmax)
   const size_t kblk = E.kblk;
   const float* qs[QBMAX];
   int lim[QBMAX];
@@ -984,7 +1005,7 @@ void attention(Engine& E, int tid, int l) {
       for (int c = 0; c <= C; ++c) {
         const float* pp = E.part_at(h, c, m);
         if (pp[1] == 0.0f) continue;
-        const float f = std::exp(pp[0] - mx);
+        const float f = std::exp2(pp[0] - mx);
         L += pp[1] * f;
         const __m256 fv = _mm256_set1_ps(f);
         for (int d = 0; d < HD; d += 8)
