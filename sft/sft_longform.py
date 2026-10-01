@@ -1019,11 +1019,18 @@ def _wiki_records(revision: str | None = None, config: str = "20231101.simple", 
 
 
 def _collect_groups(groups, want: int) -> list[SFTRecord]:
-    """Take whole groups until at least `want` examples have been collected."""
+    """Take whole groups until at least `want` examples have been collected.
+
+    Always at least two groups (when available): with one group the split
+    would put everything in val and leave the source with no train data
+    (seen at smoke scale, where persona's first group alone exceeds `want`).
+    """
     out: list[SFTRecord] = []
+    n_groups = 0
     for group in groups:
         out.extend(group)
-        if len(out) >= want:
+        n_groups += 1
+        if len(out) >= want and n_groups >= 2:
             break
     return out
 

@@ -103,6 +103,87 @@ views, which is 7.3 min of compute and about 15 min wall with the duty nap, ever
 epoch (615k train targets, mean 579 tokens). Lid-closed sleep or battery pauses push the finish out
 (`idle_s` in metrics).
 
+## Q&A / knowledge run (`qa-mac.json`)
+
+Continues from `runs/longctx-v1/export` (the live model). longctx-v1 chats fine but treats a question as something
+to echo ("what's 2+2" -> "2+2"): almost none of its data pairs a short question with a short correct answer. qa-v1
+keeps every longctx setting (seq 2048, prompt budget 1536, 8 history turns, gif tags, the memory settings, duty 0.5,
+pause on battery) and changes only the data mix, the LR and the gate.
+
+**Sources.** Every new source has a `--mix-*` fraction, a pinned `--*-revision` in the preset, response-only targets,
+its own grouped val split and its own val entry (plus the usual `_single`/`_legacy`/`_multiturn` views). They are
+appended after `ultrachat`, so older presets keep their split seeds and data signatures (`_data_extras` records qa
+settings only when a qa source is active).
+
+| source | flag | licence | what goes in |
+| --- | --- | --- | --- |
+| `databricks/databricks-dolly-15k` | `--mix-dolly`, `--repeat-dolly 2` | CC-BY-SA-3.0 | open_qa, general_qa, classification, brainstorming, plus closed_qa / information_extraction / summarization **with the passage in the user turn** (13.4k usable rows). closed_qa answers come from the passage, so stripping it would teach confident recall of facts a 45M-active model cannot know. creative_writing is left out because story rehearsal already covers it. |
+| `OpenAssistant/oasst2` | `--mix-oasst`, `--repeat-oasst 2` | Apache-2.0 | English trees rebuilt from the message table. At each prompter node the best-ranked reply is the target, with its true root path as history. Lower-ranked replies that passed review can appear as history, never as targets. Deleted, review-failed and synthetic messages are dropped. 4.5k trees give 10.6k targets, 6.5k of them with history. |
+| `HuggingFaceTB/smoltalk` smol-magpie-ultra | `--mix-smol-short` | Apache-2.0 | First answers of 900 chars or less, read from the **last three** train shards. longctx-v1 only reached the head of shard 0, so the two sets are disjoint by construction. Coding, role-play, editing, creative and data-analysis rows are skipped, leaving 8.5k. everyday-conversations was fully used by longctx and stays in only through the existing `--mix-smoltalk` rehearsal. |
+| `google-research-datasets/nq_open` | `--mix-nq` | CC-BY-SA-3.0 | Train split only, 85k usable. Each answer span is templated into a short casual reply ("that'd be New Zealand", "in 1950", "Matthew Broderick", "pretty sure it's ..."). Template pools depend on the question type, "in X" is only used for years, and both template and prompt shape are picked deterministically per item. |
+| synthetic arithmetic | `--mix-arith` | n/a (generated) | + − × ÷ on small numbers, with division always exact. Many phrasings ("whats 7+5", "what is 9 times 3", "subtract 4 from 12?", number words). Replies are short and always correct ("12", "that's 12", "7 + 5 = 12"). The stream is deterministic from `--seed`. A problem is its own split group, so a val problem never shows up in train under another phrasing. |
+| `sft/data/booper_persona.jsonl` | `--mix-persona`, `--repeat-persona 3` | project-authored | 155 hand-written identity pairs in booper's lowercase voice: name, bot vs human, not chatgpt/claude/siri, "people on this server built me" (no invented names), what it can and can't do, memory, and the real `!babble` consent commands. Each pair adds 3-4 surface variants. A normalized question is one split group. The source is small, so it ends up about 0.8% of examples, not the nominal 2%. |
+| `wikimedia/wikipedia` `20231101.simple` | `--mix-wiki` | CC-BY-SA-3.0 / GFDL | Simple English lead paragraphs, 1-3 sentences, framed as "tell me about X". List, disambiguation and year pages are skipped. |
+
+`mandarjoshi/trivia_qa` was considered and left out: its HF licence is `unknown`, and nq_open covers the same need
+under CC-BY-SA. Targets that claim another assistant's identity ("I am Open Assistant", "as an AI language model",
+"ChatGPT") are dropped from oasst, dolly and smol-short so they do not fight the persona.
+
+**Mix** (fractions of `examples=232000`): QA/knowledge 53%. nq 15, dolly 10, oasst 10 (capped by supply at about
+9.1%), arith 5, wiki 4, smoltalk 4, smol-short 3, persona 2 (about 0.8% in practice). Rehearsal 47%. discord 30,
+ultrachat 12, no_robots 3 (x2), writingprompts 2. QA items are short (nq 38 tokens, arith 20, persona 40, wiki 75 on
+average) while ultrachat/smoltalk average about 1.2k, so QA is about half the *examples* but well under a quarter of
+the *tokens*. That trade is deliberate: rehearsal is what holds the voice. No source repeats more than 3x.
+
+**LR 2e-5, warmup 100, cosine to 10%.** longctx used 1.5e-5 over 13k steps. This run is 3.6x shorter and has to move
+a behaviour the base doesn't have (answering), so it uses the multiturn-v1 LR, which already proved safe on this model
+family. It stays well under the 4e-5 story runs because rehearsal regression is the main risk. If the first eval
+(step 400) shows `discord`/`ultrachat` already near the 0.05 ceiling, restart at 1.5e-5.
+
+**Gate.** The export rule is unchanged: aggregate val must beat the base, and no source may regress by more than
+0.05 nats (`*_role` and `*_migration`). Two changes:
+- `--guard-sources discord ultrachat` (`--guard-max-regression 0.05`): the rehearsal sources must be **present**
+  in val (a missing guard fails the gate instead of silently passing it), and both their role and multi-turn views
+  must stay within the ceiling. These show up as `discord_guard`, `discord_multiturn_guard`, etc. in
+  `source_regression`.
+- `--multiturn-must-improve oasst`: longctx required every `*_multiturn` view to strictly improve, because
+  multi-turn was that run's objective. Here only oasst, the new multi-turn QA source, must improve. The other
+  `*_multiturn` views (discord, ultrachat, smoltalk) are held to the 0.05 ceiling. Requiring strict improvement on
+  conversations the base was already trained on would very likely gate a run whose goal is QA.
+
+Caveat: the rehearsal val groups for discord/ultrachat/smoltalk are drawn from the same streams longctx-v1 trained
+on, so some may be seen data for the base. For those sources the guard measures retention, not generalization. All
+the new sources' val sets are unseen by the base.
+
+**Sizing** (measured on a 10% build, then scaled): ~23.1k real tokens per step at 0.82 fill (longctx: 23.9k), and
+~64 examples per step, so `examples 232000` is about one epoch. Taking longctx's measured 25.2 s/step wall at duty
+0.5: `tokens 118e6` -> 3,601 steps x 25.2 s = 90.7k s. Add 11 evals (3.6k views, 1.2M tokens each, ~750 s) and
+samples/checkpoints, and the total is about 100k s ≈ **28 h** wall. Battery pauses and sleep add to that.
+
+**Disk.** Every source streams (`streaming=True`), so the HF datasets cache barely grows. The only big local file is
+`runs/<name>/data-cache.pkl`, about 0.2 GB of uint16 token arrays. Checkpoints (`ckpt/` with optimizer, `best/`) are
+about 1.8 GB, plus the export at 165 MB.
+
+```bash
+sft/train.sh qa-smoke --base runs/longctx-v1/export --config configs/sft/qa-mac.json --smoke
+sft/train.sh qa-v1 --base runs/longctx-v1/export --config configs/sft/qa-mac.json
+sft/stop.sh    # then, to continue (same flags + --resume):
+sft/train.sh qa-v1 --base runs/longctx-v1/export --config configs/sft/qa-mac.json --resume
+```
+
+At build time, `log_examples: 3` logs three rendered train examples per source: the model input and the exact
+loss-bearing target (`toks[n_prompt:]`, i.e. the response plus `<eos>`).
+
+**Promotion contract.** The prompt contract is the same as longctx-v1. The export records
+`babble_prompt_format=role_transcript_v1`, `babble_history_turns=8` and `babble_prompt_budget=1536`, so the live
+conversation env (`BABBLE_CONVERSATION_CONTEXT=1`, `..._MAX_TURNS=8`, `..._MAX_TOKENS=1536`,
+`BABBLE_MAX_NEW_TOKENS=509`, `BABBLE_SERVE_LAYOUT=pair`) needs **no change**. Only `BABBLE_HF_MODEL_DIR` moves to the
+new export directory. The native runtime (`BABBLE_HF_RUNTIME=native`) reads the same `model-int8.safetensors`. One
+model-specific artifact is affected: live sets `BABBLE_NATIVE_SPEC_TABLE=.../spec-ngram-longctx-v1.pt`, an n-gram
+draft table partly built from longctx-v1's own samples. The model verifies every draft, so the old table changes
+speed (acceptance rate), not output. Rebuild it for qa-v1 with `bench/extreme/spec_ngram.py` as part of promotion.
+Keep longctx-v1 in place for rollback.
+
 Live dashboard: put `BABBLE_RUNS_URL=https://booper.frgmt.xyz` and `BABBLE_RUNS_TOKEN=<the worker's RUNS_TOKEN secret>`
 in `.env.sft` (gitignored) and every metrics record is also POSTed to `/api/runs/<name>` → https://booper.frgmt.xyz/runs.
 

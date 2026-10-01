@@ -311,3 +311,13 @@ def test_older_presets_keep_their_data_signature():
     qa = Namespace(**vars(old), mix_arith=0.05, mix_nq=0.1, nq_revision="n")
     extras = _data_extras(qa)
     assert extras["mix_arith"] == 0.05 and extras["nq_revision"] == "n" and "qa_data_version" in extras
+
+
+def test_collect_takes_two_groups_so_a_tiny_source_keeps_train_data():
+    from sft.sft_longform import _collect_groups, _split_grouped
+
+    groups = [[SFTRecord("persona", f"g{i}", f"q{i}{j}", "a") for j in range(8)] for i in range(5)]
+    collected = _collect_groups(iter(groups), 5)
+    assert len({r.group_id for r in collected}) == 2
+    train, val = _split_grouped(collected, 1, seed=0)
+    assert train and val
