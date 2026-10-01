@@ -634,10 +634,11 @@ def oasst_tree_groups(messages, source: str = "oasst", max_response: int = 2000)
 
     At every prompter node the best-ranked assistant reply (rank 0, or the
     only unranked reply) is the target, with the path from the root as its
-    history; every prompter follow-up under that reply is explored, so each
-    reviewed branch contributes its own targets. Deleted, review-failed and
-    synthetic messages are skipped, and nothing beneath a rejected reply is
-    used (its history would contain the rejected text).
+    history. Follow-ups are explored under every reviewed reply, so a
+    lower-ranked (but review-passed) reply can appear as *history* for a
+    later best reply; it is never itself a target. Deleted, review-failed
+    and synthetic messages are skipped, and nothing beneath a reply that
+    fails the identity/length filter is used.
     """
 
     def ok(m) -> bool:
@@ -674,16 +675,20 @@ def oasst_tree_groups(messages, source: str = "oasst", max_response: int = 2000)
         stack: list[tuple[dict, tuple[ConversationTurn, ...]]] = [(root, ())]
         while stack:
             prompter, history = stack.pop()
-            reply = best_reply(prompter)
-            if reply is None:
-                continue
-            user, answer = prompter["text"].strip(), reply["text"].strip()
-            if len(answer) > max_response or identity_clash(answer):
-                continue
-            records.append(SFTRecord(source=source, group_id=gid, current_user=user, response=answer, history=history))
-            turn = history + (ConversationTurn(user=user, assistant=answer),)
-            follow = [c for c in children.get(reply["message_id"], []) if c.get("role") == "prompter"]
-            stack.extend((c, turn) for c in reversed(follow))
+            user = prompter["text"].strip()
+            best = best_reply(prompter)
+            replies = [c for c in children.get(prompter["message_id"], []) if c.get("role") == "assistant"]
+            for reply in reversed(replies):
+                answer = reply["text"].strip()
+                if len(answer) > max_response or identity_clash(answer):
+                    continue
+                if reply is best:
+                    records.append(
+                        SFTRecord(source=source, group_id=gid, current_user=user, response=answer, history=history)
+                    )
+                turn = history + (ConversationTurn(user=user, assistant=answer),)
+                follow = [c for c in children.get(reply["message_id"], []) if c.get("role") == "prompter"]
+                stack.extend((c, turn) for c in reversed(follow))
         if records:
             groups.append(records)
     return groups
@@ -699,23 +704,25 @@ def _oasst_groups(split: str = "train", revision: str | None = None):
     yield from oasst_tree_groups(rows)
 
 
-SMOL_SHORT_SHARD = "data/smol-magpie-ultra/train-00005-of-00006.parquet"
-SMOL_SHORT_SKIP_CATEGORIES = ("coding", "role-playing", "creative-writing", "editing")
+# Last three of six train shards, read last-first. longctx-v1 only reached
+# the head of shard 0, so these are disjoint from what the base has seen.
+SMOL_SHORT_SHARDS = tuple(f"data/smol-magpie-ultra/train-0000{i}-of-00006.parquet" for i in (5, 4, 3))
+SMOL_SHORT_SKIP_CATEGORIES = ("coding", "role-playing", "creative-writing", "editing", "data-analysis")
 
 
 def _smol_short_records(revision: str | None = None, max_chars: int = 900):
     """Short first answers from SmolTalk smol-magpie-ultra (Apache-2.0).
 
-    Reads only the LAST train shard. longctx-v1's `--smoltalk-multiturn`
+    Reads only the LAST train shards. longctx-v1's `--smoltalk-multiturn`
     slice streamed the head of shard 0 (~20k conversations), so this is
     disjoint by construction rather than by a dedupe pass. Coding /
-    role-play / editing / creative rows are skipped: booper's job here is
-    answering, not writing code.
+    role-play / editing / creative / data-analysis rows are skipped:
+    booper's job here is answering, not writing code or reports.
     """
     from datasets import load_dataset
 
     ds = load_dataset(
-        "HuggingFaceTB/smoltalk", data_files={"train": SMOL_SHORT_SHARD}, split="train", streaming=True, revision=revision
+        "HuggingFaceTB/smoltalk", data_files={"train": list(SMOL_SHORT_SHARDS)}, split="train", streaming=True, revision=revision
     )
     for row in ds:
         if row.get("category") in SMOL_SHORT_SKIP_CATEGORIES or row.get("quality") not in ("good", "excellent", "average"):
@@ -744,9 +751,12 @@ _QA_BY_TYPE = {
     "count": ("{a}", "{a}", "it's {a}", "{a} i think", "pretty sure it's {a}", "i believe {a}", "{a}!"),
 }
 _QA_PROMPTS = (
-    "{q}", "{q}", "{q}?", "{q}?", "{Q}?", "hey booper {q}", "do you know {q}?", "quick question, {q}?",
+    "{q}", "{q}", "{q}?", "{q}?", "{Q}?", "hey booper {q}", "quick question, {q}?",
     "random q but {q}", "booper {q}?", "{q} ??",
 )
+# Only a wh-question reads right after "do you know" ("do you know who ...").
+_QA_PROMPTS_WH = _QA_PROMPTS + ("do you know {q}?", "do you know {q}")
+_WH_START = re.compile(r"(who|whom|whose|what|when|where|which|why|how)\b")
 
 
 _YEARISH = re.compile(
@@ -796,8 +806,12 @@ def short_answer_pair(question: str, answers, seed: int = 0) -> tuple[str, str] 
         pool = tuple(t for t in pool if not t.startswith("in "))
     if re.match(r"(in|on|at|the year) ", answer.lower()):
         pool = tuple(t for t in pool if "in {a}" not in t)
-    reply = rng.choice(pool).format(a=answer)
-    prompt = rng.choice(_QA_PROMPTS).format(q=question, Q=question[:1].upper() + question[1:])
+    template = rng.choice(pool)
+    if not template.startswith("{a}") and re.match(r"(The|A|An) [a-z]", answer):
+        answer = answer[0].lower() + answer[1:]  # "should be the asteroid belt"
+    reply = template.format(a=answer)
+    prompts = _QA_PROMPTS_WH if _WH_START.match(question.lower()) else _QA_PROMPTS
+    prompt = rng.choice(prompts).format(q=question, Q=question[:1].upper() + question[1:])
     return prompt, reply
 
 
@@ -870,7 +884,11 @@ def arith_pair(a: int, op: str, b: int, result: int, rng: random.Random) -> tupl
         if rng.random() < 0.5:
             prompt += "?"
     else:
-        expr = f"{num(a)}{rng.choice(infix)}{num(b)}"
+        left, right = num(a), num(b)
+        ops = infix
+        if not (left.isdigit() and right.isdigit()):
+            ops = tuple(o for o in infix if o.startswith(" "))  # "onexten" is not a question
+        expr = f"{left}{rng.choice(ops)}{right}"
         prompt = rng.choice(_ARITH_PROMPTS).format(e=expr)
     sym = rng.choice(_ARITH_SYMBOL[op])
     eq = f"{a} {sym} {b} = {result}" if rng.random() < 0.7 else f"{a}{sym}{b}={result}"
@@ -932,7 +950,14 @@ def persona_variants(prompt: str, seed: int = 0) -> list[str]:
 
 
 def _persona_key(prompt: str) -> str:
-    return re.sub(r"[^a-z0-9 ]+", "", prompt.lower()).strip()
+    """Normalized question: case, punctuation and the address prefixes that
+    `persona_variants` adds ("hey booper", "@booper") do not make it new."""
+    key = prompt.lower().strip()
+    for prefix in sorted(_PERSONA_PREFIXES, key=len, reverse=True):
+        if key.startswith(prefix):
+            key = key[len(prefix):]
+            break
+    return re.sub(r"[^a-z0-9 ]+", "", key).strip()
 
 
 def persona_groups(path: Path = PERSONA_FILE, seed: int = 0, source: str = "persona"):
@@ -968,7 +993,7 @@ def wiki_lead_pair(title: str, text: str, seed: int = 0, max_chars: int = 450) -
         or "(disambiguation)" in title
     ):
         return None
-    lead = text.strip().split("\n", 1)[0].strip()
+    lead = re.sub(r"[ \t]{2,}", " ", text.strip().split("\n", 1)[0]).strip()
     if len(lead) < 60 or "may refer to" in lead or lead.endswith(":"):
         return None
     sentences = _SENTENCE_END.split(lead)
