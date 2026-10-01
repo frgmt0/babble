@@ -332,3 +332,207 @@ def test_conversation_settings_are_explicit_environment_flags(monkeypatch, tmp_p
     assert settings.conversation_max_turns == 3
     assert settings.conversation_max_tokens == 512
     assert settings.conversation_max_chars == 2048
+
+
+# --- chunked overflow trimming (prefix-cache friendly windows) ----------------
+
+
+class _CountingFormatterGenerator:
+    """A generator with a token-aware formatter over a 1-char toy tokenizer."""
+
+    def __init__(self):
+        self.prompts = []
+        self.warmed = []
+
+    def conversation_prompt(self, history, current_user, *, max_turns, max_tokens, max_chars, overflow_keep=1.0):
+        return conversation_prompt_for_token_budget(
+            history, current_user, max_turns=max_turns, max_chars=max_chars,
+            max_tokens=max_tokens, token_count=len, overflow_keep=overflow_keep,
+        )
+
+    def prewarm(self, text):
+        self.warmed.append(text)
+        return {"tokens": len(text)}
+
+    def __call__(self, prompt):
+        self.prompts.append(prompt)
+        return "wug wug blorp"
+
+
+def _chain(settings, log, generator, messages):
+    gateway = FakeDiscord(Babble(settings, generator=generator, log=log))
+    gateway.onboard(ALICE)
+    last = None
+    for text in messages:
+        last = gateway.ping(ALICE, text, reply_to=last.id if last else None)[0]
+    return gateway
+
+
+def _capture_replies(brain):
+    replies = []
+    remember = brain.remember
+
+    def wrapped(mid, reply):
+        replies.append(reply)
+        remember(mid, reply)
+
+    brain.remember = wrapped
+    return replies
+
+
+def test_windowed_turns_matches_bounded_history_until_overflow():
+    from babble.conversation import bounded_history, windowed_turns
+
+    turns = tuple(ConversationTurn(f"q{i}", f"a{i}") for i in range(9))
+    for n in range(10):
+        assert windowed_turns(turns[:n], max_turns=8, overflow_keep=1.0) == bounded_history(turns[:n], max_turns=8)
+        if n <= 8:
+            assert windowed_turns(turns[:n], max_turns=8, overflow_keep=0.5) == turns[:n]
+    assert windowed_turns(turns, max_turns=8, overflow_keep=0.5) == turns[-4:]
+    # A one-turn window cannot drop "half a turn": it slides like before.
+    assert windowed_turns(turns, max_turns=1, overflow_keep=0.5) == turns[-1:]
+    assert windowed_turns(turns, max_turns=0, overflow_keep=0.5) == ()
+
+
+def test_turn_overflow_trims_in_one_chunk_then_extends_a_stable_prefix(settings, log):
+    from conftest import FakeGenerator
+
+    _enable(settings)
+    settings.conversation_max_turns = 4
+    messages = [f"m{i}" for i in range(12)]
+
+    settings.conversation_overflow_keep = 1.0
+    sliding = FakeGenerator()
+    _chain(settings, log, sliding, messages)
+    settings.conversation_overflow_keep = 0.5
+    chunked = FakeGenerator()
+    _chain(settings, log, chunked, messages)
+    chunked.prompts.remove("user: hello")  # ALICE is already onboarded the second time
+
+    # Byte-identical to the sliding window until the window first overflows.
+    assert chunked.prompts[:5] == sliding.prompts[:5]
+    visible = [p.count("assistant: ") for p in chunked.prompts]
+    assert visible == [0, 1, 2, 3, 4, 2, 3, 4, 2, 3, 4, 2]
+    # Every turn that is not a trim extends the previous prompt verbatim.
+    for prev, cur, n in zip(chunked.prompts, chunked.prompts[1:], visible[1:]):
+        if n != 2:
+            assert cur.startswith(prev[: prev.rindex("user: ")])
+    # The sliding window never does once it is full.
+    assert not sliding.prompts[6].startswith(sliding.prompts[5][:12])
+
+
+def test_token_overflow_trims_to_the_low_watermark_and_remembers_it(settings, log):
+    _enable(settings)
+    settings.conversation_max_turns = 50
+    settings.conversation_max_chars = 0
+    settings.conversation_max_tokens = 200
+    settings.conversation_overflow_keep = 0.5
+    gen = _CountingFormatterGenerator()
+    _chain(settings, log, gen, [f"message number {i:02d}" for i in range(20)])
+
+    lengths = [len(p) for p in gen.prompts]
+    assert max(lengths) <= 200
+
+    def extends(prev, cur):
+        return cur.startswith(prev[: prev.rindex("user: ")])
+
+    trims = [i for i in range(1, len(gen.prompts)) if not extends(gen.prompts[i - 1], gen.prompts[i])]
+    assert trims, "the transcript should have overflowed"
+    for i in trims:
+        assert lengths[i] <= 100  # trimmed to the low watermark in one step
+    # A trim buys several turns of a stable, growing prefix.
+    assert all(b - a >= 3 for a, b in zip(trims, trims[1:]))
+
+
+def test_token_trim_does_not_starve_history_for_a_huge_current_message():
+    history = tuple(ConversationTurn("q" * 5, "a" * 5) for _ in range(6))
+    current = "x" * 45  # alone (51 tokens) it misses the 50-token floor
+    prompt = conversation_prompt_for_token_budget(
+        history, current, max_turns=10, max_chars=0, max_tokens=100, token_count=len, overflow_keep=0.5,
+    )
+    sliding = conversation_prompt_for_token_budget(
+        history, current, max_turns=10, max_chars=0, max_tokens=100, token_count=len,
+    )
+    assert prompt == sliding and "assistant: " in prompt
+
+
+def test_char_formatter_overflow_keep_matches_until_overflow():
+    history = tuple(ConversationTurn(f"q{i}", f"a{i}") for i in range(6))
+    full = conversation_prompt(history, "now", max_turns=10, max_chars=0)
+    for keep in (1.0, 0.5):
+        assert conversation_prompt(history, "now", max_turns=10, max_chars=len(full), overflow_keep=keep) == full
+    trimmed = conversation_prompt(history, "now", max_turns=10, max_chars=len(full) - 1, overflow_keep=0.5)
+    assert len(trimmed) <= (len(full) - 1) // 2
+
+
+def test_prewarm_text_is_the_exact_prefix_of_the_next_prompt(settings, log):
+    _enable(settings)
+    settings.conversation_max_turns = 3
+    settings.conversation_max_tokens = 10_000  # far from the cap: one warm per reply
+    settings.conversation_overflow_keep = 0.5
+    gen = _CountingFormatterGenerator()
+    brain = Babble(settings, generator=gen, log=log)
+    gateway = FakeDiscord(brain)
+    gateway.onboard(ALICE)
+    replies = _capture_replies(brain)
+
+    last = None
+    for i in range(8):
+        last = gateway.ping(ALICE, f"turn {i}", reply_to=last.id if last else None)[0]
+        reply = replies[-1]
+        assert reply.continues
+        assert brain.prewarm(reply) == {"tokens": len(gen.warmed[-1])}
+        if i:
+            # what was warmed after the previous reply is how this prompt starts
+            assert gen.prompts[-1] == gen.warmed[-2] + f"turn {i}"
+
+
+def test_prewarm_near_the_token_cap_also_warms_the_trimmed_window(settings, log):
+    from babble.core import PREWARM_PROBE
+
+    _enable(settings)
+    settings.conversation_max_turns = 50
+    settings.conversation_max_chars = 0
+    settings.conversation_max_tokens = 2000
+    settings.conversation_overflow_keep = 0.5
+    gen = _CountingFormatterGenerator()
+    brain = Babble(settings, generator=gen, log=log)
+    gateway = FakeDiscord(brain)
+    gateway.onboard(ALICE)
+    replies = _capture_replies(brain)
+
+    last, alts = None, 0
+    for i in range(60):
+        # every fifth message is long enough to force a trim on its own
+        text = f"turn {i}" + (" " + "x" * 400 if i % 5 == 4 else "")
+        if i:
+            warmed = list(gen.warmed[-2:]) if "alt" in info else [gen.warmed[-1]]
+        last = gateway.ping(ALICE, text, reply_to=last.id if last else None)[0]
+        if i:
+            # whichever way the window went, one of the warms is its prefix
+            assert any(gen.prompts[-1] == w + text for w in warmed), i
+        info = brain.prewarm(replies[-1])
+        if "alt" in info:
+            alts += 1
+            assert len(gen.warmed[-1]) < len(gen.warmed[-2])
+    trims = sum(not b.startswith(a[: a.rindex("user: ")]) for a, b in zip(gen.prompts, gen.prompts[1:]))
+    assert alts and trims >= 2 and len(PREWARM_PROBE) > 300
+
+
+def test_prewarm_is_skipped_without_retained_context(settings, log):
+    _enable(settings)
+    gen = _CountingFormatterGenerator()
+    brain = Babble(settings, generator=gen, log=log)
+    gateway = FakeDiscord(brain)
+    brain.consent.grant(ALICE, SCOPE_CORRECTIONS)  # legacy grant: no context reuse
+    replies = _capture_replies(brain)
+    gateway.ping(ALICE, "hello")
+    assert replies and not replies[-1].continues
+    assert brain.prewarm(replies[-1]) is None and gen.warmed == []
+
+
+def test_overflow_keep_is_an_environment_setting(monkeypatch, tmp_path):
+    Settings = __import__("babble.config", fromlist=["Settings"]).Settings
+    assert Settings.from_env(root=tmp_path).conversation_overflow_keep == 0.5
+    monkeypatch.setenv("BABBLE_CONVERSATION_OVERFLOW_KEEP", "1")
+    assert Settings.from_env(root=tmp_path).conversation_overflow_keep == 1.0

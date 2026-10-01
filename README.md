@@ -102,6 +102,18 @@ message can inherit that same user's conversation in the same channel and
 guild. Oldest complete turns are dropped to fit the budget. A new mention
 starts a new conversation; history is not guessed from nearby channel traffic.
 
+When a conversation overflows its turn or token cap, it is cut back to
+`BABBLE_CONVERSATION_OVERFLOW_KEEP` (default `0.5`) of the cap in one step
+and then grows again. Dropping one turn at a time changes the transcript's
+first tokens on every turn, so the prefix KV cache can never hit and each
+reply pays a cold prefill of the whole history; chunked trimming keeps the
+prefix stable between trims. Prompts are byte-identical to the one-at-a-time
+window until the first overflow; `1.0` restores it exactly. After each reply
+the bot also pre-prefills the next turn's transcript in the background
+(`bot.prewarm` events), outside the bot lock; the engine yields to a real
+reply between 128-token chunks, so the reply-time prefill is usually just
+the new message.
+
 History follows the existing consent and forget rules. It is inference context,
 not new human corpus data. `>>` remains an explicit correction; existing
 correction exports remain single-turn and must not be used as transcript-format
@@ -1362,7 +1374,7 @@ hand-written Mixtral forward pass and decode loop over the same
 | `BABBLE_HF_RUNTIME` | `transformers` | `lean` or `transformers` |
 | `BABBLE_LEAN_PRECISION` | `int8` | `int8` runs decode on the on-disk int8 weights with bf16 activations. `fp32` uses the same dequantized fp32 weights as transformers and is lossless. |
 | `BABBLE_LEAN_PREFILL_FP32` | `1` | int8 mode keeps an fp32 copy for prompt prefill, about +500 MB RSS. Set `0` for a smaller process (~550 MB) with a slower TTFT. |
-| `BABBLE_LEAN_PREFIX_CACHE_MB` | `128` | Byte bound for the cross-turn prefix KV cache. `0` disables it. |
+| `BABBLE_LEAN_PREFIX_CACHE_MB` | `512` | Byte bound for the cross-turn prefix KV cache. `0` disables it. One conversation holds one snapshot (66 MB at 1536 fp32 positions on longctx-v1); `model.load` logs `prefix_cache_full_snapshots`. |
 | `BABBLE_LEAN_PREFIX_CACHE_ENTRIES` | `32` | Entry bound for the same cache. |
 
 Sampling semantics are the same as the transformers path:
@@ -1400,7 +1412,7 @@ aggregate tok/s, 400 vs 1000 MB).
 | `BABBLE_HF_RUNTIME` | `transformers` | `native` selects this engine |
 | `BABBLE_INFER_THREADS` | `4` | Engine thread count. 2-3 threads already saturate memory bandwidth, and 8 (hyperthreads) is slower. |
 | `BABBLE_NATIVE_CACHE` | `~/.cache/babble/native` | Where the compiled engine is cached. It is kept outside the repo and outside /tmp. |
-| `BABBLE_LEAN_PREFIX_CACHE_MB` / `_ENTRIES` | `128` / `32` | The cross-turn prefix KV cache, shared with lean |
+| `BABBLE_LEAN_PREFIX_CACHE_MB` / `_ENTRIES` | `512` / `32` | The cross-turn prefix KV cache, shared with lean |
 | `BABBLE_HF_FREQUENCY_PENALTIES` | off | Same gate as the other runtimes, implemented in the engine |
 
 **No build step.** On first use, the engine is compiled with the system

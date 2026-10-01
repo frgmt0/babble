@@ -27,6 +27,7 @@ snapshot shape the kernels do not implement) raises `NativeUnavailable`, which
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import json
 import math
@@ -349,9 +350,15 @@ class NativeGenerator(LeanGenerator):
         self.max_position_embeddings = self.engine.cfg.max_pos
         self.prefix_cache = PrefixKVCache(
             max_entries=int(getattr(settings, "lean_prefix_cache_entries", 32)),
-            max_bytes=int(getattr(settings, "lean_prefix_cache_mb", 128)) * 1024 * 1024,
+            max_bytes=int(getattr(settings, "lean_prefix_cache_mb", 512)) * 1024 * 1024,
         )
         self._lock = threading.Lock()
+        # Real generations waiting for `_lock`. `prewarm` works in chunks and
+        # gives the engine up between them whenever this is non-zero, so a
+        # background pre-prefill delays a reply by at most one chunk.
+        self._waiting = 0
+        self._waiting_lock = threading.Lock()
+        self._prewarm = dict(calls=0, tokens=0, chunks=0, yielded=0, incomplete=0, skipped=0, seconds=0.0)
         from .leanserve import _flag
 
         self._extra_penalties = _flag("BABBLE_HF_FREQUENCY_PENALTIES")
@@ -368,6 +375,8 @@ class NativeGenerator(LeanGenerator):
             load_s=round(load_s, 2),
             prefix_cache_mb=self.prefix_cache.max_bytes // (1024 * 1024),
             prefix_cache_entries=self.prefix_cache.max_entries,
+            # how many full-budget conversation snapshots fit (engine's own KV size)
+            prefix_cache_full_snapshots=self.prefix_cache.max_bytes // max(1, self.engine.kv_bytes(self._full_prompt_tokens())),
             model_dir=str(model_dir),
             step=self.step,
             params=self.param_count,
@@ -375,9 +384,121 @@ class NativeGenerator(LeanGenerator):
             frequency_presence_penalties=self._extra_penalties,
         )
 
+    def _full_prompt_tokens(self) -> int:
+        """Positions in a snapshot of a prompt at the conversation token budget."""
+        cap = self._prompt_budget()
+        if getattr(self.settings, "conversation_context", False):
+            cap = min(cap, int(getattr(self.settings, "conversation_max_tokens", cap)))
+        return max(1, cap + 2)  # <bos> ... <sep>
+
+    @contextlib.contextmanager
+    def _priority_lock(self):
+        """`_lock`, announced first so a running `prewarm` yields to us."""
+        with self._waiting_lock:
+            self._waiting += 1
+        try:
+            self._lock.acquire()
+        finally:
+            with self._waiting_lock:
+                self._waiting -= 1
+        try:
+            yield
+        finally:
+            self._lock.release()
+
+    #: Tokens prefilled per `prewarm` step; the engine is released between
+    #: steps. ~128 tokens is ~40-60 ms at a 1.5k-token history on 4 Haswell
+    #: cores: the longest a real reply can wait behind a background warm.
+    PREWARM_CHUNK = 128
+
+    #: A warm still not done after this long (a backlog of real replies) is dropped.
+    PREWARM_DEADLINE_S = 30.0
+
+    def prewarm(self, text: str, *, deadline_s: float | None = None) -> dict:
+        """Prefill ``<bos> text`` into the prefix cache, off the hot path.
+
+        ``text`` is the start of a prompt the bot expects to serve soon (the
+        next turn's transcript up to and including ``user: ``). Whatever part
+        of it the cache already holds is reused; the rest is prefilled in
+        `PREWARM_CHUNK`-token steps, each stored as a snapshot. Between steps
+        it steps aside for any real generation waiting on the engine, then
+        resumes from its stored progress once that one is done (another
+        channel's reply must not cancel this channel's warm). Never raises:
+        this is an optimization, and a failure only costs the next reply a
+        longer prefill.
+        """
+        info = dict(tokens=0, reused=0, prefilled=0, chunks=0, yielded=0, done=False, busy_ms=0.0, ms=0.0)
+        cache = self.prefix_cache
+        if not cache.enabled:
+            return info
+        started = time.perf_counter()
+        self._prewarm["calls"] += 1
+        try:
+            tokens = self.tokenizer.encode(text, add_special_tokens=False).ids
+            if len(tokens) > self._prompt_budget() - 1:
+                # The real prompt would be left-truncated; its prefix is unknowable.
+                self._prewarm["skipped"] += 1
+                return info
+            ids = [self.bos_id, *tokens]
+            L = len(ids)
+            info["tokens"] = L
+            if self.engine.kv_bytes(L) > cache.max_bytes:
+                self._prewarm["skipped"] += 1
+                return info
+            ids_t = torch.tensor(ids, dtype=torch.long)
+            limit = started + (self.PREWARM_DEADLINE_S if deadline_s is None else float(deadline_s))
+            first = True
+            while True:
+                if self._waiting:
+                    # A real reply is queued: let it have the engine, and wait
+                    # until it holds the lock (waiting drops to 0 on acquire);
+                    # `with self._lock` below then waits for it to finish.
+                    info["yielded"] += 1
+                    while self._waiting and time.perf_counter() < limit:
+                        time.sleep(0.002)
+                if time.perf_counter() >= limit:
+                    break
+                with self._lock:
+                    if self._waiting:
+                        continue
+                    entry, common = cache.lookup(ids_t)
+                    if first:
+                        info["reused"] = min(common, L)
+                        first = False
+                    if common >= L:
+                        info["done"] = True
+                        break
+                    busy = time.perf_counter()
+                    reused = common if entry is not None else 0
+                    end = min(L, reused + self.PREWARM_CHUNK)
+                    kv_in, stored = (entry.k[0], int(entry.ids.numel())) if reused > 0 else (None, 0)
+                    kv_out = torch.empty(self.engine.kv_floats(end))
+                    self.engine.generate(
+                        ids[:end], n=1, max_new=1, sampling=self._sampling(), eos_id=self.eos_id,
+                        seed=0, greedy=True, start=reused, kv_in=kv_in, kv_in_len=stored, kv_out=kv_out,
+                    )
+                    cache.store(ids_t[:end], [kv_out], [])
+                    info["prefilled"] += end - reused
+                    info["chunks"] += 1
+                    info["busy_ms"] += (time.perf_counter() - busy) * 1000
+        except Exception as exc:  # pragma: no cover - never let warming hurt serving
+            self.log.event("bot.error", where="prewarm", error=f"{type(exc).__name__}: {exc}")
+        info["ms"] = round((time.perf_counter() - started) * 1000, 2)
+        info["busy_ms"] = round(info["busy_ms"], 2)
+        p = self._prewarm
+        p["tokens"] += info["prefilled"]
+        p["chunks"] += info["chunks"]
+        p["yielded"] += info["yielded"]
+        p["incomplete"] += int(not info["done"])
+        p["seconds"] += info["busy_ms"] / 1000
+        return info
+
+    def prewarm_stats(self) -> dict:
+        return dict(self._prewarm)
+
     def _generate(self, prompt: str, *, max_new_tokens: int, best_of: int, use_prefix_cache: bool = True):
         started = time.perf_counter()
-        with self._lock:
+        with self._priority_lock():
             ids = self._encode_prompt(prompt)[0].tolist()
             P = len(ids)
             max_new = min(max(1, int(max_new_tokens)), self.max_position_embeddings - P)

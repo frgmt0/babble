@@ -218,3 +218,42 @@ def test_a_successful_send_is_not_logged_as_an_error(settings, log, brain, read_
 
     assert result is sent
     assert read_log("bot.error") == []
+
+
+def test_prewarm_runs_off_the_bot_lock_and_is_logged(settings, log, brain, read_log):
+    client = BabbleClient(settings, log, brain=brain)
+    seen = []
+
+    def prewarm(reply):
+        seen.append(client._lock.locked())
+        return {"tokens": 3, "prefilled": 2}
+
+    brain.prewarm = prewarm
+
+    async def go():
+        # A generation holds the bot lock; the warm must not queue behind it.
+        async with client._lock:
+            client._schedule_prewarm(Reply("hi", continues=True))
+            await asyncio.wait_for(asyncio.gather(*client._prewarms), 5)
+
+    asyncio.run(go())
+    assert seen == [True]
+    (event,) = read_log("bot.prewarm")
+    assert event["tokens"] == 3 and event["prefilled"] == 2
+
+
+def test_a_failing_prewarm_is_logged_not_raised(settings, log, brain, read_log):
+    client = BabbleClient(settings, log, brain=brain)
+
+    def boom(reply):
+        raise RuntimeError("engine gone")
+
+    brain.prewarm = boom
+
+    async def go():
+        client._schedule_prewarm(Reply("hi", continues=True))
+        await asyncio.gather(*client._prewarms)
+
+    asyncio.run(go())
+    (event,) = read_log("bot.error")
+    assert event["where"] == "prewarm"

@@ -25,7 +25,13 @@ from typing import Callable, Protocol, Sequence
 
 from .blocklist import Blocklist, row_fingerprint
 from .config import CORRECTION_MARKER, Settings
-from .conversation import ConversationTurn, bounded_history, conversation_prompt
+from .conversation import (
+    USER_PREFIX,
+    ConversationTurn,
+    conversation_prompt,
+    used_history,
+    windowed_turns,
+)
 from .consent import (
     CAPTURE_OK,
     DECLINED,
@@ -241,6 +247,24 @@ class Reply:
     reply_to: str | None = None
     kind: str = "message"
     exchange: Exchange | None = None
+    # The author may continue this exchange as a conversation (both grants),
+    # so `Babble.prewarm` may pre-prefill the next turn's transcript.
+    continues: bool = False
+
+
+#: Stand-in for "a medium-sized next message" (~256 BPE tokens) when
+#: `Babble.prewarm` checks whether the next turn would trim the window.
+PREWARM_PROBE = "a " * 255 + "a"
+
+
+def _accepts_kwarg(fn: Callable, name: str) -> bool:
+    import inspect
+
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    return name in params or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
 
 
 # --- text hygiene --------------------------------------------------------
@@ -614,15 +638,18 @@ class Babble:
 
         allowed = corrections_state in CAPTURE_OK
         prompt = self._message_text(msg)
-        history = self._conversation_history(
-            msg,
-            # The historical corrections grant permits retaining an exchange
-            # long enough to grade it. Reusing earlier messages as chat context
-            # is part of the newer corpus-facing behavior and needs that grant
-            # too; legacy consent must not silently widen here.
-            allowed=allowed and corpus_state in CAPTURE_OK,
-        )
+        # The historical corrections grant permits retaining an exchange
+        # long enough to grade it. Reusing earlier messages as chat context
+        # is part of the newer corpus-facing behavior and needs that grant
+        # too; legacy consent must not silently widen here.
+        context_ok = allowed and corpus_state in CAPTURE_OK
+        history = self._conversation_history(msg, allowed=context_ok)
         generation_prompt = self._generation_prompt(history, prompt)
+        if history and self._overflow_keep() < 1.0:
+            # Remember only the turns the model actually saw. After a chunked
+            # trim the next turn must continue from the trimmed window (that
+            # is what keeps its prefix stable), not re-add what was cut.
+            history = used_history(history, prompt, generation_prompt)
         generation = _as_generation(self.generator(generation_prompt))
         body = clean_for_discord(generation.text, DISCORD_LIMIT)
 
@@ -694,6 +721,7 @@ class Babble:
                 reply_to=msg.message_id,
                 kind="generation",
                 exchange=exchange,
+                continues=exchange is not None and context_ok and self.settings.conversation_context,
             )
         ]
         if reask:
@@ -749,15 +777,60 @@ class Babble:
             "max_tokens": self.settings.conversation_max_tokens,
             "max_chars": self.settings.conversation_max_chars,
         }
+        keep = self._overflow_keep()
         backend_formatter = getattr(self.generator, "conversation_prompt", None)
         if callable(backend_formatter):
+            if keep < 1.0 and _accepts_kwarg(backend_formatter, "overflow_keep"):
+                kwargs["overflow_keep"] = keep
             return str(backend_formatter(history, current_user, **kwargs))
         return conversation_prompt(
             history,
             current_user,
             max_turns=kwargs["max_turns"],
             max_chars=kwargs["max_chars"],
+            overflow_keep=keep,
         )
+
+    def _overflow_keep(self) -> float:
+        return float(getattr(self.settings, "conversation_overflow_keep", 1.0))
+
+    def prewarm(self, reply: Reply) -> dict | None:
+        """Pre-prefill the transcript a reply to ``reply`` would start with.
+
+        Called by the adapter after a generation was sent, off the event loop
+        and outside the bot's lock. The next turn's prompt is this exchange's
+        window plus this reply plus ``user: <their next message>``, so
+        everything up to that message is already known; a generator with a
+        prefix KV cache can compute it while the person is typing, and the
+        reply-time prefill shrinks to the new message alone. Pure cache
+        warming: nothing outside the generator's cache changes, and the
+        generator yields to any real request between chunks.
+        """
+
+        warm = getattr(self.generator, "prewarm", None)
+        exchange = reply.exchange
+        if not callable(warm) or exchange is None or not reply.continues:
+            return None
+        if not self.settings.conversation_context:
+            return None
+        turns = windowed_turns(
+            (*exchange.history, ConversationTurn(exchange.prompt, exchange.response)),
+            max_turns=self.settings.conversation_max_turns,
+            overflow_keep=self._overflow_keep(),
+        )
+        likely = self._generation_prompt(turns, "")
+        info = warm(likely)
+        # Near the token cap, a longer next message trims the window first,
+        # which a warm of `likely` cannot serve. Warm that trimmed window too
+        # when a medium-sized message would already cause it.
+        probed = self._generation_prompt(turns, PREWARM_PROBE)
+        if probed.endswith(PREWARM_PROBE):
+            alt = probed[: len(probed) - len(PREWARM_PROBE)]
+            if alt != likely and alt.endswith(USER_PREFIX):
+                result = warm(alt)
+                if isinstance(info, dict):
+                    info = {**info, "alt": result}
+        return info
 
     def _conversation_history(
         self, msg: IncomingMessage, *, allowed: bool
@@ -787,7 +860,11 @@ class Babble:
             return ()
 
         turns = (*parent.history, ConversationTurn(parent.prompt, parent.response))
-        return bounded_history(turns, max_turns=self.settings.conversation_max_turns)
+        return windowed_turns(
+            turns,
+            max_turns=self.settings.conversation_max_turns,
+            overflow_keep=self._overflow_keep(),
+        )
 
     def _handle_correction(self, msg: IncomingMessage, exchange: Exchange) -> list[Reply]:
         corrector = msg.author_id

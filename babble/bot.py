@@ -100,6 +100,8 @@ class BabbleClient(discord.Client):
         self._lock = asyncio.Lock()
         self._bench_running = False
         self._bench_last_started: float | None = None
+        # Background pre-prefills in flight (strong refs so they are not GC'd).
+        self._prewarms: set[asyncio.Task] = set()
         self.tree = app_commands.CommandTree(self)
         command = app_commands.Command(
             name="bench",
@@ -217,6 +219,31 @@ class BabbleClient(discord.Client):
                 chars=len(reply.content),
                 remembered=reply.exchange is not None or None,
             )
+            if reply.continues:
+                self._schedule_prewarm(reply)
+
+    def _schedule_prewarm(self, reply: Any) -> None:
+        """Pre-prefill the next turn of this conversation, after it was sent.
+
+        Deliberately *not* under `self._lock`: it only touches the generator's
+        prefix cache, under the generator's own lock, and that generator
+        yields to any real generation between prefill chunks. Holding the bot
+        lock here would make the next message wait for the whole warm.
+        """
+        if not callable(getattr(self.brain, "prewarm", None)):
+            return
+        task = asyncio.get_running_loop().create_task(self._prewarm(reply))
+        self._prewarms.add(task)
+        task.add_done_callback(self._prewarms.discard)
+
+    async def _prewarm(self, reply: Any) -> None:
+        try:
+            info = await asyncio.to_thread(self.brain.prewarm, reply)
+        except Exception as exc:  # warming is an optimization; never fatal
+            self.log.event("bot.error", where="prewarm", error=f"{type(exc).__name__}: {exc}")
+            return
+        if info:
+            self.log.event("bot.prewarm", **info)
 
     async def _send_reply(
         self, message: discord.Message, reply: Any, incoming: IncomingMessage
