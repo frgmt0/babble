@@ -47,6 +47,7 @@
 #include <cstring>
 #include <functional>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -433,9 +434,11 @@ struct Engine {
   float* cosT = nullptr;
   float* sinT = nullptr;  // [maxctx][HD/2]
 
-  // KV storage: fp32 or fp16 (kv16) elements, es bytes each; typed views via kp<KT>() etc.
-  bool kv16 = false;
-  int es = 4;
+  // KV storage (see KV_FP32 / KV_FP16 / KV_Q16 below). K is kept in blocks of
+  // 16 positions of kblk bytes each ([HD][16] elements, then 16 fp32 scales for
+  // q16); V rows are vrow bytes. Regions are raw bytes, typed by the kernels.
+  int kvmode = 0;
+  size_t kblk = 0, vrow = 0;
   char *Kp = nullptr, *Vp = nullptr, *Ks = nullptr, *Vs = nullptr;
   int Pcap = 0, Scap = 0, Smax = 0, P = 0;
 
@@ -456,10 +459,10 @@ struct Engine {
   int g = 0;                 // decode: index in stream cache
   int logits_from = 0;       // rows [logits_from, M) get logits
 
-  template <class KT> KT* kp(int l, int h) { return reinterpret_cast<KT*>(Kp) + ((size_t)l * NH + h) * Pcap * HD; }
-  template <class KT> KT* vp(int l, int h) { return reinterpret_cast<KT*>(Vp) + ((size_t)l * NH + h) * Pcap * HD; }
-  template <class KT> KT* ks(int l, int s, int h) { return reinterpret_cast<KT*>(Ks) + (((size_t)l * Smax + s) * NH + h) * Scap * HD; }
-  template <class KT> KT* vs(int l, int s, int h) { return reinterpret_cast<KT*>(Vs) + (((size_t)l * Smax + s) * NH + h) * Scap * HD; }
+  char* kp(int l, int h) { return Kp + ((size_t)l * NH + h) * (Pcap / 16) * kblk; }
+  char* vp(int l, int h) { return Vp + ((size_t)l * NH + h) * Pcap * vrow; }
+  char* ks(int l, int s, int h) { return Ks + (((size_t)l * Smax + s) * NH + h) * (Scap / 16) * kblk; }
+  char* vs(int l, int s, int h) { return Vs + (((size_t)l * Smax + s) * NH + h) * Scap * vrow; }
 
   // decode split-K partials: [NH][chunks][rows][HD + 2] = (max, sum, unnormalized out[HD])
   float* part = nullptr;
@@ -509,8 +512,8 @@ struct Engine {
     if (p <= Pcap) return;
     free(Kp); free(Vp);
     Pcap = p;
-    Kp = amalloc<char>((size_t)NL * NH * p * HD * es);
-    Vp = amalloc<char>((size_t)NL * NH * p * HD * es);
+    Kp = amalloc<char>((size_t)NL * NH * (p / 16) * kblk);
+    Vp = amalloc<char>((size_t)NL * NH * p * vrow);
   }
   void ensure_streams(int s, int cap) {
     cap = (int)up16(cap);
@@ -518,40 +521,36 @@ struct Engine {
     free(Ks); free(Vs);
     Smax = std::max(s, Smax);
     Scap = std::max(cap, Scap);
-    Ks = amalloc<char>((size_t)NL * Smax * NH * Scap * HD * es);
-    Vs = amalloc<char>((size_t)NL * Smax * NH * Scap * HD * es);
+    Ks = amalloc<char>((size_t)NL * Smax * NH * (Scap / 16) * kblk);
+    Vs = amalloc<char>((size_t)NL * Smax * NH * Scap * vrow);
   }
-  // Switch the KV element type. Drops every KV buffer (snapshots taken in the
-  // other type are not importable afterwards).
-  void set_kv16(bool on) {
-    free(Kp); free(Vp); free(Ks); free(Vs);
-    Kp = Vp = Ks = Vs = nullptr;
-    Pcap = Scap = Smax = P = 0;
-    kv16 = on;
-    es = on ? 2 : 4;
-  }
+  // Switch the KV storage type. Drops every KV buffer (snapshots taken in
+  // another type are not importable afterwards).
+  void set_kv_mode(int mode);
 
-  // Packed prefix snapshot: per (layer, head), up16(P)*HD elements of blocked K
-  // then P*HD elements of V, in the engine's KV element type (es bytes each).
-  size_t kv_unit(int p) const { return up16(p) * HD + (size_t)p * HD; }
-  size_t kv_bytes(int p) const { return (size_t)NL * NH * kv_unit(p) * es; }
+  // Packed prefix snapshot: per (layer, head), the up16(P)/16 K blocks, then
+  // P V rows, in the engine's KV storage type.
+  size_t kv_unit(int p) const { return up16(p) / 16 * kblk + (size_t)p * vrow; }
+  size_t kv_bytes(int p) const { return (size_t)NL * NH * kv_unit(p); }
 
   // (l,h) units [lo, hi) of the snapshot <-> the prompt KV region
   void kv_export(int p, char* out, int lo, int hi) {
-    const size_t unit = kv_unit(p) * es, region = (size_t)Pcap * HD * es;
+    const size_t unit = kv_unit(p), kreg = (size_t)(Pcap / 16) * kblk, vreg = (size_t)Pcap * vrow;
+    const size_t kb = up16(p) / 16 * kblk;
     for (int u = lo; u < hi; ++u) {
       char* dst = out + (size_t)u * unit;
-      memcpy(dst, Kp + u * region, up16(p) * HD * es);
-      memcpy(dst + up16(p) * HD * es, Vp + u * region, (size_t)p * HD * es);
+      memcpy(dst, Kp + u * kreg, kb);
+      memcpy(dst + kb, Vp + u * vreg, (size_t)p * vrow);
     }
   }
   // Import positions [0, n) of a snapshot taken at length `stored` (n <= stored).
   void kv_import(const char* in, int stored, int n, int lo, int hi) {
-    const size_t unit = kv_unit(stored) * es, region = (size_t)Pcap * HD * es;
+    const size_t unit = kv_unit(stored), kreg = (size_t)(Pcap / 16) * kblk, vreg = (size_t)Pcap * vrow;
+    const size_t kb_stored = up16(stored) / 16 * kblk;
     for (int u = lo; u < hi; ++u) {
       const char* src = in + (size_t)u * unit;
-      memcpy(Kp + u * region, src, up16(n) * HD * es);
-      memcpy(Vp + u * region, src + up16(stored) * HD * es, (size_t)n * HD * es);
+      memcpy(Kp + u * kreg, src, up16(n) / 16 * kblk);
+      memcpy(Vp + u * vreg, src + kb_stored, (size_t)n * vrow);
     }
   }
 
@@ -585,11 +584,28 @@ void rope(float* v, const float* c, const float* s, int half) {
 }
 
 // ---------------------------------------------------------------- attention
-// KV elements are fp32 or fp16 (F16C, round-to-nearest-even on store). Every
-// attention read goes through the cache, so prefill, decode and prefix restore
-// all see the same (possibly fp16-rounded) K/V.
+// KV storage policies (Engine::kvmode):
+//   KV_FP32  K and V fp32 -- the exact reference arithmetic.
+//   KV_FP16  K and V IEEE half (F16C, round-to-nearest-even).
+//   KV_Q16   K int16 with one fp32 scale per (position, head) (max|k| / 32767),
+//            V half. fp16's 11-bit mantissa is too coarse for K at long
+//            context (q.K errors reach the logits; see the report), int16 with
+//            a per-position scale is ~10x finer at the same 2 bytes/element.
+//            The scale multiplies the 16 scores of a K block after the dot
+//            product, so it costs one multiply per 16 positions.
+// Every attention read goes through the cache, so prefill, decode and prefix
+// restore all see the same stored K/V.
+enum { KV_FP32 = 0, KV_FP16 = 1, KV_Q16 = 2 };
+struct KVF32 { using K = float;    using V = float;    static constexpr bool kscale = false; };
+struct KVF16 { using K = uint16_t; using V = uint16_t; static constexpr bool kscale = false; };
+struct KVQ16 { using K = int16_t;  using V = uint16_t; static constexpr bool kscale = true; };
+// (uint16_t elements are IEEE half, int16_t elements are scaled integers)
+
 inline __m256 kv_ld8(const float* p) { return _mm256_loadu_ps(p); }
 inline __m256 kv_ld8(const uint16_t* p) { return _mm256_cvtph_ps(_mm_loadu_si128(reinterpret_cast<const __m128i*>(p))); }
+inline __m256 kv_ld8(const int16_t* p) {
+  return _mm256_cvtepi32_ps(_mm256_cvtepi16_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(p))));
+}
 inline void kv_st8(float* p, __m256 v) { _mm256_storeu_ps(p, v); }
 inline void kv_st8(uint16_t* p, __m256 v) {
   _mm_storeu_si128(reinterpret_cast<__m128i*>(p), _mm256_cvtps_ph(v, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
@@ -597,28 +613,79 @@ inline void kv_st8(uint16_t* p, __m256 v) {
 inline void kv_st1(float* p, float v) { *p = v; }
 inline void kv_st1(uint16_t* p, float v) { *p = _cvtss_sh(v, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC); }
 
+void Engine::set_kv_mode(int mode) {
+  free(Kp); free(Vp); free(Ks); free(Vs);
+  Kp = Vp = Ks = Vs = nullptr;
+  Pcap = Scap = Smax = P = 0;
+  kvmode = mode;
+  const size_t e = mode == KV_FP32 ? 4 : 2;
+  kblk = 16 * (size_t)HD * e + (mode == KV_Q16 ? 16 * sizeof(float) : 0);
+  vrow = (size_t)HD * e;
+}
+
 constexpr int KB = 64;     // key positions per attention block (staged as fp32, L1-resident)
 constexpr int QBMAX = 48;  // query rows per attention work unit
 constexpr int DCH = 256;   // decode: shared-prompt positions per split-K chunk (multiple of KB)
 
-// K for position t goes to its 16-position block: blk[t/16][d][t%16]; V is row-major [t][HD].
-template <class KT>
-inline void put_k(KT* base, int t, const float* k, int HD) {
-  KT* b = base + (size_t)(t / 16) * HD * 16 + (t % 16);
-  for (int d = 0; d < HD; ++d) kv_st1(b + d * 16, k[d]);
+// K for position t goes to block t/16 at [d][t%16] (+ its scale for q16); V is row-major [t][HD].
+template <class P>
+inline void put_k(char* base, int t, const float* k, int HD, size_t kblk) {
+  char* blk = base + (size_t)(t / 16) * kblk;
+  typename P::K* b = reinterpret_cast<typename P::K*>(blk) + (t % 16);
+  if constexpr (P::kscale) {
+    const __m256 sign = _mm256_set1_ps(-0.0f);
+    __m256 mv = _mm256_setzero_ps();
+    for (int d = 0; d < HD; d += 8) mv = _mm256_max_ps(mv, _mm256_andnot_ps(sign, _mm256_loadu_ps(k + d)));
+    const float mx = hsum_max(mv);
+    const float sc = mx > 0.0f ? mx / 32767.0f : 1.0f;
+    const float inv = mx > 0.0f ? 32767.0f / mx : 0.0f;
+    for (int d = 0; d < HD; ++d) {
+      const float v = std::min(32767.0f, std::max(-32767.0f, k[d] * inv));
+      b[d * 16] = (int16_t)std::nearbyint(v);
+    }
+    reinterpret_cast<float*>(blk + (size_t)HD * 16 * sizeof(int16_t))[t % 16] = sc;
+  } else {
+    for (int d = 0; d < HD; ++d) kv_st1(b + d * 16, k[d]);
+  }
 }
-template <class KT>
-inline void put_v(KT* base, int t, const float* v, int HD) {
-  KT* b = base + (size_t)t * HD;
+template <class P>
+inline void put_v(char* base, int t, const float* v, int HD) {
+  typename P::V* b = reinterpret_cast<typename P::V*>(base) + (size_t)t * HD;
   for (int d = 0; d < HD; d += 8) kv_st8(b + d, _mm256_loadu_ps(v + d));
 }
 
-// fp32 view of n (multiple of 8) KV elements: fp32 storage is used in place,
-// fp16 is converted once into `tmp` and then reused by every query row.
-inline const float* stage(const float* src, size_t, float*) { return src; }
-inline const float* stage(const uint16_t* src, size_t n, float* tmp) {
+// fp32 copies of a K / V block, made once per block and reused by every row
+// tile (prefill). fp32 storage is used in place.
+template <class P>
+inline const char* stage_k(const char* src, int nb16, int HD, size_t kblk, float* tmp) {
+  if constexpr (std::is_same<P, KVF32>::value) {
+    return src;
+  } else {
+    for (int j = 0; j < nb16; ++j) {
+      const typename P::K* k = reinterpret_cast<const typename P::K*>(src + (size_t)j * kblk);
+      float* o = tmp + (size_t)j * HD * 16;
+      __m256 s0 = _mm256_set1_ps(1.0f), s1 = s0;
+      if constexpr (P::kscale) {
+        const float* sc = reinterpret_cast<const float*>(src + (size_t)j * kblk + (size_t)HD * 16 * sizeof(int16_t));
+        s0 = _mm256_loadu_ps(sc);
+        s1 = _mm256_loadu_ps(sc + 8);
+      }
+      for (int d = 0; d < HD; ++d) {
+        __m256 a = kv_ld8(k + d * 16), b = kv_ld8(k + d * 16 + 8);
+        if constexpr (P::kscale) {
+          a = _mm256_mul_ps(a, s0);
+          b = _mm256_mul_ps(b, s1);
+        }
+        _mm256_store_ps(o + d * 16, a);
+        _mm256_store_ps(o + d * 16 + 8, b);
+      }
+    }
+    return reinterpret_cast<const char*>(tmp);
+  }
+}
+inline const float* stage_v(const float* src, size_t, float*) { return src; }
+inline const float* stage_v(const uint16_t* src, size_t n, float* tmp) {
   for (size_t i = 0; i < n; i += 32) {
-    _mm_prefetch(reinterpret_cast<const char*>(src + i) + 512, _MM_HINT_T0);
     _mm256_store_ps(tmp + i, kv_ld8(src + i));
     _mm256_store_ps(tmp + i + 8, kv_ld8(src + i + 8));
     _mm256_store_ps(tmp + i + 16, kv_ld8(src + i + 16));
@@ -627,14 +694,14 @@ inline const float* stage(const uint16_t* src, size_t n, float* tmp) {
   return tmp;
 }
 
-// s[r*KB + j*16 + i] = scale * q_r . K[j*16 + i] for 16-position blocks j < nb16
-// of a blocked fp32 K tile. U independent accumulator sets over d (U | HD) keep
-// the 1-2 row case from being FMA-latency bound.
-template <int RR, int U, class ST>
-inline void qk_tile(const float* const* q, const ST* kf, int nb16, int HD, float scale, float* s) {
+// s[r*KB + j*16 + i] = scale * q_r . K[j*16 + i] for the 16-position K blocks
+// j < nb16 starting at kf (kblk bytes apart). U independent accumulator sets
+// over d (U | HD) keep the 1-2 row case from being FMA-latency bound.
+template <int RR, int U, class P>
+inline void qk_tile(const float* const* q, const char* kf, int nb16, int HD, float scale, float* s, size_t kblk) {
   const __m256 sc = _mm256_set1_ps(scale);
   for (int j = 0; j < nb16; ++j) {
-    const ST* kb = kf + (size_t)j * HD * 16;
+    const typename P::K* kb = reinterpret_cast<const typename P::K*>(kf + (size_t)j * kblk);
     __m256 a[U][RR][2];
 #pragma GCC unroll 8
     for (int u = 0; u < U; ++u)
@@ -652,6 +719,12 @@ inline void qk_tile(const float* const* q, const ST* kf, int nb16, int HD, float
         }
       }
     }
+    __m256 sc0 = sc, sc1 = sc;
+    if constexpr (P::kscale) {
+      const float* ks = reinterpret_cast<const float*>(kb + (size_t)HD * 16);
+      sc0 = _mm256_mul_ps(sc, _mm256_loadu_ps(ks));
+      sc1 = _mm256_mul_ps(sc, _mm256_loadu_ps(ks + 8));
+    }
 #pragma GCC unroll 8
     for (int r = 0; r < RR; ++r) {
       __m256 s0 = a[0][r][0], s1 = a[0][r][1];
@@ -660,13 +733,13 @@ inline void qk_tile(const float* const* q, const ST* kf, int nb16, int HD, float
         s0 = _mm256_add_ps(s0, a[u][r][0]);
         s1 = _mm256_add_ps(s1, a[u][r][1]);
       }
-      _mm256_storeu_ps(s + r * KB + j * 16, _mm256_mul_ps(s0, sc));
-      _mm256_storeu_ps(s + r * KB + j * 16 + 8, _mm256_mul_ps(s1, sc));
+      _mm256_storeu_ps(s + r * KB + j * 16, _mm256_mul_ps(s0, sc0));
+      _mm256_storeu_ps(s + r * KB + j * 16 + 8, _mm256_mul_ps(s1, sc1));
     }
   }
 }
 
-// o[r][0..HD) += sum_{t < kb} p[r*KB + t] * V[t][:] (row-major fp32 V tile).
+// o[r][0..HD) += sum_{t < kb} p[r*KB + t] * V[t][:] (row-major V tile).
 template <int RR, int U, class ST>
 inline void pv_tile(const float* p, const ST* vf, int kb, int HD, float* o) {
   for (int d0 = 0; d0 < HD; d0 += 16) {
@@ -716,15 +789,15 @@ inline void pv_tile(const float* p, const ST* vf, int kb, int HD, float* o) {
   }
 }
 
-template <class ST>
-inline void qk_rows(int rr, const float* const* q, const ST* kf, int nb16, int HD, float scale, float* s) {
+template <class P>
+inline void qk_rows(int rr, const float* const* q, const char* kf, int nb16, int HD, float scale, float* s, size_t kblk) {
   switch (rr) {
-    case 1: qk_tile<1, 4, ST>(q, kf, nb16, HD, scale, s); break;
-    case 2: qk_tile<2, 2, ST>(q, kf, nb16, HD, scale, s); break;
-    case 3: qk_tile<3, 2, ST>(q, kf, nb16, HD, scale, s); break;
-    case 4: qk_tile<4, 1, ST>(q, kf, nb16, HD, scale, s); break;
-    case 5: qk_tile<5, 1, ST>(q, kf, nb16, HD, scale, s); break;
-    default: qk_tile<6, 1, ST>(q, kf, nb16, HD, scale, s); break;
+    case 1: qk_tile<1, 4, P>(q, kf, nb16, HD, scale, s, kblk); break;
+    case 2: qk_tile<2, 2, P>(q, kf, nb16, HD, scale, s, kblk); break;
+    case 3: qk_tile<3, 2, P>(q, kf, nb16, HD, scale, s, kblk); break;
+    case 4: qk_tile<4, 1, P>(q, kf, nb16, HD, scale, s, kblk); break;
+    case 5: qk_tile<5, 1, P>(q, kf, nb16, HD, scale, s, kblk); break;
+    default: qk_tile<6, 1, P>(q, kf, nb16, HD, scale, s, kblk); break;
   }
 }
 template <class ST>
@@ -765,8 +838,8 @@ inline float exp_row(float* s, int valid, int kb, float m) {
 // Online-softmax (flash) attention of R <= QBMAX query rows over key positions
 // [t0, t1) of one KV region (t0 a multiple of 16). Row r sees positions
 // t <= lim[r] (lim ascending; nullptr = no mask). State: T.am / T.al / T.ao,
-// initialised by attn_begin. Each K/V block is staged to fp32 once and then
-// used by every row, so the rows of a unit read each K/V line exactly once.
+// initialised by attn_begin. All rows of a unit consume each K/V block while
+// it is hot, so a unit reads each K/V line exactly once.
 inline void attn_begin(Thread& T, int R, int HD) {
   for (int r = 0; r < R; ++r) {
     T.am[r] = -INFINITY;
@@ -775,26 +848,26 @@ inline void attn_begin(Thread& T, int R, int HD) {
   memset(T.ao, 0, (size_t)R * HD * sizeof(float));
 }
 
-template <class KT>
-void attend(Thread& T, const float* const* qs, int R, const int* lim, const KT* Kb, const KT* Vb, int t0, int t1,
-            int HD, float scale) {
+template <class P>
+void attend(Thread& T, const float* const* qs, int R, const int* lim, const char* Kb, const char* Vb, int t0, int t1,
+            int HD, float scale, size_t kblk) {
   float* s = T.as;
+  // one row tile (decode): read the stored K/V directly; several row tiles
+  // (prefill): convert each block to fp32 once and reuse it for every tile
+  const bool direct = R <= 6;
   for (int b0 = t0; b0 < t1; b0 += KB) {
     if (lim && lim[R - 1] < b0) break;
     const int kb = std::min(KB, t1 - b0), nb16 = (kb + 15) / 16;
-    // one row tile (decode): read the stored K/V directly; several row tiles
-    // (prefill): convert the block to fp32 once and reuse it for every tile
-    const bool direct = R <= 6;
-    const KT* kd = Kb + (size_t)b0 * HD;
-    const KT* vd = Vb + (size_t)b0 * HD;
-    const float* kf = direct ? nullptr : stage(kd, (size_t)nb16 * 16 * HD, T.akf);
-    const float* vf = direct ? nullptr : stage(vd, (size_t)kb * HD, T.avf);
+    const char* kd = Kb + (size_t)(b0 / 16) * kblk;
+    const typename P::V* vd = reinterpret_cast<const typename P::V*>(Vb) + (size_t)b0 * HD;
+    const char* kf = direct ? nullptr : stage_k<P>(kd, nb16, HD, kblk, T.akf);
+    const float* vf = direct ? nullptr : stage_v(vd, (size_t)kb * HD, T.avf);
     for (int r0 = 0; r0 < R; r0 += 6) {
       const int rr = std::min(6, R - r0);
       if (lim && lim[r0 + rr - 1] < b0) continue;  // this row tile is fully masked here (later tiles may not be)
       float* sr = s + (size_t)r0 * KB;
-      if (direct) qk_rows(rr, qs + r0, kd, nb16, HD, scale, sr);
-      else qk_rows(rr, qs + r0, kf, nb16, HD, scale, sr);
+      if (direct) qk_rows<P>(rr, qs + r0, kd, nb16, HD, scale, sr, kblk);
+      else qk_rows<KVF32>(rr, qs + r0, kf, nb16, HD, scale, sr, (size_t)HD * 16 * sizeof(float));
       for (int r = r0; r < r0 + rr; ++r) {
         float* row = s + (size_t)r * KB;
         const int valid = lim ? std::min(kb, lim[r] - b0 + 1) : kb;
@@ -831,41 +904,41 @@ void attend(Thread& T, const float* const* qs, int R, const int* lim, const KT* 
 }
 
 // Attention for layer l over E.M rows: q/k/v in E.qkv, output in E.att.
-template <class KT>
+template <class P>
 void attention(Engine& E, int tid, int l) {
   Thread& T = E.tl[tid];
   const int M = E.M, nt = E.nt;
   const int H = E.H, NH = E.NH, HD = E.HD, QKV = E.QKV;
   const int half = HD / 2;
   const float ascale = E.attn_scale;
+  const size_t kblk = E.kblk;
   const float* qs[QBMAX];
   int lim[QBMAX];
   if (E.decode) {
     // Flash-decoding split-K: units are (head, chunk of the shared prompt, row
-    // tile) -- every stream's query scores the chunk while it is staged, so the
+    // tile) -- every stream's query scores the chunk while it is hot, so the
     // prompt K/V is read once per step for all streams and spread over all
     // threads -- plus one unit per (head, row) for that stream's generated
     // tail, which also does the RoPE + cache append. A second pass merges the
     // per-chunk (max, sum, out) partials.
-    const int P = E.P, g = E.g, n2 = g + 1, pos = P + g;
-    const int C = (P + DCH - 1) / DCH, RT = (M + QBMAX - 1) / QBMAX;
+    const int P0 = E.P, g = E.g, n2 = g + 1, pos = P0 + g;
+    const int C = (P0 + DCH - 1) / DCH, RT = (M + QBMAX - 1) / QBMAX;
     const int npre = NH * C * RT, nunits = npre + NH * M;
     const float* cs = E.cosT + (size_t)pos * half;
     const float* sn = E.sinT + (size_t)pos * half;
     std::atomic<int>& w = E.wq[2 * l];
     for (int u; (u = w.fetch_add(1, std::memory_order_relaxed)) < nunits;) {
-      int h, c, r0, R;
-      const KT *Kb, *Vb;
-      int t0, t1;
+      int h, c, r0, R, t0, t1;
+      const char *Kb, *Vb;
       if (u < npre) {
         h = u % NH;
         c = (u / NH) % C;
         r0 = (u / NH / C) * QBMAX;
         R = std::min(QBMAX, M - r0);
-        Kb = E.kp<KT>(l, h);
-        Vb = E.vp<KT>(l, h);
+        Kb = E.kp(l, h);
+        Vb = E.vp(l, h);
         t0 = c * DCH;
-        t1 = std::min(P, t0 + DCH);
+        t1 = std::min(P0, t0 + DCH);
       } else {
         const int v = u - npre;
         h = v % NH;
@@ -876,10 +949,10 @@ void attention(Engine& E, int tid, int l) {
         const float* kv = E.qkv + (size_t)r0 * QKV + H + h * HD;
         memcpy(T.ak, kv, HD * sizeof(float));
         rope(T.ak, cs, sn, half);
-        KT* kd = E.ks<KT>(l, st, h);
-        KT* vd = E.vs<KT>(l, st, h);
-        put_k(kd, g, T.ak, HD);
-        put_v(vd, g, kv + H, HD);
+        char* kd = E.ks(l, st, h);
+        char* vd = E.vs(l, st, h);
+        put_k<P>(kd, g, T.ak, HD, kblk);
+        put_v<P>(vd, g, kv + H, HD);
         Kb = kd;
         Vb = vd;
         t0 = 0;
@@ -892,7 +965,7 @@ void attention(Engine& E, int tid, int l) {
         qs[r] = q;
       }
       attn_begin(T, R, HD);
-      attend<KT>(T, qs, R, nullptr, Kb, Vb, t0, t1, HD, ascale);
+      attend<P>(T, qs, R, nullptr, Kb, Vb, t0, t1, HD, ascale, kblk);
       for (int r = 0; r < R; ++r) {
         float* pp = E.part_at(h, c, r0 + r);
         pp[0] = T.am[r];
@@ -927,8 +1000,8 @@ void attention(Engine& E, int tid, int l) {
       float* q = E.qkv + (size_t)m * QKV + h * HD;
       rope(q, E.cosT + (size_t)pos * half, E.sinT + (size_t)pos * half, half);
       rope(q + H, E.cosT + (size_t)pos * half, E.sinT + (size_t)pos * half, half);
-      put_k(E.kp<KT>(l, h), pos, q + H, HD);
-      put_v(E.vp<KT>(l, h), pos, q + 2 * H, HD);
+      put_k<P>(E.kp(l, h), pos, q + H, HD, kblk);
+      put_v<P>(E.vp(l, h), pos, q + 2 * H, HD);
     }
     E.pool.barrier();
     // Causal flash attention: units are (query block of QB rows, head), the
@@ -946,7 +1019,7 @@ void attention(Engine& E, int tid, int l) {
         lim[r] = S0 + i0 + r;
       }
       attn_begin(T, R, HD);
-      attend<KT>(T, qs, R, lim, E.kp<KT>(l, h), E.vp<KT>(l, h), 0, S0 + i0 + R, HD, ascale);
+      attend<P>(T, qs, R, lim, E.kp(l, h), E.vp(l, h), 0, S0 + i0 + R, HD, ascale, kblk);
       for (int r = 0; r < R; ++r) {
         float* out = E.att + (size_t)(i0 + r) * H + h * HD;
         const float* o = T.ao + (size_t)r * HD;
@@ -1018,8 +1091,11 @@ void forward(Engine& E, int tid) {
     gemm(T.xs, T.ys, M, Ly.qkv, lo, hi, false);
     E.pool.barrier();
 
-    if (E.kv16) attention<uint16_t>(E, tid, l);
-    else attention<float>(E, tid, l);
+    switch (E.kvmode) {
+      case KV_FP16: attention<KVF16>(E, tid, l); break;
+      case KV_Q16: attention<KVQ16>(E, tid, l); break;
+      default: attention<KVF32>(E, tid, l); break;
+    }
     E.pool.barrier();
 
     for (int m = 0; m < M; ++m) {
@@ -1488,6 +1564,7 @@ void* eng_create(int nthreads, int hidden, int heads, int layers, int experts, i
     t.al = amalloc<float>(QBMAX);
     t.ak = amalloc<float>(hd);
   }
+  E->set_kv_mode(KV_FP32);
   E->wq = new std::atomic<int>[2 * layers];
   for (int i = 0; i < 2 * layers; ++i) E->wq[i].store(0);
   E->ensure_rows(64);
@@ -1564,14 +1641,15 @@ void eng_set_rope(void* p, const float* cosT, const float* sinT) {
 // Bytes in a prefix snapshot of `positions` positions (depends on the KV type).
 long long eng_kv_bytes(void* p, int positions) { return (long long)static_cast<Engine*>(p)->kv_bytes(positions); }
 
-// KV element type: 0 = fp32, 1 = fp16. Drops all KV state; returns the type set.
+// KV storage type: 0 = fp32, 1 = fp16, 2 = q16 (K int16 + per-position scale,
+// V fp16). Drops all KV state; returns the type set, or -1.
 int eng_set_kv_type(void* p, int type) {
   Engine* E = static_cast<Engine*>(p);
-  if (type != 0 && type != 1) return -1;
-  E->set_kv16(type == 1);
+  if (type != KV_FP32 && type != KV_FP16 && type != KV_Q16) return -1;
+  E->set_kv_mode(type);
   return type;
 }
-int eng_kv_type(void* p) { return static_cast<Engine*>(p)->kv16 ? 1 : 0; }
+int eng_kv_type(void* p) { return static_cast<Engine*>(p)->kvmode; }
 
 // Logits for rows [start, T) of `ids` (out: [T-start][V]). Positions [0, start)
 // come from the snapshot kv_in (taken at kv_in_len >= start). If kv_out is

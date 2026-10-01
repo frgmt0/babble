@@ -20,10 +20,13 @@ emits ``<eos>`` leaves the batch (row compaction); generation stops when all
 have. The engine draws from its own RNG, seeded per call from torch's global
 generator, so `torch.manual_seed` still makes a run reproducible.
 
-The K/V cache (and so every prefix snapshot) is stored as fp16 by default
-(``BABBLE_NATIVE_KV=fp16``; ``fp32`` keeps the original full-precision cache).
-fp16 halves the bandwidth of long-context attention and the size of a
-snapshot; it passes the same lossless gate (see docs/reports).
+The K/V cache (and so every prefix snapshot) is 16-bit by default:
+``BABBLE_NATIVE_KV=q16`` stores K as int16 with one fp32 scale per (position,
+head) and V as fp16, which halves the bandwidth of long-context attention and
+the size of a snapshot while staying within ~4e-3 logits of fp32 at 2048
+tokens. ``fp32`` is the original full-precision cache; ``fp16`` (K and V IEEE
+half) is kept for comparison only -- its K rounding moves some long-context
+logits by ~1 (see docs/reports/NATIVE_KV_2026-09-30.md).
 
 Unusable here (CPU without AVX2/FMA/F16C, no compiler, failed build, a
 snapshot shape the kernels do not implement) raises `NativeUnavailable`, which
@@ -71,12 +74,12 @@ class NativeOutput:
     last_s: float
 
 
-KV_TYPES = {"fp32": 0, "fp16": 1}
-DEFAULT_KV = "fp16"
+KV_TYPES = {"fp32": 0, "fp16": 1, "q16": 2}
+DEFAULT_KV = "q16"
 
 
 def kv_type_from_env() -> str:
-    """``BABBLE_NATIVE_KV`` (fp16 | fp32); unset or empty means the default."""
+    """``BABBLE_NATIVE_KV`` (q16 | fp16 | fp32); unset or empty means the default (q16)."""
     import os
 
     raw = os.environ.get("BABBLE_NATIVE_KV", "").strip().lower()

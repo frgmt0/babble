@@ -146,12 +146,13 @@ def engine(snapshot):
     eng.close()
 
 
-@pytest.fixture(scope="module")
-def engine16(snapshot):
-    """fp16 KV (the serving default)."""
+@pytest.fixture(scope="module", params=["q16", "fp16"])
+def engine16(snapshot, request):
+    """16-bit KV: q16 (the serving default: K int16 + per-position scale, V
+    fp16) and plain fp16."""
     if not NATIVE_OK:
         pytest.skip(WHY)
-    eng = NativeEngine(snapshot, threads=3, kv="fp16")
+    eng = NativeEngine(snapshot, threads=3, kv=request.param)
     yield eng
     eng.close()
 
@@ -255,7 +256,7 @@ def test_kv_type_default_env_and_snapshot_size(snapshot, engine, engine16, monke
 
     monkeypatch.delenv("BABBLE_NATIVE_KV", raising=False)
     eng = NativeEngine(snapshot, threads=1)
-    assert eng.kv == "fp16" and eng.lib.eng_kv_type(eng._h) == 1
+    assert eng.kv == "q16" and eng.lib.eng_kv_type(eng._h) == 2
     eng.close()
     monkeypatch.setenv("BABBLE_NATIVE_KV", "FP32")
     eng = NativeEngine(snapshot, threads=1)
@@ -264,9 +265,13 @@ def test_kv_type_default_env_and_snapshot_size(snapshot, engine, engine16, monke
     monkeypatch.setenv("BABBLE_NATIVE_KV", "int4")
     with pytest.raises(HFServeError):
         NativeEngine(snapshot, threads=1)
-    # an fp16 snapshot is exactly half the size; the buffer is raw bytes
+    # 16-bit snapshots are half the size (+ one fp32 K scale per position for
+    # q16); the buffer is raw bytes
+    layers, heads = 2, 4
     for n in (1, 17, 60):
-        assert 2 * engine16.kv_bytes(n) == engine.kv_bytes(n)
+        blocks = (n + 15) // 16
+        extra = layers * heads * blocks * 16 * 4 if engine16.kv == "q16" else 0
+        assert 2 * (engine16.kv_bytes(n) - extra) == engine.kv_bytes(n)
         assert engine16.new_snapshot(n).numel() == engine16.kv_bytes(n)
 
 
@@ -275,13 +280,13 @@ def test_fp16_kv_paths_agree_with_transformers_and_each_other(engine16, hf_model
     ids = _ids(60, 21)
     ref = _hf_logits(hf_model, ids)
     full = engine16.full_logits(ids)
-    # fp16 K/V rounding only: small logit drift, same argmax everywhere
+    # 16-bit K/V rounding only: small logit drift, same argmax everywhere
     assert float((full - ref).abs().max()) < 2e-2
     assert bool((full.argmax(-1) == ref.argmax(-1)).all())
     # every path reads the same rounded cache, so they agree to float rounding
     for prefill in (1, 9, len(ids)):
         got = engine16.decode_logits(ids, prefill=prefill)
-        # (a 1e-7 path difference can flip an fp16 rounding of a later K/V)
+        # (a 1e-7 path difference can flip a 16-bit rounding of a later K/V)
         assert float((got - full).abs().max()) <= 2e-3, prefill
     for cut in (1, 16, 37):
         head, kv = engine16.forward(ids[:cut], export=True)
@@ -311,15 +316,19 @@ def test_long_context_tiling_matches_transformers(long_snapshot) -> None:
         assert all(t == one for t in eng.generate(ids[:650], n=4, **kw).tokens)
     finally:
         eng.close()
-    eng = NativeEngine(long_snapshot, threads=3, kv="fp16")
-    try:
-        full = eng.full_logits(ids)
-        assert float((full - ref).abs().max()) < 2e-2
-        assert float((full.argmax(-1) == ref.argmax(-1)).float().mean()) >= 0.995
-        got = eng.decode_logits(ids, prefill=600)
-        assert float((got - full).abs().max()) <= 2e-3
-    finally:
-        eng.close()
+    for kv in ("q16", "fp16"):
+        eng = NativeEngine(long_snapshot, threads=3, kv=kv)
+        try:
+            full = eng.full_logits(ids)
+            assert float((full - ref).abs().max()) < 2e-2, kv
+            assert float((full.argmax(-1) == ref.argmax(-1)).float().mean()) >= 0.995, kv
+            got = eng.decode_logits(ids, prefill=600)
+            assert float((got - full).abs().max()) <= 2e-3, kv
+            head, snap = eng.forward(ids[:513], export=True)
+            tail, _ = eng.forward(ids, start=513, kv_in=snap, kv_in_len=513)
+            assert float((torch.cat([head, tail]) - full).abs().max()) <= 2e-3, kv
+        finally:
+            eng.close()
 
 
 @needs_native
