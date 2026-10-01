@@ -314,6 +314,11 @@ class NativeEngine:
         n = max(1, int(n))
         max_new = max(1, int(max_new))
         k = max(0, int(k))
+        if T + max_new + k + 1 > self.cfg.max_pos:  # no room for draft rows at the context edge
+            return self.generate(
+                ids, n=n, max_new=max_new, sampling=sampling, eos_id=eos_id, seed=seed, greedy=greedy,
+                stop_at_eos=stop_at_eos, start=start, kv_in=kv_in, kv_in_len=kv_in_len, kv_out=kv_out,
+            )
         sp = SampleParams(
             int(greedy),
             float(sampling.temperature),
@@ -345,36 +350,36 @@ class NativeEngine:
             done = [(stop_at_eos and t[0] == eos_id) or max_new <= 1 for t in toks]
             state = drafter.begin(ids, n)
             kk = max(1, k)
-            drafts = torch.zeros(n, kk, dtype=torch.int32)
-            nd = torch.zeros(n, dtype=torch.int32)
-            out = torch.empty(n, kk + 1, dtype=torch.int32)
-            nout = torch.zeros(n, dtype=torch.int32)
-            dp, ndp, op, nop = _ptr(drafts), _ptr(nd), _ptr(out), _ptr(nout)
+            # plain ctypes buffers: per-step marshalling is on the critical path
+            drafts = (ctypes.c_int32 * (n * kk))()
+            nd = (ctypes.c_int32 * n)()
+            out = (ctypes.c_int32 * (n * (kk + 1)))()
+            nout = (ctypes.c_int32 * n)()
             for s in range(n):
                 drafter.push(state, s, toks[s])
             t_last = time.perf_counter()
-            remaining = sum(1 for d in done if not d)
-            while remaining:
-                nd_l = [0] * n
-                for s in range(n):
-                    if not done[s] and k:
-                        d = drafter.draft(state, s, min(k, max_new - len(toks[s]) - 1))
-                        if d:
-                            nd_l[s] = len(d)
-                            drafts[s, : len(d)] = torch.tensor(d, dtype=torch.int32)
-                nd.copy_(torch.tensor(nd_l, dtype=torch.int32))
-                remaining = lib.eng_spec_step(job, dp, ndp, op, nop)
+            live = [s for s in range(n) if not done[s]]
+            draft = drafter.draft
+            while live:
+                for s in live:
+                    d = draft(state, s, min(k, max_new - len(toks[s]) - 1)) if k else ()
+                    nd[s] = len(d)
+                    if d:
+                        drafts[s * kk : s * kk + len(d)] = d
+                remaining = lib.eng_spec_step(job, drafts, nd, out, nout)
                 if remaining < 0:
                     raise HFServeError(f"native engine rejected a spec step (rc={remaining})")
                 t_last = time.perf_counter()
-                no, ol = nout.tolist(), out.tolist()
-                for s in range(n):
-                    if no[s]:
-                        new = ol[s][: no[s]]
-                        toks[s].extend(new)
-                        drafter.push(state, s, new)
-                        if (stop_at_eos and new[-1] == eos_id) or len(toks[s]) >= max_new:
-                            done[s] = True
+                for s in live:
+                    m = nout[s]
+                    new = out[s * (kk + 1) : s * (kk + 1) + m]
+                    toks[s].extend(new)
+                    drafter.push(state, s, new)
+                    if (stop_at_eos and new[-1] == eos_id) or len(toks[s]) >= max_new:
+                        done[s] = True
+                live = [s for s in live if not done[s]]
+                if len(live) != remaining:
+                    raise HFServeError(f"spec bookkeeping diverged from the engine ({len(live)} != {remaining})")
         finally:
             lib.eng_spec_end(job, _ptr(counts), _ptr(lp))
         t_end = time.perf_counter()
@@ -449,54 +454,49 @@ class NgramDrafter:
             if m > 1 and len(h) >= m:
                 own[s].setdefault(tuple(h[-m:-1]), set()).add(t)
 
-    def _banned(self, state, s: int, ctx: list[int], tok: int) -> bool:
-        m = self.nrn
-        if m <= 1:
-            return m == 1 and (tok in ctx or tok in state[0][s])
-        if len(ctx) < m - 1:
-            return False
-        key = tuple(ctx[-(m - 1):])
-        _hist, bans, own = state
-        b = bans.get(key)
-        if b is not None and tok in b:
-            return True
-        b = own[s].get(key)
-        return b is not None and tok in b
-
     def draft(self, state, s: int, k: int) -> list[int]:
-        if k <= 0:
+        """Up to `k` tokens continuing stream `s` (fewer, or none, when the
+        table has no confident continuation or the next one would be banned)."""
+        if k <= 0 or not self.orders:
             return []
-        hist = state[0][s]
-        ctx = hist[-max(self.orders[0], self.nrn):] if self.orders else []
+        hist, bans, own = state
+        hs, own = hist[s], own[s]
+        m, V = self.nrn, self.V
+        ctx = hs[-max(self.orders[0], m - 1, 1):]
+        local: set = set()  # n-grams completed inside this draft
         out: list[int] = []
         for _ in range(k):
             tok = -1
+            L = len(ctx)
             for n in self.orders:
-                if len(ctx) < n:
+                if L < n:
                     continue
-                v = self.tables[n].get(self.pack(ctx[-n:]))
+                key = 0
+                for x in ctx[L - n:]:
+                    key = key * V + x
+                v = self.tables[n].get(key)
                 if v is not None:
                     tok = v
                     break
             if tok < 0:
                 break
-            # the in-draft tokens are not in the overlay yet: check them by hand
-            if self._banned(state, s, ctx, tok) or self._banned_local(ctx, tok, len(out)):
+            if m > 1 and L >= m - 1:
+                g = tuple(ctx[L - m + 1:])
+                b = bans.get(g)
+                if b is not None and tok in b:
+                    break
+                b = own.get(g)
+                if b is not None and tok in b:
+                    break
+                g = g + (tok,)
+                if g in local:
+                    break
+                local.add(g)
+            elif m == 1 and (tok in hs or tok in out):
                 break
             out.append(tok)
-            ctx = ctx + [tok]
+            ctx.append(tok)
         return out
-
-    def _banned_local(self, ctx: list[int], tok: int, n_new: int) -> bool:
-        """no-repeat-ngram against 4-grams that end inside the draft so far."""
-        m = self.nrn
-        if m <= 1 or n_new == 0 or len(ctx) < m - 1:
-            return False
-        tail = ctx[-(m - 1):]
-        for i in range(max(0, len(ctx) - (m - 1) - n_new), len(ctx) - (m - 1)):
-            if ctx[i : i + m - 1] == tail and ctx[i + m - 1] == tok:
-                return True
-        return False
 
 
 def build_ngram_tables(seqs, *, order: int = 3, min_conf: float = 0.5, min_count: int = 1, vocab: int) -> dict[int, dict[int, int]]:
@@ -599,6 +599,7 @@ class NativeGenerator(LeanGenerator):
         from .leanserve import _flag
 
         self._extra_penalties = _flag("BABBLE_HF_FREQUENCY_PENALTIES")
+        self.drafter, self.spec_k, spec_note = self._load_spec(model_dir)
         self.step = 0
         build = self.engine.build
         self.log.event(
@@ -617,6 +618,7 @@ class NativeGenerator(LeanGenerator):
             params=self.param_count,
             device="cpu",
             frequency_presence_penalties=self._extra_penalties,
+            native_spec=spec_note,
         )
 
     def _generate(self, prompt: str, *, max_new_tokens: int, best_of: int, use_prefix_cache: bool = True):
@@ -643,8 +645,14 @@ class NativeGenerator(LeanGenerator):
                     kv_out = torch.empty(self.engine.kv_floats(P))
             seed = int(torch.randint(0, 2**62, (1,)).item())
             entered = time.perf_counter()
-            out = self.engine.generate(
-                ids,
+            gen = self.engine.generate
+            extra = {}
+            if self.drafter is not None:
+                gen = self.engine.spec_generate
+                extra = dict(drafter=self.drafter, k=self.spec_k)
+            out = gen(
+                **extra,
+                ids=ids,
                 n=best_of,
                 max_new=max_new,
                 sampling=self._sampling(),
@@ -672,6 +680,32 @@ class NativeGenerator(LeanGenerator):
         )
         return text, _Result(tokens=out.tokens, mean_logprob=out.mean_logprob, best=out.best, stats=stats, prefix_reused=reused)
 
+    def _load_spec(self, model_dir: Path):
+        """`BABBLE_NATIVE_SPEC=1`: n-gram speculative decoding. The table comes
+        from `BABBLE_NATIVE_SPEC_TABLE` or `<model dir>/spec-ngram.pt`; without
+        one, spec stays off (logged). `BABBLE_NATIVE_SPEC_K` drafts per step."""
+        import os
+
+        from .leanserve import _flag
+
+        if not _flag("BABBLE_NATIVE_SPEC"):
+            return None, 0, "off"
+        try:
+            k = max(1, min(16, int(os.environ.get("BABBLE_NATIVE_SPEC_K", "3") or 3)))
+        except ValueError:
+            k = 3
+        path = Path(os.environ.get("BABBLE_NATIVE_SPEC_TABLE", "").strip() or (model_dir / "spec-ngram.pt"))
+        if not path.is_file():
+            return None, 0, f"off (no n-gram table at {path})"
+        try:
+            tables, vocab = load_ngram_tables(path)
+        except Exception as exc:  # a corrupt table must not take serving down
+            return None, 0, f"off (unreadable n-gram table {path}: {exc})"
+        if vocab != self.engine.cfg.vocab:
+            return None, 0, f"off (n-gram table vocab {vocab} != model vocab {self.engine.cfg.vocab})"
+        nrn = int(self.settings.no_repeat_ngram_size or 0)
+        return NgramDrafter(tables, vocab=vocab, no_repeat_ngram=nrn), k, f"on k={k} table={path}"
+
     def benchmark_metadata(self) -> dict[str, object]:
         opts = [
             "native C++ engine (AVX2/FMA, no transformers)",
@@ -684,6 +718,8 @@ class NativeGenerator(LeanGenerator):
         if self.prefix_cache.enabled:
             opts.append(f"prefix KV cache ({self.prefix_cache.max_bytes // (1024 * 1024)} MB)")
         opts.append("frequency/presence penalties on" if self._extra_penalties else "frequency/presence penalties off")
+        if self.drafter is not None:
+            opts.append(f"speculative decoding (n-gram drafts, k={self.spec_k})")
         return {
             "model": self.model_id,
             "params": self.param_count,
