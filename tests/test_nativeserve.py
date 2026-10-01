@@ -12,6 +12,7 @@ when artifacts/hf-booper-multiturn-v1 is absent.
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -451,6 +452,74 @@ def test_generator_prefix_cache_hits_across_turns(native_settings) -> None:
     before = gen.prefix_cache.stats()
     gen.benchmark_sample(second, max_new_tokens=4, best_of=2)
     assert gen.prefix_cache.stats() == before
+
+
+@needs_native
+def test_prewarm_leaves_only_the_new_message_to_prefill(native_settings) -> None:
+    from babble.conversation import ConversationTurn
+
+    gen = make_generator(native_settings)
+    gen.PREWARM_CHUNK = 5  # several chunks, each stored as a snapshot
+    kw = dict(max_turns=6, max_tokens=512, max_chars=6_000)
+    history = [ConversationTurn("w1 w2 w3 w4 w5", "w6 w7 w8 w9 w10 w11")]
+    gen(gen.conversation_prompt([], "w1 w2 w3 w4 w5", **kw))
+    warm_text = gen.conversation_prompt(history, "", **kw)
+    info = gen.prewarm(warm_text)
+    L = len(gen.tokenizer.encode(warm_text, add_special_tokens=False).ids) + 1
+    assert info["tokens"] == L and info["chunks"] >= 2 and not info["yielded"]
+    assert info["reused"] + info["prefilled"] == L
+    assert gen.prefix_cache.stats()["entries"] == 1  # each chunk replaced the last
+    assert gen.prewarm(warm_text)["prefilled"] == 0  # idempotent
+
+    prompt = gen.conversation_prompt(history, "w12 w13", **kw)
+    torch.manual_seed(7)
+    _t, hit = gen._generate(prompt, max_new_tokens=8, best_of=2)
+    P = len(gen._encode_prompt(prompt)[0])
+    assert hit.prefix_reused >= L - 1 and P - hit.prefix_reused <= 4
+    torch.manual_seed(7)
+    _t, cold = gen._generate(prompt, max_new_tokens=8, best_of=2, use_prefix_cache=False)
+    assert cold.tokens == hit.tokens  # the chunked warm KV == a cold prefill
+
+
+@needs_native
+def test_prewarm_yields_to_a_waiting_generation(native_settings) -> None:
+    gen = make_generator(native_settings)
+    gen._waiting = 1  # a real reply is queued for the engine
+    info = gen.prewarm("user: w1 w2 w3\nassistant: w4\nuser: ")
+    assert info["yielded"] and info["chunks"] == 0 and len(gen.prefix_cache) == 0
+    gen._waiting = 0
+    native_settings.lean_prefix_cache_mb = 0
+    assert make_generator(native_settings).prewarm("user: w1")["chunks"] == 0
+
+
+@needs_native
+def test_generation_preempts_a_running_prewarm(native_settings) -> None:
+    import threading
+
+    gen = make_generator(native_settings)
+    gen.PREWARM_CHUNK = 1
+    text = "user: " + " ".join(f"w{i % 30 + 1}" for i in range(200)) + "\nassistant: w1\nuser: "
+    started = threading.Event()
+    real = gen.engine.generate
+
+    def slow_generate(*a, **k):
+        # hold the first chunk until the real request is queued behind it
+        if not started.is_set():
+            started.set()
+            for _ in range(1000):
+                if gen._waiting:
+                    break
+                time.sleep(0.01)
+        return real(*a, **k)
+
+    gen.engine.generate = slow_generate
+    out = {}
+    warm = threading.Thread(target=lambda: out.update(gen.prewarm(text)))
+    warm.start()
+    started.wait(10)
+    gen("w1 w2")  # queues behind at most one chunk, then the warm stops
+    warm.join(30)
+    assert out["yielded"] and out["chunks"] < out["tokens"]
 
 
 @needs_native

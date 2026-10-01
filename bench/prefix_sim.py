@@ -63,6 +63,30 @@ USER_MESSAGES = [
 ]
 
 
+#: For --long: people paste things. Each message carries ~120-180 tokens of
+#: this, so eight turns overflow the 1536-token budget before the turn cap.
+PASTE = (
+    "ok so here is the paragraph from my notes that i am trying to understand, sorry it is long: "
+    "in a bimolecular nucleophilic substitution the nucleophile attacks the electrophilic carbon from "
+    "the side opposite the leaving group, so bond formation and bond breaking happen in a single "
+    "concerted step through a trigonal bipyramidal transition state. the rate depends on the "
+    "concentration of both the substrate and the nucleophile, and steric hindrance around the carbon "
+    "slows the reaction dramatically, which is why methyl and primary substrates react fastest while "
+    "tertiary substrates barely react at all. the stereochemistry at the carbon is inverted, like an "
+    "umbrella flipping inside out in the wind. polar aprotic solvents such as acetone, dmso and dmf "
+    "speed it up because they do not cage the nucleophile in a shell of hydrogen bonds. in contrast "
+    "the unimolecular pathway goes through a carbocation intermediate, so its rate only depends on "
+    "the substrate, it favors tertiary carbons, and it scrambles stereochemistry into a racemic mix."
+).split(" ")
+
+
+def long_message(turn: int, text: str) -> str:
+    n = 70 + (turn * 37) % 60
+    start = (turn * 23) % len(PASTE)
+    words = (PASTE[start:] + PASTE)[:n]
+    return f"{text}\n> {' '.join(words)}"
+
+
 def build(args):
     from babble.config import Settings
     from babble.core import Babble
@@ -136,6 +160,7 @@ def main() -> int:
     ap.add_argument("--cache-mb", type=int, default=128)
     ap.add_argument("--seed", type=int, default=1234)
     ap.add_argument("--no-prewarm", action="store_true")
+    ap.add_argument("--long", action="store_true", help="paste-heavy messages that overflow the token budget")
     ap.add_argument("--set", nargs=2, action="append", metavar=("FIELD", "VALUE"))
     args = ap.parse_args()
 
@@ -179,6 +204,8 @@ def main() -> int:
     for turn in range(args.turns):
         for c in range(args.channels):
             text = USER_MESSAGES[turn % len(USER_MESSAGES)]
+            if args.long and turn % 2 == 1:
+                text = long_message(turn, text)
             if args.channels > 1:
                 text = f"{text}" if c == 0 else f"{text} ({c})"
             n_before = len(rec.calls)
@@ -194,7 +221,7 @@ def main() -> int:
             row = dict(turn=turn + 1, channel=c, prompt_tokens=g["prompt_tokens"], reused=g["reused"],
                        ttft_ms=round(g["ttft_ms"], 2), total_ms=round(g["total_ms"], 1),
                        core_overhead_ms=round(wall - g["total_ms"], 2),
-                       visible_turns=g["prompt"].count("\nassistant: ") , user=text, reply=reply.content,
+                       visible_turns=g["prompt"].count("\nassistant: "), user=text, reply=reply.content,
                        prompt=g["prompt"])
             rows.append(row)
             print(f"t{turn + 1:02d} c{c} P={row['prompt_tokens']:5d} reused={row['reused']:5d} "
