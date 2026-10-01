@@ -887,13 +887,15 @@ void attend(Thread& T, const float* const* qs, int R, const int* lim, const char
       const int rr = std::min(6, R - r0);
       if (lim && lim[r0 + rr - 1] < b0) continue;  // this row tile is fully masked here (later tiles may not be)
       float* sr = s + (size_t)r0 * KB;
-      if (direct) qk_rows<P>(rr, qs + r0, kd, nb16, HD, scale, sr, kblk);
-      else qk_rows<KVF32>(rr, qs + r0, kf, nb16, HD, scale, sr, (size_t)HD * 16 * sizeof(float));
+      // on the causal diagonal this tile only needs keys up to its last row
+      const int kbt = lim ? std::min(kb, lim[r0 + rr - 1] - b0 + 1) : kb, nbt = (kbt + 15) / 16;
+      if (direct) qk_rows<P>(rr, qs + r0, kd, nbt, HD, scale, sr, kblk);
+      else qk_rows<KVF32>(rr, qs + r0, kf, nbt, HD, scale, sr, (size_t)HD * 16 * sizeof(float));
       for (int r = r0; r < r0 + rr; ++r) {
         float* row = s + (size_t)r * KB;
-        const int valid = lim ? std::min(kb, lim[r] - b0 + 1) : kb;
+        const int valid = lim ? std::min(kbt, lim[r] - b0 + 1) : kbt;
         if (valid <= 0) {
-          for (int t = 0; t < kb; t += 8) _mm256_storeu_ps(row + t, _mm256_setzero_ps());
+          for (int t = 0; t < kbt; t += 8) _mm256_storeu_ps(row + t, _mm256_setzero_ps());
           continue;
         }
         float mx = row[0];
@@ -905,7 +907,7 @@ void attend(Thread& T, const float* const* qs, int R, const int* lim, const char
           for (; t < valid; ++t) mx = std::max(mx, row[t]);
         }
         const float mold = T.am[r], mnew = std::max(mold, mx);
-        const float sum = exp_row(row, valid, kb, mnew);
+        const float sum = exp_row(row, valid, kbt, mnew);
         if (mnew != mold) {
           const float corr = std::exp2(mold - mnew);  // 0 on the first block (mold = -inf)
           T.al[r] *= corr;
@@ -918,8 +920,8 @@ void attend(Thread& T, const float* const* qs, int R, const int* lim, const char
         }
         T.al[r] += sum;
       }
-      if (direct) pv_rows(rr, sr, vd, kb, HD, T.ao + (size_t)r0 * HD);
-      else pv_rows(rr, sr, vf, kb, HD, T.ao + (size_t)r0 * HD);
+      if (direct) pv_rows(rr, sr, vd, kbt, HD, T.ao + (size_t)r0 * HD);
+      else pv_rows(rr, sr, vf, kbt, HD, T.ao + (size_t)r0 * HD);
     }
   }
 }
