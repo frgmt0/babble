@@ -866,7 +866,9 @@ class LeanGenerator:
             tokens = tokens[-budget:]
         return torch.tensor([[self.bos_id, *tokens, self.sep_id]], dtype=torch.long)
 
-    def conversation_prompt(self, history, current_user: str, *, max_turns: int, max_tokens: int, max_chars: int) -> str:
+    def conversation_prompt(
+        self, history, current_user: str, *, max_turns: int, max_tokens: int, max_chars: int, overflow_keep: float = 1.0
+    ) -> str:
         from .conversation import conversation_prompt_for_token_budget
 
         return conversation_prompt_for_token_budget(
@@ -876,6 +878,7 @@ class LeanGenerator:
             max_chars=max_chars,
             max_tokens=min(max(1, self._prompt_budget()), max(1, int(max_tokens))),
             token_count=lambda text: len(self.tokenizer.encode(text, add_special_tokens=False).ids),
+            overflow_keep=overflow_keep,
         )
 
     # ---- generation ----------------------------------------------------------

@@ -236,6 +236,14 @@ class Settings:
     # Character guard before tokenizer-level truncation. 0 disables this cap;
     # turn count still bounds persistent growth.
     conversation_max_chars: int = 6_000
+    # What fraction of the turn and token caps a conversation keeps once it
+    # overflows them. 1.0 slides the window one turn at a time, which changes
+    # the transcript's prefix on every turn, so the prefix KV cache misses and
+    # every reply pays a cold prefill of the whole history. 0.5 cuts the
+    # history back to half in one step; the turns after that extend a stable
+    # prefix and prefill only the new message. Prompts are byte-identical to
+    # 1.0 until the first overflow.
+    conversation_overflow_keep: float = 0.5
 
     # How much each kind of feedback is worth. These no longer touch training:
     # the objective is plain next-token prediction over unlabelled corpus text,
@@ -451,6 +459,7 @@ class Settings:
             conversation_max_turns=_env_int("BABBLE_CONVERSATION_MAX_TURNS", 6),
             conversation_max_tokens=_env_int("BABBLE_CONVERSATION_MAX_TOKENS", 512),
             conversation_max_chars=_env_int("BABBLE_CONVERSATION_MAX_CHARS", 6_000),
+            conversation_overflow_keep=_env_float("BABBLE_CONVERSATION_OVERFLOW_KEEP", 0.5),
             correction_boost=_env_float("BABBLE_CORRECTION_BOOST", 3.0),
             val_fraction=_env_float("BABBLE_VAL_FRACTION", 0.2),
             val_min_rows=_env_int("BABBLE_VAL_MIN_ROWS", 20),
