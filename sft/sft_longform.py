@@ -569,6 +569,430 @@ def _single_record_groups(source: str, records):
         ]
 
 
+# ------------------------------------------------- Q&A / knowledge data ---
+#
+# Sources for the qa-v1 run (`configs/sft/qa-mac.json`). Every builder yields
+# groups (lists of SFTRecord sharing a group_id) so the grouped val split keeps
+# related targets on one side, exactly like the conversational sources above.
+
+PERSONA_FILE = Path(__file__).resolve().parent / "data" / "booper_persona.jsonl"
+
+# Replies that assert another assistant's identity contradict booper's persona
+# ("I am Open Assistant", "as an AI language model"). Matched on the target
+# only; a prompt may still ask "are you chatgpt?".
+_IDENTITY_RE = re.compile(
+    r"open ?assistant|\blaion\b|chat ?gpt|\bopenai\b|\bgpt-?[34]|\bas an ai\b|\bi(?:'m| am) an ai\b"
+    r"|\blanguage model\b|\bai assistant\b",
+    re.I,
+)
+
+
+def _hash_rng(*parts) -> random.Random:
+    """Deterministic per-item RNG: same seed + same item -> same choices."""
+    digest = hashlib.sha256("\x1f".join(str(p) for p in parts).encode("utf-8")).digest()
+    return random.Random(int.from_bytes(digest[:8], "big"))
+
+
+def identity_clash(text: str) -> bool:
+    return bool(_IDENTITY_RE.search(text))
+
+
+DOLLY_CATEGORIES = (
+    "open_qa", "closed_qa", "general_qa", "brainstorming", "classification",
+    "information_extraction", "summarization",
+)
+
+
+def dolly_prompt(instruction: str, context: str) -> str:
+    """Dolly row -> user turn. Context-bearing rows keep their passage.
+
+    closed_qa answers are drawn from the passage ("born on July 10, 1981"),
+    so dropping it would teach confident recall of facts the 45M-active model
+    cannot know. The passage therefore always rides along in the user turn.
+    """
+    instruction, context = instruction.strip(), context.strip()
+    return f"{instruction}\n\n{context}" if context else instruction
+
+
+def _dolly_records(split: str = "train", revision: str | None = None, max_context: int = 2000, max_response: int = 1500):
+    """databricks/databricks-dolly-15k (CC-BY-SA-3.0), Q&A-shaped categories only."""
+    from datasets import load_dataset
+
+    ds = load_dataset("databricks/databricks-dolly-15k", split=split, streaming=True, revision=revision)
+    for row in ds:
+        if row["category"] not in DOLLY_CATEGORIES:
+            continue
+        response = (row["response"] or "").strip()
+        context = row["context"] or ""
+        if not response or len(response) > max_response or len(context) > max_context or identity_clash(response):
+            continue
+        yield dolly_prompt(row["instruction"] or "", context), response
+
+
+def oasst_tree_groups(messages, source: str = "oasst", max_response: int = 2000) -> list[list[SFTRecord]]:
+    """OASST message rows -> one group per English conversation tree.
+
+    At every prompter node the best-ranked assistant reply (rank 0, or the
+    only unranked reply) is the target, with the path from the root as its
+    history; every prompter follow-up under that reply is explored, so each
+    reviewed branch contributes its own targets. Deleted, review-failed and
+    synthetic messages are skipped, and nothing beneath a rejected reply is
+    used (its history would contain the rejected text).
+    """
+
+    def ok(m) -> bool:
+        return (
+            m.get("lang") == "en"
+            and not m.get("deleted")
+            and m.get("review_result") is not False
+            and not m.get("synthetic")
+            and bool((m.get("text") or "").strip())
+        )
+
+    children: dict[str, list[dict]] = defaultdict(list)
+    roots: list[dict] = []
+    for m in messages:
+        if not ok(m):
+            continue
+        if m.get("parent_id") is None:
+            if m.get("role") == "prompter":
+                roots.append(m)
+        else:
+            children[m["parent_id"]].append(m)
+
+    def best_reply(prompter: dict) -> dict | None:
+        replies = [c for c in children.get(prompter["message_id"], []) if c.get("role") == "assistant"]
+        ranked = [c for c in replies if c.get("rank") is not None]
+        if ranked:
+            return min(ranked, key=lambda c: c["rank"])
+        return replies[0] if len(replies) == 1 else None
+
+    groups: list[list[SFTRecord]] = []
+    for root in roots:
+        gid = _group_id("oasst-tree", root["message_tree_id"])
+        records: list[SFTRecord] = []
+        stack: list[tuple[dict, tuple[ConversationTurn, ...]]] = [(root, ())]
+        while stack:
+            prompter, history = stack.pop()
+            reply = best_reply(prompter)
+            if reply is None:
+                continue
+            user, answer = prompter["text"].strip(), reply["text"].strip()
+            if len(answer) > max_response or identity_clash(answer):
+                continue
+            records.append(SFTRecord(source=source, group_id=gid, current_user=user, response=answer, history=history))
+            turn = history + (ConversationTurn(user=user, assistant=answer),)
+            follow = [c for c in children.get(reply["message_id"], []) if c.get("role") == "prompter"]
+            stack.extend((c, turn) for c in reversed(follow))
+        if records:
+            groups.append(records)
+    return groups
+
+
+def _oasst_groups(split: str = "train", revision: str | None = None):
+    """OpenAssistant/oasst2 (Apache-2.0): streamed whole (~64 MB), then rebuilt into trees."""
+    from datasets import load_dataset
+
+    ds = load_dataset("OpenAssistant/oasst2", split=split, streaming=True, revision=revision)
+    keep = ("message_id", "parent_id", "message_tree_id", "text", "role", "lang", "review_result", "deleted", "rank", "synthetic")
+    rows = [{k: row.get(k) for k in keep} for row in ds if row.get("lang") == "en"]
+    yield from oasst_tree_groups(rows)
+
+
+SMOL_SHORT_SHARD = "data/smol-magpie-ultra/train-00005-of-00006.parquet"
+SMOL_SHORT_SKIP_CATEGORIES = ("coding", "role-playing", "creative-writing", "editing")
+
+
+def _smol_short_records(revision: str | None = None, max_chars: int = 900):
+    """Short first answers from SmolTalk smol-magpie-ultra (Apache-2.0).
+
+    Reads only the LAST train shard. longctx-v1's `--smoltalk-multiturn`
+    slice streamed the head of shard 0 (~20k conversations), so this is
+    disjoint by construction rather than by a dedupe pass. Coding /
+    role-play / editing / creative rows are skipped: booper's job here is
+    answering, not writing code.
+    """
+    from datasets import load_dataset
+
+    ds = load_dataset(
+        "HuggingFaceTB/smoltalk", data_files={"train": SMOL_SHORT_SHARD}, split="train", streaming=True, revision=revision
+    )
+    for row in ds:
+        if row.get("category") in SMOL_SHORT_SKIP_CATEGORIES or row.get("quality") not in ("good", "excellent", "average"):
+            continue
+        msgs = [m for m in row["messages"] if m["role"] in ("user", "assistant")]
+        if len(msgs) < 2 or msgs[0]["role"] != "user" or msgs[1]["role"] != "assistant":
+            continue
+        answer = msgs[1]["content"].strip()
+        if not answer or len(answer) > max_chars or identity_clash(answer):
+            continue
+        yield msgs[0]["content"].strip(), answer
+
+
+# Short-answer templating. A bare span ("Fernie Alpine Resort") is a fine
+# answer but one fixed wrapper would become a tic, so each item draws from
+# a pool; question-type pools keep the phrasing grammatical.
+_QA_GENERIC = (
+    "{a}", "{a}", "{a}!", "it's {a}", "that'd be {a}", "pretty sure it's {a}", "i think it's {a}",
+    "{a} i think", "{a}, if i remember right", "should be {a}", "oh that's {a}", "the answer's {a}",
+    "{a} afaik", "i believe it's {a}",
+)
+_QA_BY_TYPE = {
+    "who": ("{a}", "{a}", "that'd be {a}", "it was {a}", "pretty sure it's {a}", "{a} i think", "i think it was {a}", "{a}!"),
+    "when": ("{a}", "{a}", "in {a}", "that was {a}", "{a} i think", "pretty sure it was {a}", "i believe {a}", "{a}, if i remember right"),
+    "where": ("{a}", "{a}", "in {a}", "it's in {a}", "{a} i think", "pretty sure it's {a}", "that'd be {a}"),
+    "count": ("{a}", "{a}", "it's {a}", "{a} i think", "pretty sure it's {a}", "i believe {a}", "{a}!"),
+}
+_QA_PROMPTS = (
+    "{q}", "{q}", "{q}?", "{q}?", "{Q}?", "hey booper {q}", "do you know {q}?", "quick question, {q}?",
+    "random q but {q}", "booper {q}?", "{q} ??",
+)
+
+
+_YEARISH = re.compile(
+    r"(?:(?:january|february|march|april|may|june|july|august|september|october|november|december) )?"
+    r"\d{3,4}s?(?: (?:bc|bce|ad))?"
+)
+
+
+def _question_type(question: str) -> str | None:
+    q = question.lower().lstrip()
+    if q.startswith("who") or q.startswith("whom"):
+        return "who"
+    if q.startswith("when") or q.startswith("what year") or q.startswith("what date"):
+        return "when"
+    if q.startswith("where"):
+        return "where"
+    if q.startswith("how many") or q.startswith("how much"):
+        return "count"
+    return None
+
+
+def clean_short_answer(answers) -> str | None:
+    """1-3 short answer spans -> one phrase ("X", "X and Y", "X, Y and Z"); None if unusable."""
+    spans: list[str] = []
+    for a in answers:
+        a = re.sub(r"\s+", " ", str(a).replace("\xa0", " ")).strip().rstrip(".")
+        if a and a.lower() not in (s.lower() for s in spans):
+            spans.append(a)
+    if not spans or len(spans) > 3 or any(len(s) > 60 for s in spans):
+        return None
+    if len(spans) == 1:
+        return spans[0]
+    return ", ".join(spans[:-1]) + " and " + spans[-1]
+
+
+def short_answer_pair(question: str, answers, seed: int = 0) -> tuple[str, str] | None:
+    """NQ-style (question, answer spans) -> a casual (prompt, reply), deterministic per item."""
+    question = re.sub(r"\s+", " ", question).strip().rstrip("?").strip()
+    answer = clean_short_answer(answers)
+    if not question or answer is None:
+        return None
+    rng = _hash_rng(seed, "qa", question, answer)
+    pool = _QA_BY_TYPE.get(_question_type(question), _QA_GENERIC)
+    # "in {a}" only reads right for a bare year/decade/month-year (and never
+    # before an answer that already starts with a preposition).
+    if pool is _QA_BY_TYPE["when"] and not _YEARISH.fullmatch(answer.lower()):
+        pool = tuple(t for t in pool if not t.startswith("in "))
+    if re.match(r"(in|on|at|the year) ", answer.lower()):
+        pool = tuple(t for t in pool if "in {a}" not in t)
+    reply = rng.choice(pool).format(a=answer)
+    prompt = rng.choice(_QA_PROMPTS).format(q=question, Q=question[:1].upper() + question[1:])
+    return prompt, reply
+
+
+def _nq_records(split: str = "train", revision: str | None = None, seed: int = 0):
+    """google-research-datasets/nq_open (CC-BY-SA-3.0), TRAIN split only, templated into chat replies."""
+    from datasets import load_dataset
+
+    ds = load_dataset("google-research-datasets/nq_open", split=split, streaming=True, revision=revision)
+    for row in ds:
+        pair = short_answer_pair(row["question"], row["answer"], seed)
+        if pair:
+            yield pair
+
+
+# Synthetic arithmetic: generated, so always correct; problems are the split
+# unit, so a held-out problem never appears in train under another phrasing.
+_NUM_WORDS = (
+    "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen "
+    "sixteen seventeen eighteen nineteen twenty"
+).split()
+_ARITH_OPS = {
+    "+": ((" + ", "+", " plus "), ("add {a} and {b}", "{a} and {b} added together")),
+    "-": ((" - ", "-", " minus "), ("subtract {b} from {a}", "{a} take away {b}")),
+    "*": ((" * ", "*", " x ", "x", " times ", " multiplied by ", " × "), ("multiply {a} by {b}", "{a} times {b}")),
+    "/": ((" / ", "/", " divided by ", " ÷ "), ("divide {a} by {b}", "{a} divided by {b}")),
+}
+_ARITH_SYMBOL = {"+": ("+",), "-": ("-",), "*": ("*", "x", "×"), "/": ("/", "÷")}
+_ARITH_PROMPTS = (
+    "what's {e}", "what is {e}", "whats {e}", "{e}?", "{e}", "how much is {e}", "what does {e} equal",
+    "{e} = ?", "quick math: {e}", "can you do {e}", "booper what's {e}", "hey what is {e}?", "solve {e}",
+    "{e} is what", "what's {e}?", "What is {e}?", "whats {e} lol", "do you know what {e} is",
+)
+_ARITH_REPLIES = (
+    "{r}", "{r}", "{r}", "{r}!", "that's {r}", "it's {r}", "{eq}", "{eq}", "easy, {r}", "{a} {s} {b} is {r}",
+    "that'd be {r}", "{r} :)", "pretty sure it's {r}",
+)
+
+
+def arith_problem(rng: random.Random) -> tuple[int, str, int, int]:
+    """(a, op, b, result). Small numbers mostly; division is always exact."""
+    op = rng.choice("+-*/")
+    if op == "+":
+        hi = 20 if rng.random() < 0.7 else 100
+        a, b = rng.randint(0, hi), rng.randint(0, hi)
+        return a, op, b, a + b
+    if op == "-":
+        hi = 20 if rng.random() < 0.7 else 100
+        a = rng.randint(0, hi)
+        b = rng.randint(0, a)
+        return a, op, b, a - b
+    if op == "*":
+        if rng.random() < 0.8:
+            a, b = rng.randint(0, 12), rng.randint(0, 12)
+        else:
+            a, b = rng.randint(2, 20), rng.randint(2, 9)
+        return a, op, b, a * b
+    b, q = rng.randint(1, 12), rng.randint(0, 12)
+    return b * q, op, b, q
+
+
+def arith_pair(a: int, op: str, b: int, result: int, rng: random.Random) -> tuple[str, str]:
+    """One phrasing of a problem and one casual (always correct) reply."""
+
+    def num(n: int) -> str:
+        return _NUM_WORDS[n] if n <= 20 and rng.random() < 0.1 else str(n)
+
+    infix, verbal = _ARITH_OPS[op]
+    if rng.random() < 0.15:
+        prompt = rng.choice(verbal).format(a=num(a), b=num(b))
+        if rng.random() < 0.5:
+            prompt += "?"
+    else:
+        expr = f"{num(a)}{rng.choice(infix)}{num(b)}"
+        prompt = rng.choice(_ARITH_PROMPTS).format(e=expr)
+    sym = rng.choice(_ARITH_SYMBOL[op])
+    eq = f"{a} {sym} {b} = {result}" if rng.random() < 0.7 else f"{a}{sym}{b}={result}"
+    reply = rng.choice(_ARITH_REPLIES).format(r=result, eq=eq, a=a, b=b, s=sym)
+    return prompt, reply
+
+
+def arith_groups(seed: int, source: str = "arith", variants: int = 3):
+    """Endless deterministic stream of problems, each a group of distinct phrasings."""
+    rng = random.Random(f"{seed}\x1farith")
+    seen: set[tuple[int, str, int]] = set()
+    while True:
+        a, op, b, result = arith_problem(rng)
+        if (a, op, b) in seen:
+            continue
+        seen.add((a, op, b))
+        gid = _group_id("arith", str(a), op, str(b))
+        pairs: dict[tuple[str, str], None] = {}
+        for _ in range(variants * 3):
+            pairs.setdefault(arith_pair(a, op, b, result, rng), None)
+            if len(pairs) >= variants:
+                break
+        yield [SFTRecord(source=source, group_id=gid, current_user=p, response=r) for p, r in pairs]
+
+
+def load_persona(path: Path = PERSONA_FILE) -> list[tuple[str, str]]:
+    """Read and validate the hand-written persona pairs (raises on a bad file)."""
+    pairs: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for n, line in enumerate(Path(path).read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        if set(row) != {"prompt", "response"}:
+            raise ValueError(f"{path}:{n}: expected exactly prompt/response keys, got {sorted(row)}")
+        prompt, response = (str(row[k]).strip() for k in ("prompt", "response"))
+        if not prompt or not response:
+            raise ValueError(f"{path}:{n}: empty prompt or response")
+        if prompt.lower() in seen:
+            raise ValueError(f"{path}:{n}: duplicate prompt {prompt!r}")
+        seen.add(prompt.lower())
+        pairs.append((prompt, response))
+    if not pairs:
+        raise ValueError(f"{path}: no persona pairs")
+    return pairs
+
+
+_PERSONA_PREFIXES = ("hey booper ", "booper ", "yo booper ", "hey ", "@booper ")
+
+
+def persona_variants(prompt: str, seed: int = 0) -> list[str]:
+    """The authored prompt plus surface variants people actually type."""
+    rng = _hash_rng(seed, "persona", prompt)
+    bare = prompt.rstrip("?!. ").lower()
+    out = [prompt, bare + ("" if prompt.endswith("?") else "?"), rng.choice(_PERSONA_PREFIXES) + bare]
+    if not bare.startswith(("hey", "hi", "yo", "hello", "good", "booper")):
+        out.append(bare[:1].upper() + bare[1:] + "?")
+    return list(dict.fromkeys(out))
+
+
+def _persona_key(prompt: str) -> str:
+    return re.sub(r"[^a-z0-9 ]+", "", prompt.lower()).strip()
+
+
+def persona_groups(path: Path = PERSONA_FILE, seed: int = 0, source: str = "persona"):
+    """One group per normalized question, so "who are you" and "who are you?"
+    (and their surface variants) can never straddle the train/val split."""
+    grouped: dict[str, list[SFTRecord]] = {}
+    for prompt, response in load_persona(path):
+        key = _persona_key(prompt)
+        gid = _group_id("persona", key)
+        group = grouped.setdefault(key, [])
+        have = {(r.current_user, r.response) for r in group}
+        for v in persona_variants(prompt, seed):
+            if (v, response) not in have:
+                group.append(SFTRecord(source=source, group_id=gid, current_user=v, response=response))
+    yield from grouped.values()
+
+
+_WIKI_PROMPTS = (
+    "tell me about {t}", "what do you know about {t}?", "do you know anything about {t}", "can you tell me about {t}?",
+    "explain {t} to me", "{t}?", "what's the deal with {t}", "tell me something about {t}", "who or what is {t}?",
+    "hey booper tell me about {t}", "give me a quick rundown on {t}",
+)
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"(])")
+
+
+def wiki_lead_pair(title: str, text: str, seed: int = 0, max_chars: int = 450) -> tuple[str, str] | None:
+    """Article -> ("tell me about X", first 1-3 sentences of the lead), or None if it is not a topic page."""
+    title = title.strip()
+    if (
+        not title
+        or title.lower().startswith(("list of", "lists of"))
+        or re.fullmatch(r"[\d\s\-–/]+(bc|bce|ad)?", title.lower())
+        or "(disambiguation)" in title
+    ):
+        return None
+    lead = text.strip().split("\n", 1)[0].strip()
+    if len(lead) < 60 or "may refer to" in lead or lead.endswith(":"):
+        return None
+    sentences = _SENTENCE_END.split(lead)
+    rng = _hash_rng(seed, "wiki", title)
+    keep = sentences[: rng.randint(1, 3)]
+    while len(keep) > 1 and len(" ".join(keep)) > max_chars:
+        keep.pop()
+    answer = " ".join(keep).strip()
+    if len(answer) > max_chars or len(answer) < 40 or not answer.endswith((".", "!", "?")):
+        return None
+    return rng.choice(_WIKI_PROMPTS).format(t=title), answer
+
+
+def _wiki_records(revision: str | None = None, config: str = "20231101.simple", seed: int = 0):
+    """wikimedia/wikipedia Simple English (CC-BY-SA-3.0 / GFDL) lead sentences, streamed."""
+    from datasets import load_dataset
+
+    ds = load_dataset("wikimedia/wikipedia", config, split="train", streaming=True, revision=revision)
+    for row in ds:
+        pair = wiki_lead_pair(row["title"], row["text"], seed)
+        if pair:
+            yield pair
+
+
 def _collect_groups(groups, want: int) -> list[SFTRecord]:
     """Take whole groups until at least `want` examples have been collected."""
     out: list[SFTRecord] = []
@@ -663,14 +1087,52 @@ def _tokenize_records(tok, records: list[SFTRecord], args):
     return examples
 
 
-def _source_gate(candidate: dict[str, float], baseline: dict[str, float], limit: float):
+def _source_gate(
+    candidate: dict[str, float],
+    baseline: dict[str, float],
+    limit: float,
+    *,
+    guard_sources: tuple[str, ...] | list[str] = (),
+    guard_limit: float | None = None,
+    multiturn_must_improve: tuple[str, ...] | list[str] | None = None,
+):
     """Gate role-formatted candidates against the legacy base and role baseline.
 
     ``*_single`` and ``*_legacy`` contain identical targets, so their
     cross-format delta measures the actual migration the user will experience.
     History-bearing views must improve, since learning follow-ups is the
     objective of this run rather than an optional side effect of rehearsal.
+
+    ``multiturn_must_improve`` narrows that last rule to the named sources
+    (None = every source, the multi-turn/longctx behaviour); the other
+    ``*_multiturn`` views are then held to the ordinary ``limit``. A follow-on
+    run whose objective is not multi-turn (qa-v1) cannot be expected to
+    strictly improve conversation views the base was already trained on.
+
+    ``guard_sources`` are rehearsal sources the run must not break: each must
+    be present in the baseline (a missing guard fails the gate instead of
+    silently passing it) and its role and multi-turn views must stay within
+    ``guard_limit`` (default ``limit``).
     """
+    passed, regressions = _source_gate_core(candidate, baseline, limit, multiturn_must_improve)
+    if limit < 0 or not guard_sources:
+        return passed, regressions
+    g_limit = limit if guard_limit is None else guard_limit
+    for name in guard_sources:
+        if name not in baseline or name not in candidate:
+            regressions[f"{name}_guard_missing"] = float("inf")
+            passed = False
+            continue
+        for view in (name, f"{name}_multiturn"):
+            if view in baseline:
+                delta = candidate.get(view, float("inf")) - baseline[view]
+                regressions[f"{view}_guard"] = delta
+                if not delta <= g_limit:
+                    passed = False
+    return passed, regressions
+
+
+def _source_gate_core(candidate, baseline, limit, multiturn_must_improve=None):
     complete = candidate.keys() == baseline.keys()
     finite = all(math.isfinite(value) for value in (*candidate.values(), *baseline.values()))
     primary = {
@@ -699,10 +1161,33 @@ def _source_gate(candidate: dict[str, float], baseline: dict[str, float], limit:
         or (
             all(delta <= limit for delta in primary.values())
             and all(delta <= limit for delta in retention.values())
-            and all(delta < 0 for delta in multiturn.values())
+            and all(
+                delta < 0 if multiturn_must_improve is None or name in multiturn_must_improve else delta <= limit
+                for name, delta in multiturn.items()
+            )
         )
     )
     return passed, regressions
+
+
+def _get(args, name, default=0):
+    return getattr(args, name, default)
+
+
+def _mix(args, name) -> float:
+    return float(_get(args, name, 0.0) or 0.0)
+
+
+def render_example(tok, example) -> tuple[str, str]:
+    """Decode a tokenized example into (model input, supervised target) text.
+
+    The target is exactly the span that receives loss in `batches`
+    (``toks[n_prompt:]``: the response plus <eos>), so logging it proves the
+    targets are response-only.
+    """
+    toks, n_prompt = example
+    ids = [int(t) for t in toks]
+    return tok.decode(ids[:n_prompt], skip_special_tokens=False), tok.decode(ids[n_prompt:], skip_special_tokens=False)
 
 
 def build_examples(tok, args, log):
@@ -722,6 +1207,14 @@ def build_examples(tok, args, log):
         ("discord", args.mix_discord, 1, lambda: _discord_groups("train", args.history_turns, args.discord_revision, gif=gif_stats["discord"])),
         # Appended last so earlier sources keep their split seeds (seed + index).
         ("ultrachat", args.mix_ultrachat, 1, lambda: _ultrachat_groups("train_sft", args.ultrachat_revision, gif=gif_stats["ultrachat"])),
+        # Q&A / knowledge sources (qa-v1), again appended so older presets keep their seeds.
+        ("dolly", _mix(args, "mix_dolly"), max(1, _get(args, "repeat_dolly", 1)), lambda: _single_record_groups("dolly", _dolly_records("train", args.dolly_revision))),
+        ("oasst", _mix(args, "mix_oasst"), max(1, _get(args, "repeat_oasst", 1)), lambda: _oasst_groups("train", args.oasst_revision)),
+        ("smol_short", _mix(args, "mix_smol_short"), 1, lambda: _single_record_groups("smol_short", _smol_short_records(args.smoltalk_revision, args.smol_short_max_chars))),
+        ("nq", _mix(args, "mix_nq"), 1, lambda: _single_record_groups("nq", _nq_records("train", args.nq_revision, args.seed))),
+        ("arith", _mix(args, "mix_arith"), 1, lambda: arith_groups(args.seed)),
+        ("persona", _mix(args, "mix_persona"), max(1, _get(args, "repeat_persona", 1)), lambda: persona_groups(Path(args.persona_file), args.seed)),
+        ("wiki", _mix(args, "mix_wiki"), 1, lambda: _single_record_groups("wiki", _wiki_records(args.wiki_revision, args.wiki_config, args.seed))),
     ]
     gif_on = bool(getattr(args, "gif_tags", False))
     gif_stats: dict[str, GifStats | None] = {
@@ -817,6 +1310,14 @@ def build_examples(tok, args, log):
         for name, weight, _, _ in sources
         if weight > 0
     }
+    for name, examples in train_by_source.items():
+        # Logged, not stored in `counts`: counts feed the resume signature of
+        # older presets, which must stay byte-identical.
+        tokens = sum(len(e[0]) for e in examples)
+        log(f"data: {name} tokenized {len(examples)} train examples, mean len {tokens / max(len(examples), 1):.0f}")
+        for example in examples[: max(0, int(_get(args, "log_examples", 0)))]:
+            prompt, target = render_example(tok, example)
+            log(f"data example ({name}): input={prompt[-300:]!r} target={target[:300]!r}")
     empty_train = [name for name, examples in train_by_source.items() if not examples]
     if empty_train:
         raise RuntimeError(f"active sources produced no train examples after tokenization: {empty_train}")
@@ -1294,6 +1795,19 @@ class Reporter:
 
 
 DATA_CACHE_VERSION = 1
+# Bump when a qa source's filtering/templating changes, so caches and resume
+# signatures of qa presets invalidate (older presets never include it).
+QA_DATA_VERSION = 1
+# mix flag -> other build inputs of that source (recorded only when active).
+QA_SOURCE_SETTINGS = {
+    "mix_dolly": ("dolly_revision", "repeat_dolly"),
+    "mix_oasst": ("oasst_revision", "repeat_oasst"),
+    "mix_smol_short": ("smoltalk_revision", "smol_short_max_chars"),
+    "mix_nq": ("nq_revision",),
+    "mix_arith": (),
+    "mix_persona": ("persona_file", "repeat_persona"),
+    "mix_wiki": ("wiki_revision", "wiki_config"),
+}
 
 
 def _data_extras(args) -> dict:
@@ -1308,6 +1822,16 @@ def _data_extras(args) -> dict:
         extras["gif_tags"] = True
         extras["gif_synth_rate"] = args.gif_synth_rate
         extras["gif_synth_max_frac"] = args.gif_synth_max_frac
+    # qa-v1 sources: recorded only when active, so pre-qa signatures are unchanged.
+    for mix, settings in QA_SOURCE_SETTINGS.items():
+        if _mix(args, mix) > 0:
+            extras[mix] = _mix(args, mix)
+            for name in settings:
+                extras[name] = _get(args, name, None)
+    if extras.get("mix_persona"):
+        extras["persona_sha256"] = hashlib.sha256(Path(args.persona_file).read_bytes()).hexdigest()
+    if any(name.startswith("mix_") and name in QA_SOURCE_SETTINGS for name in extras):
+        extras["qa_data_version"] = QA_DATA_VERSION
     return extras
 
 
@@ -1375,6 +1899,28 @@ def main():
     ap.add_argument("--mix-ultrachat", type=float, default=0.0, help="HuggingFaceH4/ultrachat_200k multi-turn Q&A (MIT)")
     ap.add_argument("--ultrachat-revision", default=None)
     ap.add_argument("--smoltalk-multiturn", action="store_true", help="train every assistant turn of SmolTalk's multi-turn subsets")
+    # Q&A / knowledge sources (qa-v1). Licences: every one permits redistribution of derived models.
+    ap.add_argument("--mix-dolly", type=float, default=0.0, help="databricks/databricks-dolly-15k Q&A categories (CC-BY-SA-3.0); passage kept in the user turn")
+    ap.add_argument("--dolly-revision", default=None)
+    ap.add_argument("--repeat-dolly", type=int, default=1, help="dolly has ~12k usable rows; epochs to upsample it (keep <= 3)")
+    ap.add_argument("--mix-oasst", type=float, default=0.0, help="OpenAssistant/oasst2 English, best-ranked replies as multi-turn trees (Apache-2.0)")
+    ap.add_argument("--oasst-revision", default=None)
+    ap.add_argument("--repeat-oasst", type=int, default=1, help="oasst2 English has ~15k usable targets; epochs to upsample (keep <= 3)")
+    ap.add_argument("--mix-smol-short", type=float, default=0.0, help="HuggingFaceTB/smoltalk smol-magpie-ultra short first answers from the last train shard (Apache-2.0); uses --smoltalk-revision")
+    ap.add_argument("--smol-short-max-chars", type=int, default=900, help="longest smol-magpie-ultra answer kept by --mix-smol-short")
+    ap.add_argument("--mix-nq", type=float, default=0.0, help="google-research-datasets/nq_open train questions, answers templated into casual replies (CC-BY-SA-3.0)")
+    ap.add_argument("--nq-revision", default=None)
+    ap.add_argument("--mix-arith", type=float, default=0.0, help="synthetic + - x / arithmetic generated in-script from --seed (no licence; always correct)")
+    ap.add_argument("--mix-persona", type=float, default=0.0, help="hand-written booper identity pairs from --persona-file (project-authored)")
+    ap.add_argument("--persona-file", default=str(PERSONA_FILE))
+    ap.add_argument("--repeat-persona", type=int, default=1, help="persona is ~150 pairs (x3-4 surface variants); epochs to upsample (keep <= 3)")
+    ap.add_argument("--mix-wiki", type=float, default=0.0, help="wikimedia/wikipedia Simple English lead sentences as 'tell me about X' (CC-BY-SA-3.0/GFDL)")
+    ap.add_argument("--wiki-revision", default=None)
+    ap.add_argument("--wiki-config", default="20231101.simple")
+    ap.add_argument("--log-examples", type=int, default=0, help="log this many rendered train examples (input + loss-bearing target) per source at data build")
+    ap.add_argument("--guard-sources", nargs="*", default=[], help="rehearsal sources that must be present in val and stay within --guard-max-regression (role + multiturn views)")
+    ap.add_argument("--guard-max-regression", type=float, default=None, help="regression ceiling for --guard-sources (default: --max-source-val-regression)")
+    ap.add_argument("--multiturn-must-improve", nargs="*", default=None, help="only these sources' *_multiturn views must strictly improve (others: regression ceiling); default all")
     ap.add_argument("--gif-tags", action="store_true", help="rewrite gif URLs/filenames into [gif: words] tags")
     ap.add_argument("--gif-synth-rate", type=float, default=0.0, help="chance a short Discord reaction becomes a synthetic gif tag")
     ap.add_argument("--gif-synth-max-frac", type=float, default=0.03, help="hard cap: synthetic gif targets / Discord targets")
@@ -1576,6 +2122,9 @@ def main():
             candidate_sources,
             baseline_source_val,
             args.max_source_val_regression,
+            guard_sources=tuple(args.guard_sources or ()),
+            guard_limit=args.guard_max_regression,
+            multiturn_must_improve=args.multiturn_must_improve,
         )
         improved = candidate_val < best_val
         if source_ok and improved and step > 0:
