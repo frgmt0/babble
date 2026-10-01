@@ -828,7 +828,7 @@ class LeanGenerator:
         self.max_position_embeddings = self.model.cfg.max_pos
         self.prefix_cache = PrefixKVCache(
             max_entries=int(getattr(settings, "lean_prefix_cache_entries", 32)),
-            max_bytes=int(getattr(settings, "lean_prefix_cache_mb", 128)) * 1024 * 1024,
+            max_bytes=int(getattr(settings, "lean_prefix_cache_mb", 512)) * 1024 * 1024,
         )
         self._lock = threading.Lock()
         self._extra_penalties = _flag("BABBLE_HF_FREQUENCY_PENALTIES")

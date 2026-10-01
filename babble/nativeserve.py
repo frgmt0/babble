@@ -350,7 +350,7 @@ class NativeGenerator(LeanGenerator):
         self.max_position_embeddings = self.engine.cfg.max_pos
         self.prefix_cache = PrefixKVCache(
             max_entries=int(getattr(settings, "lean_prefix_cache_entries", 32)),
-            max_bytes=int(getattr(settings, "lean_prefix_cache_mb", 128)) * 1024 * 1024,
+            max_bytes=int(getattr(settings, "lean_prefix_cache_mb", 512)) * 1024 * 1024,
         )
         self._lock = threading.Lock()
         # Real generations waiting for `_lock`. `prewarm` works in chunks and
@@ -375,12 +375,21 @@ class NativeGenerator(LeanGenerator):
             load_s=round(load_s, 2),
             prefix_cache_mb=self.prefix_cache.max_bytes // (1024 * 1024),
             prefix_cache_entries=self.prefix_cache.max_entries,
+            # how many full-budget conversation snapshots fit (engine's own KV size)
+            prefix_cache_full_snapshots=self.prefix_cache.max_bytes // max(1, self.engine.kv_bytes(self._full_prompt_tokens())),
             model_dir=str(model_dir),
             step=self.step,
             params=self.param_count,
             device="cpu",
             frequency_presence_penalties=self._extra_penalties,
         )
+
+    def _full_prompt_tokens(self) -> int:
+        """Positions in a snapshot of a prompt at the conversation token budget."""
+        cap = self._prompt_budget()
+        if getattr(self.settings, "conversation_context", False):
+            cap = min(cap, int(getattr(self.settings, "conversation_max_tokens", cap)))
+        return max(1, cap + 2)  # <bos> ... <sep>
 
     @contextlib.contextmanager
     def _priority_lock(self):

@@ -218,7 +218,13 @@ class Settings:
     # (~600 MB). Off: prefill dequantizes transiently (lower RSS, slower TTFT).
     lean_prefill_fp32: bool = True
     # Prefix KV cache across turns (lean and native). 0 MB or 0 entries disables it.
-    lean_prefix_cache_mb: int = 128
+    # One live conversation holds one snapshot of up to conversation_max_tokens
+    # positions (fp32 KV on the 6-layer/896 longctx model: 43 KB per position,
+    # 66 MB at 1536). 128 MB did not fit two full-length conversations, so two
+    # busy channels evicted each other every turn; 512 MB holds ~7 (live sees
+    # at most 4 concurrent chains within 10 minutes). `model.load` logs the
+    # capacity in full-length snapshots for the served model.
+    lean_prefix_cache_mb: int = 512
     lean_prefix_cache_entries: int = 32
 
     # Multi-turn prompting is a checkpoint format switch, not merely a UI
@@ -453,7 +459,7 @@ class Settings:
             hf_runtime=os.environ.get("BABBLE_HF_RUNTIME", "transformers").strip().lower() or "transformers",
             lean_precision=os.environ.get("BABBLE_LEAN_PRECISION", "int8").strip().lower() or "int8",
             lean_prefill_fp32=_env_bool("BABBLE_LEAN_PREFILL_FP32", True),
-            lean_prefix_cache_mb=_env_int("BABBLE_LEAN_PREFIX_CACHE_MB", 128),
+            lean_prefix_cache_mb=_env_int("BABBLE_LEAN_PREFIX_CACHE_MB", 512),
             lean_prefix_cache_entries=_env_int("BABBLE_LEAN_PREFIX_CACHE_ENTRIES", 32),
             conversation_context=_env_bool("BABBLE_CONVERSATION_CONTEXT", False),
             conversation_max_turns=_env_int("BABBLE_CONVERSATION_MAX_TURNS", 6),
