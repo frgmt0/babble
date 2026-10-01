@@ -12,6 +12,7 @@ when artifacts/hf-booper-multiturn-v1 is absent.
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -150,6 +151,16 @@ def engine(snapshot):
 def engine16(snapshot, request):
     """16-bit KV: q16 (the serving default: K int16 + per-position scale, V
     fp16) and plain fp16."""
+    if not NATIVE_OK:
+        pytest.skip(WHY)
+    eng = NativeEngine(snapshot, threads=3, kv=request.param)
+    yield eng
+    eng.close()
+
+
+@pytest.fixture(scope="module", params=["fp32", "q16", "fp16"])
+def spec_engine(snapshot, request):
+    """The speculative-decoding / verify path in every KV storage mode."""
     if not NATIVE_OK:
         pytest.skip(WHY)
     eng = NativeEngine(snapshot, threads=3, kv=request.param)
@@ -562,6 +573,75 @@ def test_generator_prefix_cache_hits_across_turns(native_settings) -> None:
 
 
 @needs_native
+def test_prewarm_leaves_only_the_new_message_to_prefill(native_settings) -> None:
+    from babble.conversation import ConversationTurn
+
+    gen = make_generator(native_settings)
+    gen.PREWARM_CHUNK = 5  # several chunks, each stored as a snapshot
+    kw = dict(max_turns=6, max_tokens=512, max_chars=6_000)
+    history = [ConversationTurn("w1 w2 w3 w4 w5", "w6 w7 w8 w9 w10 w11")]
+    gen(gen.conversation_prompt([], "w1 w2 w3 w4 w5", **kw))
+    warm_text = gen.conversation_prompt(history, "", **kw)
+    info = gen.prewarm(warm_text)
+    L = len(gen.tokenizer.encode(warm_text, add_special_tokens=False).ids) + 1
+    assert info["tokens"] == L and info["chunks"] >= 2 and info["yielded"] == 0 and info["done"]
+    assert info["reused"] + info["prefilled"] == L
+    assert gen.prefix_cache.stats()["entries"] == 1  # each chunk replaced the last
+    assert gen.prewarm(warm_text)["prefilled"] == 0  # idempotent
+
+    prompt = gen.conversation_prompt(history, "w12 w13", **kw)
+    torch.manual_seed(7)
+    _t, hit = gen._generate(prompt, max_new_tokens=8, best_of=2)
+    P = len(gen._encode_prompt(prompt)[0])
+    assert hit.prefix_reused >= L - 1 and P - hit.prefix_reused <= 4
+    torch.manual_seed(7)
+    _t, cold = gen._generate(prompt, max_new_tokens=8, best_of=2, use_prefix_cache=False)
+    assert cold.tokens == hit.tokens  # the chunked warm KV == a cold prefill
+
+
+@needs_native
+def test_prewarm_yields_to_a_waiting_generation(native_settings) -> None:
+    gen = make_generator(native_settings)
+    gen._waiting = 1  # a real reply is queued for the engine
+    info = gen.prewarm("user: w1 w2 w3\nassistant: w4\nuser: ", deadline_s=0.2)
+    assert info["yielded"] == 1 and info["chunks"] == 0 and not info["done"] and len(gen.prefix_cache) == 0
+    gen._waiting = 0
+    native_settings.lean_prefix_cache_mb = 0
+    assert make_generator(native_settings).prewarm("user: w1")["chunks"] == 0
+
+
+@needs_native
+def test_generation_preempts_a_running_prewarm(native_settings) -> None:
+    import threading
+
+    gen = make_generator(native_settings)
+    gen.PREWARM_CHUNK = 1
+    text = "user: " + " ".join(f"w{i % 30 + 1}" for i in range(200)) + "\nassistant: w1\nuser: "
+    started = threading.Event()
+    real = gen.engine.generate
+
+    def slow_generate(*a, **k):
+        # hold the first chunk until the real request is queued behind it
+        if not started.is_set():
+            started.set()
+            for _ in range(1000):
+                if gen._waiting:
+                    break
+                time.sleep(0.01)
+        return real(*a, **k)
+
+    gen.engine.generate = slow_generate
+    out = {}
+    warm = threading.Thread(target=lambda: out.update(gen.prewarm(text)))
+    warm.start()
+    started.wait(10)
+    gen("w1 w2")  # queues behind at most one chunk; the warm resumes after it
+    warm.join(30)
+    # it stepped aside for the reply, then finished the warm afterwards
+    assert out["yielded"] >= 1 and out["done"] and out["chunks"] >= out["tokens"] - 1
+
+
+@needs_native
 def test_frequency_penalties_follow_the_hf_gate(native_settings, monkeypatch) -> None:
     native_settings.frequency_penalty, native_settings.presence_penalty = 0.3, 0.2
     gen = make_generator(native_settings)
@@ -734,3 +814,281 @@ def test_real_greedy_batch4_equals_batch1_and_prefix_restore(real_engine) -> Non
     _, kv = real_engine.forward(ids[:cut], export=True)
     restored = real_engine.generate(ids, n=1, start=cut, kv_in=kv, kv_in_len=cut, **kw).tokens[0]
     assert restored == one
+
+
+# --------------------------------------------------------------------------
+# prefill GEMM modes (BABBLE_NATIVE_GEMM / BABBLE_NATIVE_GEMM_MIN_ROWS)
+# --------------------------------------------------------------------------
+
+
+def _engine_with(snapshot, monkeypatch, gemm: str | None, min_rows: int | None) -> NativeEngine:
+    for name, value in (("BABBLE_NATIVE_GEMM", gemm), ("BABBLE_NATIVE_GEMM_MIN_ROWS", min_rows)):
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, str(value))
+    return NativeEngine(snapshot, threads=3)
+
+
+@needs_native
+def test_fp32_prepacked_panels_are_bit_identical(snapshot, monkeypatch) -> None:
+    ids = _ids(70, 11)
+    outs = []
+    for gemm, rows in (("fp32-noprepack", None), (None, 1), (None, 100000)):
+        eng = _engine_with(snapshot, monkeypatch, gemm, rows)
+        outs.append((eng.full_logits(ids), eng.decode_logits(ids[:30], prefill=20)))
+        eng.close()
+    for full, dec in outs[1:]:
+        assert torch.equal(full, outs[0][0])
+        assert torch.equal(dec, outs[0][1])
+
+
+@needs_native
+# a8 everywhere is a quality trade: on this random tiny model it moves logits a
+# lot (an fp64 fake-quant forward gives the same 0.80 max rel. error, i.e. it is
+# the quantization, not the kernel), so only the attention-input GEMM is bounded.
+@pytest.mark.parametrize("gemm,tol", [("a16", 2e-3), ("qkv=a8", 0.03), ("qkv=a8,o=a16,w13=fp32,w2=a16", 0.03), ("a8", 2.0)])
+def test_quantized_activation_modes_track_fp32(snapshot, monkeypatch, gemm, tol) -> None:
+    ids = _ids(70, 12)
+    ref_eng = _engine_with(snapshot, monkeypatch, None, None)
+    ref = ref_eng.full_logits(ids)
+    ref_eng.close()
+    eng = _engine_with(snapshot, monkeypatch, gemm, 1)
+    got = eng.full_logits(ids)
+    # decode-sized steps never take the quantized path: decode == fp32 decode
+    dec = eng.decode_logits(ids[:12], prefill=1)
+    eng.close()
+    rel = float((got - ref).abs().max() / ref.abs().max())
+    assert torch.isfinite(got).all()
+    assert 0 < rel < tol, rel
+    ref_eng = _engine_with(snapshot, monkeypatch, None, None)
+    ref_dec = ref_eng.decode_logits(ids[:12], prefill=1)
+    ref_eng.close()
+    assert torch.equal(dec, ref_dec)
+
+
+# --------------------------------------------------------------------------
+# speculative decoding (BABBLE_NATIVE_SPEC)
+# --------------------------------------------------------------------------
+
+
+class _ScriptDrafter:
+    """Test drafter: proposes ``f(history)`` (same begin/push/draft protocol as
+    `NgramDrafter`)."""
+
+    def __init__(self, f):
+        self.f = f
+
+    def begin(self, prompt, n):
+        return [list(prompt) for _ in range(n)]
+
+    def push(self, state, s, toks):
+        state[s].extend(toks)
+
+    def draft(self, state, s, k):
+        return self.f(state[s])[:k]
+
+
+def _greedy_oracle(engine, ids, n_tokens, corrupt_every=0):
+    """Drafter function proposing the true greedy continuation (optionally with
+    every `corrupt_every`-th position replaced, to exercise rejection)."""
+    full = engine.generate(ids, n=1, max_new=n_tokens + 8, sampling=GREEDY, eos_id=EOS, seed=0, greedy=True,
+                           stop_at_eos=False).tokens[0]
+    seq = ids + full
+
+    def f(hist):
+        if hist != seq[: len(hist)]:
+            return []
+        out = list(seq[len(hist):len(hist) + 8])
+        if corrupt_every:
+            out = [(t + 1) % VOCAB if (len(hist) + i) % corrupt_every == 0 else t for i, t in enumerate(out)]
+        return out
+
+    return f
+
+
+@needs_native
+@pytest.mark.parametrize("k", [1, 2, 3, 5])
+def test_spec_greedy_equals_generate(spec_engine, k) -> None:
+    """The verify path (per-row stream-cache positions, KV rollback on
+    rejection) reproduces plain greedy decoding token for token."""
+    from babble.nativeserve import NgramDrafter, build_ngram_tables
+
+    g = torch.Generator().manual_seed(3)
+    corpus = [torch.randint(4, VOCAB, (40,), generator=g).tolist() for _ in range(30)]
+    ngram = NgramDrafter(build_ngram_tables(corpus, order=3, min_conf=0.0, vocab=VOCAB), vocab=VOCAB, no_repeat_ngram=3)
+    for seed in range(4):
+        ids = _ids(18, 40 + seed)
+        drafters = [ngram, _ScriptDrafter(_greedy_oracle(spec_engine, ids, 40)),
+                    _ScriptDrafter(_greedy_oracle(spec_engine, ids, 40, corrupt_every=3)),
+                    _ScriptDrafter(lambda h: [int(h[-1]) % VOCAB] * 8)]
+        for n in (1, 3):
+            for stop in (False, True):
+                kw = dict(n=n, max_new=40, sampling=SamplingConfig(1.0, 0, 1.0, 1.15, 3), eos_id=EOS, seed=seed,
+                          greedy=True, stop_at_eos=stop)
+                want = spec_engine.generate(ids, **kw)
+                for d in drafters:
+                    got = spec_engine.spec_generate(ids, drafter=d, k=k, **kw)
+                    assert got.tokens == want.tokens and got.counts == want.counts, (seed, n, stop, d)
+
+
+@needs_native
+def test_spec_accepts_a_perfect_draft_in_few_steps(spec_engine) -> None:
+    ids = _ids(18, 50)
+    calls = []
+    oracle = _greedy_oracle(spec_engine, ids, 32)
+
+    def f(h):
+        calls.append(len(h))
+        return oracle(h)
+
+    kw = dict(n=1, max_new=32, sampling=GREEDY, eos_id=EOS, seed=0, greedy=True, stop_at_eos=False)
+    got = spec_engine.spec_generate(ids, drafter=_ScriptDrafter(f), k=7, **kw)
+    assert got.tokens == spec_engine.generate(ids, **kw).tokens
+    assert len(calls) == 4  # 1 prefill token + 4 steps x (7 drafts + 1 bonus) >= 32
+
+
+def _exact_marginals(engine, ids, cfg, depth):
+    """Exact distributions of reply tokens 1..depth under the warp (enumerated)."""
+    margs = [torch.zeros(VOCAB) for _ in range(depth)]
+    frontier = [(list(ids), 1.0)]
+    for d in range(depth):
+        nxt = []
+        for hist, pr in frontier:
+            p = engine.warp_probs(engine.full_logits(hist)[-1], hist, cfg).double()
+            margs[d] += pr * p
+            if d + 1 < depth:
+                nxt += [(hist + [t], pr * float(p[t])) for t in torch.nonzero(p).flatten().tolist()]
+        frontier = nxt
+    return [m.float() for m in margs]
+
+
+@needs_native
+def test_spec_sampling_matches_the_target_distribution(spec_engine) -> None:
+    """Exact speculative sampling leaves the output distribution unchanged:
+    reply tokens 2 and 3 (made by the verify path, with history-dependent
+    repetition / no-repeat-ngram warps) follow the enumerated distribution,
+    for a good drafter (mostly accepted) and a bad one (mostly rejected, so
+    residual draws), as closely as plain sampling does."""
+    ids = _ids(6, 77)
+    cfg = SamplingConfig(1.0, 6, 0.95, 1.3, 2)
+    exact = _exact_marginals(spec_engine, ids, cfg, 3)
+
+    def top_draft(h):  # the target's own modes, history-aware: high acceptance
+        p = spec_engine.warp_probs(spec_engine.full_logits(h)[-1], h, cfg)
+        a = int(p.argmax())
+        p2 = spec_engine.warp_probs(spec_engine.full_logits(h + [a])[-1], h + [a], cfg)
+        return [a, int(p2.argmax())]
+
+    drafters = {
+        "good": _ScriptDrafter(top_draft),
+        "bad": _ScriptDrafter(lambda h: [int(h[-1]), (int(h[-1]) + 1) % VOCAB]),
+    }
+    calls = 250
+    draws = 64 * calls
+    for name, d in [("plain", None), *drafters.items()]:
+        hits = [torch.zeros(VOCAB) for _ in range(3)]
+        for seed in range(calls):
+            kw = dict(n=64, max_new=3, sampling=cfg, eos_id=EOS, seed=1000 + seed, stop_at_eos=False)
+            out = spec_engine.generate(ids, **kw) if d is None else spec_engine.spec_generate(ids, drafter=d, k=2, **kw)
+            for row in out.tokens:
+                assert len(row) == 3
+                for j in range(3):
+                    hits[j][row[j]] += 1
+        for j in range(3):
+            emp = hits[j] / draws
+            tv = float((emp - exact[j]).abs().sum()) / 2
+            assert tv < 0.03, (name, j, tv)
+            assert bool(((hits[j] > 0) <= (exact[j] > 0)).all()), (name, j)  # never a masked token
+
+
+@needs_native
+def test_spec_sampled_invariants_and_logprob_scale(spec_engine) -> None:
+    from babble.nativeserve import NgramDrafter, build_ngram_tables
+
+    ids = _ids(30, 2)
+    cfg = SamplingConfig(0.9, 20, 0.95, 1.15, 3)
+    g = torch.Generator().manual_seed(9)
+    corpus = [torch.randint(4, VOCAB, (60,), generator=g).tolist() for _ in range(50)]
+    d = NgramDrafter(build_ngram_tables(corpus, order=2, min_conf=0.0, vocab=VOCAB), vocab=VOCAB, no_repeat_ngram=3)
+    stopped = False
+    plain, spec = [], []
+    for seed in range(20):
+        a = spec_engine.generate(ids, n=4, max_new=24, sampling=cfg, eos_id=EOS, seed=seed)
+        out = spec_engine.spec_generate(ids, n=4, max_new=24, sampling=cfg, eos_id=EOS, seed=seed, drafter=d, k=3)
+        assert [r[0] for r in out.tokens] == [r[0] for r in a.tokens]  # same prefill draw
+        for row, count in zip(out.tokens, out.counts):
+            assert len(row) == count >= 1
+            assert EOS not in row[:-1]
+            stopped |= row[-1] == EOS and len(row) < 24
+            seq = ids + row
+            grams = [tuple(seq[i:i + 3]) for i in range(len(seq) - 2)]
+            assert len(grams) == len(set(grams))
+        assert out.best == max(range(4), key=lambda i: (out.mean_logprob[i], -i))
+        assert out.ttft_s <= out.last_s <= out.total_s
+        plain += a.mean_logprob
+        spec += out.mean_logprob
+    assert stopped
+    # same quantity (mean post-warp log-prob of the chosen tokens), same scale
+    assert abs(sum(plain) / len(plain) - sum(spec) / len(spec)) < 0.25
+
+
+def test_ngram_drafter_respects_no_repeat_ngram_and_roundtrips(tmp_path) -> None:
+    from babble.nativeserve import NgramDrafter, build_ngram_tables, load_ngram_tables, save_ngram_tables
+
+    seqs = [[5, 6, 7, 8, 5, 6, 7, 9]] * 3 + [[10, 11, 12]]
+    tables = build_ngram_tables(seqs, order=2, min_conf=0.0, vocab=VOCAB)
+    save_ngram_tables(tables, tmp_path / "t.pt", vocab=VOCAB)
+    loaded, v = load_ngram_tables(tmp_path / "t.pt")
+    assert v == VOCAB and loaded == tables
+    d = NgramDrafter(loaded, vocab=VOCAB, no_repeat_ngram=0)
+    st = d.begin([1, 10], 1)
+    assert d.draft(st, 0, 2) == [11, 12]
+    # no-repeat-3gram: (10, 11) was already followed by 12 -> 12 is never proposed after it
+    d3 = NgramDrafter(loaded, vocab=VOCAB, no_repeat_ngram=3)
+    st = d3.begin([10, 11, 12, 1, 10], 1)
+    assert d3.draft(st, 0, 3) == [11]
+    d3.push(st, 0, [11, 13])
+    assert d3.draft(st, 0, 3) == []  # 13 has no continuation
+    # a context whose top continuation is not confident enough drafts nothing
+    weak = NgramDrafter(build_ngram_tables([[1, 2], [1, 3], [1, 4]], order=1, min_conf=0.5, vocab=VOCAB), vocab=VOCAB)
+    assert weak.draft(weak.begin([1], 1), 0, 2) == []
+
+
+@needs_native
+def test_generator_spec_flag(native_settings, monkeypatch, tmp_path) -> None:
+    from babble.nativeserve import build_ngram_tables, save_ngram_tables
+
+    log = _Log()
+    monkeypatch.setenv("BABBLE_NATIVE_SPEC", "1")
+    monkeypatch.setenv("BABBLE_NATIVE_SPEC_TABLE", str(tmp_path / "missing.pt"))
+    gen = make_generator(native_settings, log)
+    assert gen.drafter is None and "no n-gram table" in dict(log.events)["model.load"]["native_spec"]
+    g = torch.Generator().manual_seed(1)
+    corpus = [torch.randint(4, VOCAB, (40,), generator=g).tolist() for _ in range(20)]
+    save_ngram_tables(build_ngram_tables(corpus, order=3, min_conf=0.0, vocab=VOCAB), tmp_path / "t.pt", vocab=VOCAB)
+    monkeypatch.setenv("BABBLE_NATIVE_SPEC_TABLE", str(tmp_path / "t.pt"))
+    monkeypatch.setenv("BABBLE_NATIVE_SPEC_K", "2")
+    native_settings.lean_prefix_cache_mb = 0
+    gen = make_generator(native_settings)
+    assert gen.drafter is not None and gen.spec_k == 2
+    assert any("speculative" in o for o in gen.benchmark_metadata()["optimizations"])
+    out = gen("w1 w2")
+    assert all(tok in WORDS for tok in out.text.split())
+    monkeypatch.setenv("BABBLE_NATIVE_SPEC", "0")
+    assert make_generator(native_settings).drafter is None
+
+
+@needs_native
+@pytest.mark.parametrize("chunk", [1, 3, 4, 7])
+def test_verify_forward_matches_full_prefill(spec_engine, chunk) -> None:
+    """Multi-row verify steps (per-row cache index), with every chunk first fed
+    as rejected junk and rolled back, give the full-prefill logits."""
+    ids = _ids(45, 13)
+    full = spec_engine.full_logits(ids)
+    for prefill in (1, 9):
+        for junk in (False, True):
+            got = spec_engine.verify_logits(ids, prefill=prefill, chunk=chunk, junk=junk)
+            # 16-bit KV: a 1e-7 path difference can flip a rounding of a later K/V
+            tol = 2e-4 if spec_engine.kv == "fp32" else 2e-3
+            assert torch.allclose(got, full, atol=tol), (prefill, junk, float((got - full).abs().max()))

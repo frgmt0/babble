@@ -218,7 +218,13 @@ class Settings:
     # (~600 MB). Off: prefill dequantizes transiently (lower RSS, slower TTFT).
     lean_prefill_fp32: bool = True
     # Prefix KV cache across turns (lean and native). 0 MB or 0 entries disables it.
-    lean_prefix_cache_mb: int = 128
+    # One live conversation holds one snapshot of up to conversation_max_tokens
+    # positions (fp32 KV on the 6-layer/896 longctx model: 43 KB per position,
+    # 66 MB at 1536). 128 MB did not fit two full-length conversations, so two
+    # busy channels evicted each other every turn; 512 MB holds ~7 (live sees
+    # at most 4 concurrent chains within 10 minutes). `model.load` logs the
+    # capacity in full-length snapshots for the served model.
+    lean_prefix_cache_mb: int = 512
     lean_prefix_cache_entries: int = 32
 
     # Multi-turn prompting is a checkpoint format switch, not merely a UI
@@ -236,6 +242,14 @@ class Settings:
     # Character guard before tokenizer-level truncation. 0 disables this cap;
     # turn count still bounds persistent growth.
     conversation_max_chars: int = 6_000
+    # What fraction of the turn and token caps a conversation keeps once it
+    # overflows them. 1.0 slides the window one turn at a time, which changes
+    # the transcript's prefix on every turn, so the prefix KV cache misses and
+    # every reply pays a cold prefill of the whole history. 0.5 cuts the
+    # history back to half in one step; the turns after that extend a stable
+    # prefix and prefill only the new message. Prompts are byte-identical to
+    # 1.0 until the first overflow.
+    conversation_overflow_keep: float = 0.5
 
     # How much each kind of feedback is worth. These no longer touch training:
     # the objective is plain next-token prediction over unlabelled corpus text,
@@ -445,12 +459,13 @@ class Settings:
             hf_runtime=os.environ.get("BABBLE_HF_RUNTIME", "transformers").strip().lower() or "transformers",
             lean_precision=os.environ.get("BABBLE_LEAN_PRECISION", "int8").strip().lower() or "int8",
             lean_prefill_fp32=_env_bool("BABBLE_LEAN_PREFILL_FP32", True),
-            lean_prefix_cache_mb=_env_int("BABBLE_LEAN_PREFIX_CACHE_MB", 128),
+            lean_prefix_cache_mb=_env_int("BABBLE_LEAN_PREFIX_CACHE_MB", 512),
             lean_prefix_cache_entries=_env_int("BABBLE_LEAN_PREFIX_CACHE_ENTRIES", 32),
             conversation_context=_env_bool("BABBLE_CONVERSATION_CONTEXT", False),
             conversation_max_turns=_env_int("BABBLE_CONVERSATION_MAX_TURNS", 6),
             conversation_max_tokens=_env_int("BABBLE_CONVERSATION_MAX_TOKENS", 512),
             conversation_max_chars=_env_int("BABBLE_CONVERSATION_MAX_CHARS", 6_000),
+            conversation_overflow_keep=_env_float("BABBLE_CONVERSATION_OVERFLOW_KEEP", 0.5),
             correction_boost=_env_float("BABBLE_CORRECTION_BOOST", 3.0),
             val_fraction=_env_float("BABBLE_VAL_FRACTION", 0.2),
             val_min_rows=_env_int("BABBLE_VAL_MIN_ROWS", 20),

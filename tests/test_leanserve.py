@@ -433,6 +433,22 @@ def test_prefix_cache_hit_miss_dominance_and_eviction() -> None:
     assert cache.lookup(torch.tensor([7] * 30))[1] == 0
 
 
+def test_prefix_cache_shared_role_prefix_does_not_refresh_a_stale_entry() -> None:
+    per_tok = 2 * 4 * 4
+    cache = PrefixKVCache(max_entries=8, max_bytes=per_tok * 130)
+    head = [1, 2, 3, 4]  # every transcript starts "<bos>user: "
+    stale = torch.tensor(head + [10] * 56)
+    live = torch.tensor(head + [20] * 56)
+    cache.store(stale, *_kv(60))
+    cache.store(live, *_kv(60))
+    # an unrelated (e.g. trimmed) window shares only the role prefix with both
+    other = torch.tensor(head + [30] * 20)
+    assert cache.lookup(other)[1] == 4
+    cache.store(other, *_kv(24))  # over budget: one 60-token entry must go
+    assert cache.lookup(live)[1] == 60  # the live one survived
+    assert cache.lookup(stale)[1] == 4
+
+
 def test_prefix_cache_disabled_by_zero_budget() -> None:
     cache = PrefixKVCache(max_entries=0, max_bytes=1 << 20)
     cache.store(torch.tensor([1, 2]), *_kv(2))
