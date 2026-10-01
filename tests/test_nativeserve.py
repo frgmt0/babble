@@ -314,6 +314,9 @@ def test_long_context_tiling_matches_transformers(long_snapshot) -> None:
         kw = dict(max_new=24, sampling=GREEDY, eos_id=EOS, seed=0, greedy=True, stop_at_eos=False)
         one = eng.generate(ids[:650], n=1, **kw).tokens[0]
         assert all(t == one for t in eng.generate(ids[:650], n=4, **kw).tokens)
+        # more streams than one decode row tile (QBMAX=48)
+        kw["max_new"] = 6
+        assert all(t == one[:6] for t in eng.generate(ids[:650], n=50, **kw).tokens)
     finally:
         eng.close()
     for kv in ("q16", "fp16"):
