@@ -20,6 +20,16 @@ emits ``<eos>`` leaves the batch (row compaction); generation stops when all
 have. The engine draws from its own RNG, seeded per call from torch's global
 generator, so `torch.manual_seed` still makes a run reproducible.
 
+Speculative decoding (opt-in, ``BABBLE_NATIVE_SPEC=1``): `NgramDrafter`
+proposes up to ``BABBLE_NATIVE_SPEC_K`` tokens per stream from a static n-gram
+table (``BABBLE_NATIVE_SPEC_TABLE``, default ``<model dir>/spec-ngram.pt``;
+build it with ``bench/extreme/spec_ngram.py``); the engine verifies all
+streams' drafts in one forward and accepts them by exact speculative sampling
+against the warped distribution, warping each position with the history it
+would have had (so repetition / no-repeat-ngram stay exact). The output
+distribution is unchanged and greedy output is identical; only the RNG
+consumption differs, so a fixed seed gives different samples with spec on.
+
 Unusable here (CPU without AVX2/FMA/F16C, no compiler, failed build, a
 snapshot shape the kernels do not implement) raises `NativeUnavailable`, which
 `hfserve.make_generator` logs and answers with the lean runtime.
