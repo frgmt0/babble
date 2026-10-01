@@ -626,3 +626,54 @@ def test_real_greedy_batch4_equals_batch1_and_prefix_restore(real_engine) -> Non
     _, kv = real_engine.forward(ids[:cut], export=True)
     restored = real_engine.generate(ids, n=1, start=cut, kv_in=kv, kv_in_len=cut, **kw).tokens[0]
     assert restored == one
+
+
+# --------------------------------------------------------------------------
+# prefill GEMM modes (BABBLE_NATIVE_GEMM / BABBLE_NATIVE_GEMM_MIN_ROWS)
+# --------------------------------------------------------------------------
+
+
+def _engine_with(snapshot, monkeypatch, gemm: str | None, min_rows: int | None) -> NativeEngine:
+    for name, value in (("BABBLE_NATIVE_GEMM", gemm), ("BABBLE_NATIVE_GEMM_MIN_ROWS", min_rows)):
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, str(value))
+    return NativeEngine(snapshot, threads=3)
+
+
+@needs_native
+def test_fp32_prepacked_panels_are_bit_identical(snapshot, monkeypatch) -> None:
+    ids = _ids(70, 11)
+    outs = []
+    for gemm, rows in (("fp32-noprepack", None), (None, 1), (None, 100000)):
+        eng = _engine_with(snapshot, monkeypatch, gemm, rows)
+        outs.append((eng.full_logits(ids), eng.decode_logits(ids[:30], prefill=20)))
+        eng.close()
+    for full, dec in outs[1:]:
+        assert torch.equal(full, outs[0][0])
+        assert torch.equal(dec, outs[0][1])
+
+
+@needs_native
+# a8 everywhere is a quality trade: on this random tiny model it moves logits a
+# lot (an fp64 fake-quant forward gives the same 0.80 max rel. error, i.e. it is
+# the quantization, not the kernel), so only the attention-input GEMM is bounded.
+@pytest.mark.parametrize("gemm,tol", [("a16", 2e-3), ("qkv=a8", 0.03), ("qkv=a8,o=a16,w13=fp32,w2=a16", 0.03), ("a8", 2.0)])
+def test_quantized_activation_modes_track_fp32(snapshot, monkeypatch, gemm, tol) -> None:
+    ids = _ids(70, 12)
+    ref_eng = _engine_with(snapshot, monkeypatch, None, None)
+    ref = ref_eng.full_logits(ids)
+    ref_eng.close()
+    eng = _engine_with(snapshot, monkeypatch, gemm, 1)
+    got = eng.full_logits(ids)
+    # decode-sized steps never take the quantized path: decode == fp32 decode
+    dec = eng.decode_logits(ids[:12], prefill=1)
+    eng.close()
+    rel = float((got - ref).abs().max() / ref.abs().max())
+    assert torch.isfinite(got).all()
+    assert 0 < rel < tol, rel
+    ref_eng = _engine_with(snapshot, monkeypatch, None, None)
+    ref_dec = ref_eng.decode_logits(ids[:12], prefill=1)
+    ref_eng.close()
+    assert torch.equal(dec, ref_dec)
