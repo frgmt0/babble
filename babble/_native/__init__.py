@@ -210,6 +210,8 @@ def _declare(lib: ctypes.CDLL) -> ctypes.CDLL:
     lib.eng_spec_step.argtypes = [vp, vp, vp, vp, vp]  # session, drafts, nd, out, nout
     lib.eng_spec_end.restype = None
     lib.eng_spec_end.argtypes = [vp, vp, vp]  # session, counts, logprob
+    lib.eng_forward_verify.restype = i32
+    lib.eng_forward_verify.argtypes = [vp, vp, i32, i32, i32, i32, vp]
     lib.eng_warp_probs.restype = i32
     lib.eng_warp_probs.argtypes = [vp, i32, vp, i32, ctypes.POINTER(SampleParams), vp]
     return lib

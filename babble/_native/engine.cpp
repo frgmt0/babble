@@ -1272,6 +1272,8 @@ void spec_accept(SpecJob& J, int a, Thread& T) {
   J.cur[s] = out[e - 1];
 }
 
+void forward_body(void* arg, int tid) { forward(*static_cast<Engine*>(arg), tid); }
+
 void spec_step_body(void* arg, int tid) {
   SpecJob& J = *static_cast<SpecJob*>(arg);
   Engine& E = *J.E;
@@ -1628,6 +1630,53 @@ void eng_spec_end(void* job, int32_t* counts, double* logprob) {
   }
   J->E->grow = nullptr;
   delete J;
+}
+
+// Verify-path probe (correctness gate): prefill `prefill` tokens, then feed the
+// rest of `ids` through the spec verify forward in chunks of `chunk` rows of one
+// stream (decode path, per-row cache index). With `junk`, every chunk is first
+// fed as wrong tokens at the same positions and then re-fed correctly -- the
+// rejected-draft rollback, where stale K/V past the stream length must not
+// leak. out: [T][V] logits (row r predicts token r+1), like eng_forward.
+int eng_forward_verify(void* p, const int32_t* ids, int T, int prefill, int chunk, int junk, float* out) {
+  Engine* E = static_cast<Engine*>(p);
+  if (T < 1 || T > E->maxctx || prefill < 1 || prefill > T || chunk < 1) return -1;
+  for (int i = 0; i < T; ++i)
+    if (ids[i] < 0 || ids[i] >= E->V) return -2;
+  E->ensure_rows(std::max(prefill, chunk));
+  E->ensure_prefix(prefill);
+  E->ensure_streams(1, T - prefill + chunk + 1);
+  E->ensure_logits(std::max(prefill, chunk));
+  E->tokens = ids;
+  E->M = prefill;
+  E->start = 0;
+  E->decode = false;
+  E->grow = nullptr;
+  E->logits_from = 0;
+  E->pool.run(forward_body, E);
+  memcpy(out, E->logits, (size_t)prefill * E->V * 4);
+  E->P = prefill;
+  std::vector<int32_t> rows(chunk);
+  std::vector<int> sid(chunk, 0), g(chunk);
+  for (int i = prefill; i < T; i += chunk) {
+    const int c = std::min(chunk, T - i);
+    for (int pass = junk ? 0 : 1; pass < 2; ++pass) {
+      for (int j = 0; j < c; ++j) {
+        rows[j] = pass ? ids[i + j] : (int32_t)(((int64_t)ids[i + j] * 7 + 3 + j) % E->V);
+        g[j] = i - prefill + j;
+      }
+      E->tokens = rows.data();
+      E->M = c;
+      E->decode = true;
+      E->sid = sid.data();
+      E->grow = g.data();
+      E->logits_from = 0;
+      E->pool.run(forward_body, E);
+    }
+    memcpy(out + (size_t)i * E->V, E->logits, (size_t)c * E->V * 4);
+  }
+  E->grow = nullptr;
+  return 0;
 }
 
 // Sampler probe for tests: the post-warp distribution the sampler draws from,

@@ -838,3 +838,16 @@ def test_generator_spec_flag(native_settings, monkeypatch, tmp_path) -> None:
     assert all(tok in WORDS for tok in out.text.split())
     monkeypatch.setenv("BABBLE_NATIVE_SPEC", "0")
     assert make_generator(native_settings).drafter is None
+
+
+@needs_native
+@pytest.mark.parametrize("chunk", [1, 3, 4, 7])
+def test_verify_forward_matches_full_prefill(engine, chunk) -> None:
+    """Multi-row verify steps (per-row cache index), with every chunk first fed
+    as rejected junk and rolled back, give the full-prefill logits."""
+    ids = _ids(45, 13)
+    full = engine.full_logits(ids)
+    for prefill in (1, 9):
+        for junk in (False, True):
+            got = engine.verify_logits(ids, prefill=prefill, chunk=chunk, junk=junk)
+            assert torch.allclose(got, full, atol=2e-4), (prefill, junk, float((got - full).abs().max()))

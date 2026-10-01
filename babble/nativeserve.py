@@ -224,6 +224,17 @@ class NativeEngine:
             raise ValueError("eng_forward_incremental rejected its arguments")
         return out
 
+    def verify_logits(self, ids: list[int], prefill: int = 1, chunk: int = 4, junk: bool = True) -> torch.Tensor:
+        """``[T, vocab]`` through the spec verify forward: ``prefill`` tokens
+        batched, the rest as ``chunk``-row verify steps of one stream (each
+        first fed as rejected junk and rolled back when ``junk``)."""
+        t = torch.tensor(ids, dtype=torch.int32)
+        out = torch.empty(len(ids), self.cfg.vocab)
+        rc = self.lib.eng_forward_verify(self._h, _ptr(t), len(ids), int(prefill), int(chunk), int(junk), _ptr(out))
+        if rc != 0:
+            raise ValueError(f"eng_forward_verify rejected its arguments (rc={rc})")
+        return out
+
     # ---- generation ------------------------------------------------------------
 
     def generate(
