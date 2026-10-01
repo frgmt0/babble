@@ -435,6 +435,7 @@ struct Engine {
   bool decode = false;
   const int* sid = nullptr;  // decode: row -> stream
   int g = 0;                 // decode: index in stream cache
+  const int* grow = nullptr; // decode: per-row stream-cache index (verify), overrides g when set
   int logits_from = 0;       // rows [logits_from, M) get logits
 
   size_t kv_stride_k() const { return (size_t)Pcap * HD; }
@@ -629,7 +630,8 @@ float* normed(Engine& E, int tid, const float* w) {
   return E.xn;
 }
 
-inline int position(const Engine& E, int m) { return E.decode ? E.P + E.g : E.start + m; }
+inline int row_g(const Engine& E, int m) { return E.grow ? E.grow[m] : E.g; }
+inline int position(const Engine& E, int m) { return E.decode ? E.P + row_g(E, m) : E.start + m; }
 
 // One forward pass over E.M rows (prompt tokens, or one token per stream).
 void forward(Engine& E, int tid) {
@@ -682,7 +684,7 @@ void forward(Engine& E, int tid) {
     if (E.decode) {
       // one item per head: RoPE + cache append for every stream, then the shared
       // prefix is scored for all streams at once (read once), tails per stream
-      const int n2 = E.g + 1;
+      // rows of one stream at increasing g (spec verify) see their own causal tail
       for (int h = tid; h < NH; h += nt) {
         float* kpb = E.kp(l, h);
         float* vpb = E.vp(l, h);
@@ -691,8 +693,8 @@ void forward(Engine& E, int tid) {
           float* q = E.qkv + (size_t)m * QKV + h * HD;
           rope(q, E.cosT + (size_t)pos * half, E.sinT + (size_t)pos * half, half);
           rope(q + H, E.cosT + (size_t)pos * half, E.sinT + (size_t)pos * half, half);
-          put_k(E.ks(l, s, h), E.g, q + H, HD);
-          memcpy(E.vs(l, s, h) + (size_t)E.g * HD, q + 2 * H, HD * 4);
+          put_k(E.ks(l, s, h), row_g(E, m), q + H, HD);
+          memcpy(E.vs(l, s, h) + (size_t)row_g(E, m) * HD, q + 2 * H, HD * 4);
         }
         for (int r0 = 0; r0 < M; r0 += 6) {
           const int R = std::min(6, M - r0);
@@ -702,15 +704,16 @@ void forward(Engine& E, int tid) {
           }
           if (E.P > 0) qk_scores(qs, R, kpb, E.P, sc, ld, HD, ascale);
           for (int r = 0; r < R; ++r)
-            qk_scores(qs + r, 1, E.ks(l, E.sid[r0 + r], h), n2, sc + (size_t)r * ld + E.P, ld, HD, ascale);
+            qk_scores(qs + r, 1, E.ks(l, E.sid[r0 + r], h), row_g(E, r0 + r) + 1, sc + (size_t)r * ld + E.P, ld, HD, ascale);
           for (int r = 0; r < R; ++r) {
+            const int n2 = row_g(E, r0 + r) + 1;
             sums[r] = softmax_row(sc + (size_t)r * ld, E.P + n2, E.P + n2);
             qs[r] = sc + (size_t)r * ld;  // reuse as probability rows
           }
           if (E.P > 0) pv(qs, R, vpb, E.P, outs, false, HD);
           for (int r = 0; r < R; ++r) {
             const float* pr = qs[r] + E.P;
-            pv(&pr, 1, E.vs(l, E.sid[r0 + r], h), n2, outs + r, E.P > 0, HD);
+            pv(&pr, 1, E.vs(l, E.sid[r0 + r], h), row_g(E, r0 + r) + 1, outs + r, E.P > 0, HD);
             scale_row(outs[r], 1.0f / sums[r], HD);
           }
         }
@@ -1157,6 +1160,125 @@ void full_body(void* arg, int tid) {
   export_prefix(*J.E, J.kv_out, J.T, tid);
 }
 
+// ------------------------------------------------------- speculative decoding
+// A spec session (eng_spec_begin / _step / _end) generates like eng_generate but
+// lets the caller propose up to kmax draft tokens per stream per step. One step
+// feeds, per active stream, its pending token plus its drafts as consecutive
+// rows at stream-cache indices g, g+1, ... (decode path with per-row g), then
+// accepts drafts by exact speculative sampling against the warped target:
+// position i is warped with the history including every token accepted before
+// it (repetition / no-repeat-ngram depend on the prefix), draft d is kept with
+// probability p(d), and on rejection the token is drawn from p with d removed
+// (the residual of a one-hot draft), so every emitted token is distributed
+// exactly as in eng_generate. Rejected rows' K/V stay in the stream cache past
+// the stream's length and are overwritten by the next step (rollback = not
+// advancing g).
+struct SpecJob {
+  Engine* E = nullptr;
+  int ns = 0, max_new = 0, kmax = 0, T = 0;
+  SampleParams sp{};
+  std::vector<Stream> st;
+  std::vector<int> g;          // stream-cache entries per stream (tokens fed so far)
+  std::vector<int32_t> cur;    // pending (sampled, not yet fed) token per stream
+  std::vector<int> active;
+  // per step
+  std::vector<int32_t> rows, rsid, rg;
+  std::vector<int> row0, nd;   // per active index: first row, number of drafts
+  const int32_t* drafts = nullptr;
+  int32_t* out = nullptr;
+  int32_t* nout = nullptr;
+  // begin
+  const int32_t* prompt = nullptr;
+  int start = 0, kv_in_len = 0;
+  const float* kv_in = nullptr;
+  float* kv_out = nullptr;
+  double t0 = 0, t_prefill = 0, t_first = 0;
+};
+
+void spec_begin_body(void* arg, int tid) {
+  SpecJob& J = *static_cast<SpecJob*>(arg);
+  Engine& E = *J.E;
+  import_prefix(E, J.kv_in, J.kv_in_len, J.start, tid);
+  forward(E, tid);
+  if (tid == 0) J.t_prefill = now_s();
+  for (int s = tid; s < J.ns; s += E.nt) J.cur[s] = sample(E.logits, J.st[s], J.sp, E.tl[tid], E.V);
+  export_prefix(E, J.kv_out, J.T, tid);  // ends in a barrier
+}
+
+// Index of token d among the draw range of the last warp, or -1.
+inline long find_survivor(const Thread& T, size_t first, int d) {
+  for (size_t j = first; j < T.sv.size(); ++j)
+    if (T.sv[j].second == d) return (long)j;
+  return -1;
+}
+
+void spec_accept(SpecJob& J, int a, Thread& T) {
+  Engine& E = *J.E;
+  const int V = E.V, s = J.active[a], r0 = J.row0[a], nd = J.nd[a];
+  Stream& S = J.st[s];
+  const int32_t* d = J.drafts + (size_t)s * J.kmax;
+  int32_t* out = J.out + (size_t)s * (J.kmax + 1);
+  int e = 0;
+  for (int i = 0; i <= nd; ++i) {
+    const float* lg = E.logits + (size_t)(r0 + i) * V;
+    int tok;
+    if (J.sp.greedy) {
+      tok = sample(lg, S, J.sp, T, V);
+    } else {
+      size_t first;
+      double zk;
+      if (!warp(lg, S, J.sp, T, V, &first, &zk)) {
+        tok = J.sp.eos_id;
+      } else {
+        const auto& sv = T.sv;
+        const auto& p = T.p;
+        const float top = sv.back().first;
+        long pick = -1;
+        long skip = -1;
+        double zdraw = zk;
+        if (i < nd) {
+          long j = find_survivor(T, first, d[i]);
+          if (j >= 0) {
+            const double pd = p[j];
+            if (S.rng.uniform() * zk < pd || zk - pd <= 0) pick = j;
+            else { skip = j; zdraw = zk - pd; }
+          }
+        }
+        if (pick < 0) {  // plain draw (bonus position / no usable draft) or residual draw
+          double u = S.rng.uniform() * zdraw, acc = 0;
+          pick = (long)sv.size() - 1;
+          if (pick == skip) --pick;
+          for (size_t j = first; j < sv.size(); ++j) {
+            if ((long)j == skip) continue;
+            acc += p[j];
+            if (u < acc) { pick = (long)j; break; }
+          }
+        }
+        S.logprob += (double)(sv[pick].first - top) - std::log(zk);
+        tok = sv[pick].second;
+      }
+    }
+    out[e++] = tok;
+    S.push(tok);
+    S.count++;
+    if ((J.sp.stop_at_eos && tok == J.sp.eos_id) || S.count >= J.max_new) {
+      S.active = false;
+      break;
+    }
+    if (!(i < nd && tok == d[i])) break;  // rejected (or bonus drawn): this token is the new pending one
+  }
+  J.nout[s] = e;
+  J.g[s] += e;  // fed rows cur, d[0..e-2] are now context; out[e-1] is pending
+  J.cur[s] = out[e - 1];
+}
+
+void spec_step_body(void* arg, int tid) {
+  SpecJob& J = *static_cast<SpecJob*>(arg);
+  Engine& E = *J.E;
+  forward(E, tid);
+  for (int a = tid; a < (int)J.active.size(); a += E.nt) spec_accept(J, a, E.tl[tid]);
+}
+
 }  // namespace
 
 extern "C" {
@@ -1380,6 +1502,132 @@ int eng_generate(void* p, const int32_t* prompt, int T, int start, const float* 
   timing[2] = t_end - J.t0;
   timing[3] = J.t_last - J.t0;
   return J.steps;
+}
+
+// ---- speculative decoding session (see SpecJob). Not re-entrant: one session
+// per engine at a time, and no other engine call until eng_spec_end.
+// Prefills like eng_generate (same args, same per-stream seeding, so the first
+// token matches eng_generate's) and returns the session; first_tokens [ns]
+// gets each stream's first token, timing [2] = prefill_s, first-token_s.
+void* eng_spec_begin(void* p, const int32_t* prompt, int T, int start, const float* kv_in, int kv_in_len,
+                     float* kv_out, int ns, int max_new, int kmax, const SampleParams* sp, uint64_t seed,
+                     int32_t* first_tokens, double* timing) {
+  Engine* E = static_cast<Engine*>(p);
+  if (T < 1 || ns < 1 || max_new < 1 || kmax < 0 || kmax > 64 || T + max_new + kmax + 1 > E->maxctx) return nullptr;
+  if (start < 0 || start >= T || (start > 0 && (!kv_in || kv_in_len < start))) return nullptr;
+  for (int i = 0; i < T; ++i)
+    if (prompt[i] < 0 || prompt[i] >= E->V) return nullptr;
+  if (sp->eos_id < 0 || sp->eos_id >= E->V) return nullptr;
+  SpecJob* J = new SpecJob();
+  J->t0 = now_s();
+  J->E = E;
+  J->ns = ns;
+  J->max_new = max_new;
+  J->kmax = kmax;
+  J->T = T;
+  J->sp = *sp;
+  J->prompt = prompt;
+  J->start = start;
+  J->kv_in = kv_in;
+  J->kv_in_len = kv_in_len;
+  J->kv_out = kv_out;
+  J->st.resize(ns);
+  J->cur.assign(ns, 0);
+  J->g.assign(ns, 0);
+  for (int s = 0; s < ns; ++s) {
+    Stream& S = J->st[s];
+    S.init(E->V, (size_t)T + max_new + kmax + 1);
+    for (int i = 0; i < T; ++i) S.push(prompt[i]);
+    S.rng.s = seed * 0x100000001B3ull + (uint64_t)s * 0x9E3779B97F4A7C15ull + 1;
+  }
+  E->ensure_rows(std::max(T - start, ns * (kmax + 1)));
+  E->ensure_prefix(T);
+  E->ensure_streams(ns, max_new + kmax + 1);
+  E->ensure_logits(ns * (kmax + 1));
+  E->tokens = prompt + start;
+  E->M = T - start;
+  E->start = start;
+  E->decode = false;
+  E->grow = nullptr;
+  E->logits_from = T - start - 1;
+  E->pool.run(spec_begin_body, J);
+  J->t_first = now_s();
+  for (int s = 0; s < ns; ++s) {
+    Stream& S = J->st[s];
+    const int tok = J->cur[s];
+    first_tokens[s] = tok;
+    S.push(tok);
+    S.count = 1;
+    if ((sp->stop_at_eos && tok == sp->eos_id) || max_new <= 1) S.active = false;
+    else J->active.push_back(s);
+  }
+  E->P = T;
+  timing[0] = J->t_prefill - J->t0;
+  timing[1] = J->t_first - J->t0;
+  return J;
+}
+
+// One verify step. drafts [ns][kmax] with nd[s] valid entries for stream s
+// (clipped to kmax and to the stream's remaining budget). out [ns][kmax+1]
+// receives the tokens emitted this step, nout [ns] their number (0 for a
+// stream that had already finished). Returns the number of streams still
+// generating, or < 0 on bad arguments.
+int eng_spec_step(void* job, const int32_t* drafts, const int32_t* nd, int32_t* out, int32_t* nout) {
+  SpecJob& J = *static_cast<SpecJob*>(job);
+  Engine& E = *J.E;
+  for (int s = 0; s < J.ns; ++s) nout[s] = 0;
+  if (J.active.empty()) return 0;
+  J.rows.clear();
+  J.rsid.clear();
+  J.rg.clear();
+  J.row0.assign(J.active.size(), 0);
+  J.nd.assign(J.active.size(), 0);
+  for (size_t a = 0; a < J.active.size(); ++a) {
+    const int s = J.active[a];
+    const Stream& S = J.st[s];
+    int n = std::max(0, std::min({(int)nd[s], J.kmax, J.max_new - S.count - 1}));
+    for (int i = 0; i < n; ++i)
+      if (drafts[(size_t)s * J.kmax + i] < 0 || drafts[(size_t)s * J.kmax + i] >= E.V) return -2;
+    J.row0[a] = (int)J.rows.size();
+    J.nd[a] = n;
+    for (int i = 0; i <= n; ++i) {
+      J.rows.push_back(i == 0 ? J.cur[s] : drafts[(size_t)s * J.kmax + i - 1]);
+      J.rsid.push_back(s);
+      J.rg.push_back(J.g[s] + i);
+    }
+  }
+  J.drafts = drafts;
+  J.out = out;
+  J.nout = nout;
+  const int M = (int)J.rows.size();
+  E.ensure_rows(M);
+  E.ensure_logits(M);
+  E.tokens = J.rows.data();
+  E.M = M;
+  E.decode = true;
+  E.sid = J.rsid.data();
+  E.grow = J.rg.data();
+  E.logits_from = 0;
+  E.pool.run(spec_step_body, &J);
+  E.grow = nullptr;
+  std::vector<int> still;
+  for (int s : J.active)
+    if (J.st[s].active) still.push_back(s);
+  J.active.swap(still);
+  return (int)J.active.size();
+}
+
+// Ends the session: counts [ns] (tokens emitted, eos included), logprob [ns]
+// (sum of the chosen tokens' post-warp log-probabilities). Frees the session.
+void eng_spec_end(void* job, int32_t* counts, double* logprob) {
+  SpecJob* J = static_cast<SpecJob*>(job);
+  if (!J) return;
+  for (int s = 0; s < J->ns; ++s) {
+    if (counts) counts[s] = J->st[s].count;
+    if (logprob) logprob[s] = J->st[s].logprob;
+  }
+  J->E->grow = nullptr;
+  delete J;
 }
 
 // Sampler probe for tests: the post-warp distribution the sampler draws from,

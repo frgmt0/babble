@@ -287,6 +287,112 @@ class NativeEngine:
             last_s=float(timing[3]),
         )
 
+    def spec_generate(
+        self,
+        ids: list[int],
+        *,
+        n: int,
+        max_new: int,
+        sampling: SamplingConfig,
+        eos_id: int,
+        seed: int,
+        drafter: "NgramDrafter",
+        k: int,
+        greedy: bool = False,
+        stop_at_eos: bool = True,
+        start: int = 0,
+        kv_in: torch.Tensor | None = None,
+        kv_in_len: int = 0,
+        kv_out: torch.Tensor | None = None,
+    ) -> NativeOutput:
+        """`generate` with speculative decoding: `drafter` proposes up to `k`
+        tokens per stream per step; the engine verifies them in one forward
+        and accepts by exact speculative sampling (same output distribution as
+        `generate`; greedy output identical). Same return value."""
+        t_enter = time.perf_counter()
+        T = len(ids)
+        n = max(1, int(n))
+        max_new = max(1, int(max_new))
+        k = max(0, int(k))
+        sp = SampleParams(
+            int(greedy),
+            float(sampling.temperature),
+            int(sampling.top_k or 0),
+            float(sampling.top_p),
+            float(sampling.repetition_penalty),
+            int(sampling.no_repeat_ngram_size or 0),
+            int(eos_id),
+            int(stop_at_eos),
+            float(sampling.frequency_penalty),
+            float(sampling.presence_penalty),
+        )
+        if sp.temperature <= 0 and not greedy:
+            raise HFServeError(f"temperature must be > 0, got {sp.temperature}")
+        lib = self.lib
+        prompt = torch.tensor(ids, dtype=torch.int32)
+        first = torch.empty(n, dtype=torch.int32)
+        timing = torch.zeros(2, dtype=torch.float64)
+        job = lib.eng_spec_begin(
+            self._h, _ptr(prompt), T, int(start), _ptr(kv_in), int(kv_in_len), _ptr(kv_out),
+            n, max_new, k, ctypes.byref(sp), ctypes.c_uint64(seed & (2**64 - 1)), _ptr(first), _ptr(timing),
+        )
+        if not job:
+            raise HFServeError(f"native engine rejected the spec request (T={T}, max_new={max_new}, k={k})")
+        counts = torch.empty(n, dtype=torch.int32)
+        lp = torch.empty(n, dtype=torch.float64)
+        try:
+            toks = [[t] for t in first.tolist()]
+            done = [(stop_at_eos and t[0] == eos_id) or max_new <= 1 for t in toks]
+            state = drafter.begin(ids, n)
+            kk = max(1, k)
+            drafts = torch.zeros(n, kk, dtype=torch.int32)
+            nd = torch.zeros(n, dtype=torch.int32)
+            out = torch.empty(n, kk + 1, dtype=torch.int32)
+            nout = torch.zeros(n, dtype=torch.int32)
+            dp, ndp, op, nop = _ptr(drafts), _ptr(nd), _ptr(out), _ptr(nout)
+            for s in range(n):
+                drafter.push(state, s, toks[s])
+            t_last = time.perf_counter()
+            remaining = sum(1 for d in done if not d)
+            while remaining:
+                nd_l = [0] * n
+                for s in range(n):
+                    if not done[s] and k:
+                        d = drafter.draft(state, s, min(k, max_new - len(toks[s]) - 1))
+                        if d:
+                            nd_l[s] = len(d)
+                            drafts[s, : len(d)] = torch.tensor(d, dtype=torch.int32)
+                nd.copy_(torch.tensor(nd_l, dtype=torch.int32))
+                remaining = lib.eng_spec_step(job, dp, ndp, op, nop)
+                if remaining < 0:
+                    raise HFServeError(f"native engine rejected a spec step (rc={remaining})")
+                t_last = time.perf_counter()
+                no, ol = nout.tolist(), out.tolist()
+                for s in range(n):
+                    if no[s]:
+                        new = ol[s][: no[s]]
+                        toks[s].extend(new)
+                        drafter.push(state, s, new)
+                        if (stop_at_eos and new[-1] == eos_id) or len(toks[s]) >= max_new:
+                            done[s] = True
+        finally:
+            lib.eng_spec_end(job, _ptr(counts), _ptr(lp))
+        t_end = time.perf_counter()
+        counts_l = counts.tolist()
+        sums = lp.tolist()
+        means = [sums[i] / c if c else -math.inf for i, c in enumerate(counts_l)]
+        best = max(range(n), key=lambda i: (means[i], -i))
+        return NativeOutput(
+            tokens=toks,
+            counts=counts_l,
+            mean_logprob=means,
+            best=best,
+            prefill_s=float(timing[0]),
+            ttft_s=float(timing[1]),
+            total_s=t_end - t_enter,
+            last_s=t_last - t_enter,
+        )
+
     def warp_probs(self, logits: torch.Tensor, hist: list[int], sampling: SamplingConfig) -> torch.Tensor:
         """The engine sampler's post-warp distribution (test probe)."""
         V = int(logits.numel())
@@ -300,6 +406,144 @@ class NativeEngine:
         )
         self.lib.eng_warp_probs(_ptr(lg), V, _ptr(h), len(hist), ctypes.byref(sp), _ptr(out))
         return out
+
+
+class NgramDrafter:
+    """Static n-gram draft source for `NativeEngine.spec_generate`.
+
+    ``tables[n]`` maps the last ``n`` tokens (packed as an int, see `pack`) to
+    the most likely next token, or to -1 when that context is too uncertain to
+    draft from (drafting stops there instead of backing off). Lookups go from
+    the longest order down. A draft token that the no-repeat-ngram rule would
+    ban is never proposed (the target gives it probability 0), so drafting
+    stops there too. Build tables with `build_ngram_tables`.
+    """
+
+    def __init__(self, tables: dict[int, dict[int, int]], *, vocab: int, no_repeat_ngram: int = 0) -> None:
+        self.tables = {int(n): t for n, t in tables.items() if t}
+        self.orders = sorted(self.tables, reverse=True)
+        self.V = int(vocab)
+        self.nrn = int(no_repeat_ngram or 0)
+
+    def pack(self, ctx) -> int:
+        key = 0
+        for t in ctx:
+            key = key * self.V + int(t)
+        return key
+
+    # per-reply state: (histories, shared prompt ban index, per-stream ban overlays)
+    def begin(self, prompt: list[int], n: int):
+        bans: dict[tuple, set] = {}
+        m = self.nrn
+        if m > 1:
+            for i in range(len(prompt) - m + 1):
+                bans.setdefault(tuple(prompt[i : i + m - 1]), set()).add(prompt[i + m - 1])
+        return ([list(prompt) for _ in range(n)], bans, [dict() for _ in range(n)])
+
+    def push(self, state, s: int, toks: list[int]) -> None:
+        hist, _bans, own = state
+        h = hist[s]
+        m = self.nrn
+        for t in toks:
+            h.append(t)
+            if m > 1 and len(h) >= m:
+                own[s].setdefault(tuple(h[-m:-1]), set()).add(t)
+
+    def _banned(self, state, s: int, ctx: list[int], tok: int) -> bool:
+        m = self.nrn
+        if m <= 1:
+            return m == 1 and (tok in ctx or tok in state[0][s])
+        if len(ctx) < m - 1:
+            return False
+        key = tuple(ctx[-(m - 1):])
+        _hist, bans, own = state
+        b = bans.get(key)
+        if b is not None and tok in b:
+            return True
+        b = own[s].get(key)
+        return b is not None and tok in b
+
+    def draft(self, state, s: int, k: int) -> list[int]:
+        if k <= 0:
+            return []
+        hist = state[0][s]
+        ctx = hist[-max(self.orders[0], self.nrn):] if self.orders else []
+        out: list[int] = []
+        for _ in range(k):
+            tok = -1
+            for n in self.orders:
+                if len(ctx) < n:
+                    continue
+                v = self.tables[n].get(self.pack(ctx[-n:]))
+                if v is not None:
+                    tok = v
+                    break
+            if tok < 0:
+                break
+            # the in-draft tokens are not in the overlay yet: check them by hand
+            if self._banned(state, s, ctx, tok) or self._banned_local(ctx, tok, len(out)):
+                break
+            out.append(tok)
+            ctx = ctx + [tok]
+        return out
+
+    def _banned_local(self, ctx: list[int], tok: int, n_new: int) -> bool:
+        """no-repeat-ngram against 4-grams that end inside the draft so far."""
+        m = self.nrn
+        if m <= 1 or n_new == 0 or len(ctx) < m - 1:
+            return False
+        tail = ctx[-(m - 1):]
+        for i in range(max(0, len(ctx) - (m - 1) - n_new), len(ctx) - (m - 1)):
+            if ctx[i : i + m - 1] == tail and ctx[i + m - 1] == tok:
+                return True
+        return False
+
+
+def build_ngram_tables(seqs, *, order: int = 3, min_conf: float = 0.5, min_count: int = 1, vocab: int) -> dict[int, dict[int, int]]:
+    """Most-frequent-next-token tables for orders 1..`order` from token sequences.
+
+    A context whose top continuation has relative frequency < `min_conf` (or
+    fewer than `min_count` observations) maps to -1: draft nothing there.
+    """
+    from collections import Counter, defaultdict
+
+    counts = [defaultdict(Counter) for _ in range(order + 1)]
+    for seq in seqs:
+        for i in range(1, len(seq)):
+            for n in range(1, order + 1):
+                if i - n < 0:
+                    break
+                counts[n][tuple(seq[i - n : i])][seq[i]] += 1
+    tables: dict[int, dict[int, int]] = {}
+    for n in range(1, order + 1):
+        t: dict[int, int] = {}
+        for ctx, c in counts[n].items():
+            tok, top = c.most_common(1)[0]
+            tot = sum(c.values())
+            key = 0
+            for x in ctx:
+                key = key * vocab + int(x)
+            t[key] = int(tok) if (top / tot >= min_conf and tot >= min_count) else -1
+        tables[n] = t
+    return tables
+
+
+def save_ngram_tables(tables: dict[int, dict[int, int]], path: Path | str, *, vocab: int, meta: dict | None = None) -> None:
+    blob = {"vocab": int(vocab), "meta": dict(meta or {})}
+    for n, t in tables.items():
+        blob[f"keys{n}"] = torch.tensor(list(t.keys()), dtype=torch.int64)
+        blob[f"vals{n}"] = torch.tensor(list(t.values()), dtype=torch.int32)
+    torch.save(blob, str(path))
+
+
+def load_ngram_tables(path: Path | str) -> tuple[dict[int, dict[int, int]], int]:
+    blob = torch.load(str(path), weights_only=True)
+    tables = {}
+    for name in blob:
+        if name.startswith("keys"):
+            n = int(name[4:])
+            tables[n] = dict(zip(blob[name].tolist(), blob[f"vals{n}"].tolist()))
+    return tables, int(blob["vocab"])
 
 
 @dataclass

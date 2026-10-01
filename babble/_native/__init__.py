@@ -200,6 +200,16 @@ def _declare(lib: ctypes.CDLL) -> ctypes.CDLL:
         i32, i32, ctypes.POINTER(SampleParams), ctypes.c_uint64,  # ns, max_new, params, seed
         vp, vp, vp, vp,  # out_tokens, counts, logprob, timing
     ]
+    lib.eng_spec_begin.restype = vp
+    lib.eng_spec_begin.argtypes = [
+        vp, vp, i32, i32, vp, i32, vp,  # engine, prompt, T, start, kv_in, kv_in_len, kv_out
+        i32, i32, i32, ctypes.POINTER(SampleParams), ctypes.c_uint64,  # ns, max_new, kmax, params, seed
+        vp, vp,  # first_tokens, timing
+    ]
+    lib.eng_spec_step.restype = i32
+    lib.eng_spec_step.argtypes = [vp, vp, vp, vp, vp]  # session, drafts, nd, out, nout
+    lib.eng_spec_end.restype = None
+    lib.eng_spec_end.argtypes = [vp, vp, vp]  # session, counts, logprob
     lib.eng_warp_probs.restype = i32
     lib.eng_warp_probs.argtypes = [vp, i32, vp, i32, ctypes.POINTER(SampleParams), vp]
     return lib
