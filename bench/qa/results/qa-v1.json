@@ -1,0 +1,5846 @@
+{
+ "config": {
+  "label": "qa-v1",
+  "model_dir": "/tmp/qa-v1-export",
+  "runtime_used": "native",
+  "decoding": "greedy (top_k=1, best_of=1)",
+  "sampling": {
+   "temperature": 0.5,
+   "top_k": 1,
+   "top_p": 0.9,
+   "repetition_penalty": 1.15,
+   "no_repeat_ngram_size": 4,
+   "best_of": 1,
+   "max_new_tokens": 64
+  },
+  "max_new_tokens": 64,
+  "prompt_format": "role_transcript_v1",
+  "conversation_context": true,
+  "conversation_max_turns": 8,
+  "conversation_max_tokens": 512,
+  "questions": "/home/jason/projects/babble/bench/qa/questions.jsonl",
+  "load_s": 0.2,
+  "wall_s": 8.88
+ },
+ "aggregate": {
+  "n": 250,
+  "overall_accuracy": 0.24,
+  "macro_accuracy": 0.28543650793650793,
+  "echo_rate": 0.064,
+  "empty_rate": 0.0,
+  "non_answer_rate": 0.016,
+  "repetitive_rate": 0.0,
+  "clean_rate": 0.92,
+  "categories": {
+   "fact_common": {
+    "n": 70,
+    "accuracy": 0.1,
+    "echo_rate": 0.04285714285714286,
+    "empty_rate": 0.0,
+    "non_answer_rate": 0.0,
+    "repetitive_rate": 0.0,
+    "clean_rate": 0.9571428571428572
+   },
+   "math": {
+    "n": 40,
+    "accuracy": 0.025,
+    "echo_rate": 0.125,
+    "empty_rate": 0.0,
+    "non_answer_rate": 0.0,
+    "repetitive_rate": 0.0,
+    "clean_rate": 0.875
+   },
+   "definition": {
+    "n": 30,
+    "accuracy": 0.6333333333333333,
+    "echo_rate": 0.1,
+    "empty_rate": 0.0,
+    "non_answer_rate": 0.0,
+    "repetitive_rate": 0.0,
+    "clean_rate": 0.9
+   },
+   "about_bot": {
+    "n": 25,
+    "accuracy": 0.32,
+    "echo_rate": 0.0,
+    "empty_rate": 0.0,
+    "non_answer_rate": 0.0,
+    "repetitive_rate": 0.0,
+    "clean_rate": 1.0
+   },
+   "commonsense": {
+    "n": 35,
+    "accuracy": 0.3142857142857143,
+    "echo_rate": 0.02857142857142857,
+    "empty_rate": 0.0,
+    "non_answer_rate": 0.02857142857142857,
+    "repetitive_rate": 0.0,
+    "clean_rate": 0.9428571428571428
+   },
+   "followup": {
+    "n": 25,
+    "accuracy": 0.32,
+    "echo_rate": 0.04,
+    "empty_rate": 0.0,
+    "non_answer_rate": 0.0,
+    "repetitive_rate": 0.0,
+    "clean_rate": 0.96
+   },
+   "chat": {
+    "n": 25,
+    "accuracy": null,
+    "echo_rate": 0.12,
+    "empty_rate": 0.0,
+    "non_answer_rate": 0.12,
+    "repetitive_rate": 0.0,
+    "clean_rate": 0.76
+   }
+  }
+ },
+ "items": [
+  {
+   "id": "fact_common-001",
+   "category": "fact_common",
+   "question": "what is the capital of france?",
+   "answers": [
+    "paris"
+   ],
+   "prompt": "user: what is the capital of france?",
+   "response": "it's France",
+   "ms": 15.6,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-002",
+   "category": "fact_common",
+   "question": "capital of japan?",
+   "answers": [
+    "tokyo"
+   ],
+   "prompt": "user: capital of japan?",
+   "response": "it's the capital city",
+   "ms": 23.6,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-003",
+   "category": "fact_common",
+   "question": "what's the capital city of italy",
+   "answers": [
+    "rome"
+   ],
+   "prompt": "user: what's the capital city of italy",
+   "response": "it's Argentina",
+   "ms": 19.3,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-004",
+   "category": "fact_common",
+   "question": "what is the capital of england",
+   "answers": [
+    "london"
+   ],
+   "prompt": "user: what is the capital of england",
+   "response": "it's the United Kingdom",
+   "ms": 24.3,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-005",
+   "category": "fact_common",
+   "question": "what's the capital of germany?",
+   "answers": [
+    "berlin"
+   ],
+   "prompt": "user: what's the capital of germany?",
+   "response": "it's German, it's the third largest city in the United States",
+   "ms": 58.6,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-006",
+   "category": "fact_common",
+   "question": "which city is the capital of spain",
+   "answers": [
+    "madrid"
+   ],
+   "prompt": "user: which city is the capital of spain",
+   "response": "it's in Spain.",
+   "ms": 22.0,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-007",
+   "category": "fact_common",
+   "question": "what is russia's capital",
+   "answers": [
+    "moscow"
+   ],
+   "prompt": "user: what is russia's capital",
+   "response": "it's the capital",
+   "ms": 18.5,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-008",
+   "category": "fact_common",
+   "question": "what's the capital of egypt",
+   "answers": [
+    "cairo"
+   ],
+   "prompt": "user: what's the capital of egypt",
+   "response": "it's Elysia",
+   "ms": 20.9,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-009",
+   "category": "fact_common",
+   "question": "what is the capital of the united states?",
+   "answers": [
+    "washington",
+    "dc",
+    "d c"
+   ],
+   "prompt": "user: what is the capital of the united states?",
+   "response": "it's called the United States",
+   "ms": 29.7,
+   "score": {
+    "correct": false,
+    "echo": true,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": [
+     "echo"
+    ]
+   }
+  },
+  {
+   "id": "fact_common-010",
+   "category": "fact_common",
+   "question": "what's the capital of canada",
+   "answers": [
+    "ottawa"
+   ],
+   "prompt": "user: what's the capital of canada",
+   "response": "it's Canada",
+   "ms": 14.0,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-011",
+   "category": "fact_common",
+   "question": "capital of china?",
+   "answers": [
+    "beijing"
+   ],
+   "prompt": "user: capital of china?",
+   "response": "it's chinese",
+   "ms": 17.7,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-012",
+   "category": "fact_common",
+   "question": "what is the capital of australia",
+   "answers": [
+    "canberra"
+   ],
+   "prompt": "user: what is the capital of australia",
+   "response": "it's the United Kingdom",
+   "ms": 23.7,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-013",
+   "category": "fact_common",
+   "question": "how many legs does a spider have?",
+   "answers": [
+    "8"
+   ],
+   "prompt": "user: how many legs does a spider have?",
+   "response": "i believe 5",
+   "ms": 20.8,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-014",
+   "category": "fact_common",
+   "question": "how many legs does a dog have",
+   "answers": [
+    "4"
+   ],
+   "prompt": "user: how many legs does a dog have",
+   "response": "pretty sure it's four",
+   "ms": 24.6,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "4",
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-015",
+   "category": "fact_common",
+   "question": "how many legs do insects have?",
+   "answers": [
+    "6"
+   ],
+   "prompt": "user: how many legs do insects have?",
+   "response": "i believe four",
+   "ms": 19.4,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-016",
+   "category": "fact_common",
+   "question": "what colour is the sky on a clear day?",
+   "answers": [
+    "blue"
+   ],
+   "prompt": "user: what colour is the sky on a clear day?",
+   "response": "pretty sure it's blue",
+   "ms": 25.0,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "blue",
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-017",
+   "category": "fact_common",
+   "question": "what color is grass",
+   "answers": [
+    "green"
+   ],
+   "prompt": "user: what color is grass",
+   "response": "i think it's green",
+   "ms": 23.2,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "green",
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-018",
+   "category": "fact_common",
+   "question": "what colour do you get if you mix blue and yellow?",
+   "answers": [
+    "green"
+   ],
+   "prompt": "user: what colour do you get if you mix blue and yellow?",
+   "response": "i think it's blue",
+   "ms": 25.9,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-019",
+   "category": "fact_common",
+   "question": "what do you get when you mix red and white paint",
+   "answers": [
+    "pink"
+   ],
+   "prompt": "user: what do you get when you mix red and white paint",
+   "response": "pretty sure it's the color",
+   "ms": 30.8,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-020",
+   "category": "fact_common",
+   "question": "what color is a ripe banana",
+   "answers": [
+    "yellow"
+   ],
+   "prompt": "user: what color is a ripe banana",
+   "response": "i think it's red",
+   "ms": 24.1,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-021",
+   "category": "fact_common",
+   "question": "what colour is fresh snow?",
+   "answers": [
+    "white"
+   ],
+   "prompt": "user: what colour is fresh snow?",
+   "response": "i believe it's white",
+   "ms": 27.9,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "white",
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-022",
+   "category": "fact_common",
+   "question": "what color are strawberries",
+   "answers": [
+    "red"
+   ],
+   "prompt": "user: what color are strawberries",
+   "response": "i think it's blue",
+   "ms": 24.4,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-023",
+   "category": "fact_common",
+   "question": "how many days are in a week?",
+   "answers": [
+    "7"
+   ],
+   "prompt": "user: how many days are in a week?",
+   "response": "it's 8",
+   "ms": 15.4,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-024",
+   "category": "fact_common",
+   "question": "how many months are there in a year",
+   "answers": [
+    "12"
+   ],
+   "prompt": "user: how many months are there in a year",
+   "response": "it's 6",
+   "ms": 15.8,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-025",
+   "category": "fact_common",
+   "question": "what day comes after monday?",
+   "answers": [
+    "tuesday"
+   ],
+   "prompt": "user: what day comes after monday?",
+   "response": "i believe it's Sunday",
+   "ms": 24.2,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-026",
+   "category": "fact_common",
+   "question": "which day comes right before sunday",
+   "answers": [
+    "saturday"
+   ],
+   "prompt": "user: which day comes right before sunday",
+   "response": "i believe it's Sunday",
+   "ms": 24.5,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-027",
+   "category": "fact_common",
+   "question": "what month comes after january",
+   "answers": [
+    "february"
+   ],
+   "prompt": "user: what month comes after january",
+   "response": "i believe it's September",
+   "ms": 23.9,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-028",
+   "category": "fact_common",
+   "question": "which month is just before december?",
+   "answers": [
+    "november"
+   ],
+   "prompt": "user: which month is just before december?",
+   "response": "i believe it's March",
+   "ms": 24.7,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-029",
+   "category": "fact_common",
+   "question": "what's the first month of the year",
+   "answers": [
+    "january"
+   ],
+   "prompt": "user: what's the first month of the year",
+   "response": "pretty sure it's March",
+   "ms": 24.1,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-030",
+   "category": "fact_common",
+   "question": "how many hours are in a day?",
+   "answers": [
+    "24"
+   ],
+   "prompt": "user: how many hours are in a day?",
+   "response": "it's 8",
+   "ms": 15.4,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-031",
+   "category": "fact_common",
+   "question": "how many minutes in an hour",
+   "answers": [
+    "60"
+   ],
+   "prompt": "user: how many minutes in an hour",
+   "response": "it's 5",
+   "ms": 14.9,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-032",
+   "category": "fact_common",
+   "question": "how many seconds are there in a minute?",
+   "answers": [
+    "60"
+   ],
+   "prompt": "user: how many seconds are there in a minute?",
+   "response": "it's 10",
+   "ms": 15.7,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-033",
+   "category": "fact_common",
+   "question": "what is the largest planet in our solar system?",
+   "answers": [
+    "jupiter"
+   ],
+   "prompt": "user: what is the largest planet in our solar system?",
+   "response": "Jupiter",
+   "ms": 16.6,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "jupiter",
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-034",
+   "category": "fact_common",
+   "question": "what planet do we live on",
+   "answers": [
+    "earth"
+   ],
+   "prompt": "user: what planet do we live on",
+   "response": "i think it's Mars, Mars",
+   "ms": 34.0,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-035",
+   "category": "fact_common",
+   "question": "which planet is called the red planet?",
+   "answers": [
+    "mars"
+   ],
+   "prompt": "user: which planet is called the red planet?",
+   "response": "it's Jupiter",
+   "ms": 20.6,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-036",
+   "category": "fact_common",
+   "question": "what is the closest star to earth",
+   "answers": [
+    "sun"
+   ],
+   "prompt": "user: what is the closest star to earth",
+   "response": "it's Jupiter",
+   "ms": 20.0,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-037",
+   "category": "fact_common",
+   "question": "what does the moon go around?",
+   "answers": [
+    "earth"
+   ],
+   "prompt": "user: what does the moon go around?",
+   "response": "it's a pretty big circle",
+   "ms": 29.1,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-038",
+   "category": "fact_common",
+   "question": "what gas do people need to breathe to stay alive",
+   "answers": [
+    "oxygen"
+   ],
+   "prompt": "user: what gas do people need to breathe to stay alive",
+   "response": "i think it's air",
+   "ms": 25.2,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-039",
+   "category": "fact_common",
+   "question": "what is water made of?",
+   "answers": [
+    "hydrogen",
+    "oxygen",
+    "h2o"
+   ],
+   "prompt": "user: what is water made of?",
+   "response": "Water is made from water and is a liquid.",
+   "ms": 48.8,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-040",
+   "category": "fact_common",
+   "question": "what do you call frozen water",
+   "answers": [
+    "ice"
+   ],
+   "prompt": "user: what do you call frozen water",
+   "response": "frozen water",
+   "ms": 14.6,
+   "score": {
+    "correct": false,
+    "echo": true,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": [
+     "echo"
+    ]
+   }
+  },
+  {
+   "id": "fact_common-041",
+   "category": "fact_common",
+   "question": "at what temperature does water boil in celsius?",
+   "answers": [
+    "100"
+   ],
+   "prompt": "user: at what temperature does water boil in celsius?",
+   "response": "i believe it's 105°F",
+   "ms": 32.4,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-042",
+   "category": "fact_common",
+   "question": "what temperature does water freeze at, in celsius",
+   "answers": [
+    "0"
+   ],
+   "prompt": "user: what temperature does water freeze at, in celsius",
+   "response": "i believe it's 105°F",
+   "ms": 32.2,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-043",
+   "category": "fact_common",
+   "question": "what is the biggest ocean on earth?",
+   "answers": [
+    "pacific"
+   ],
+   "prompt": "user: what is the biggest ocean on earth?",
+   "response": "The largest ocean in the world is Antarctica.",
+   "ms": 50.7,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-044",
+   "category": "fact_common",
+   "question": "what's the tallest mountain in the world",
+   "answers": [
+    "everest"
+   ],
+   "prompt": "user: what's the tallest mountain in the world",
+   "response": "it's 76 miles",
+   "ms": 21.9,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-045",
+   "category": "fact_common",
+   "question": "what is the longest river in africa?",
+   "answers": [
+    "nile"
+   ],
+   "prompt": "user: what is the longest river in africa?",
+   "response": "it's the River of the North Atlantic",
+   "ms": 39.2,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-046",
+   "category": "fact_common",
+   "question": "which animal is known as the king of the jungle",
+   "answers": [
+    "lion"
+   ],
+   "prompt": "user: which animal is known as the king of the jungle",
+   "response": "i think it's the monkey",
+   "ms": 32.9,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-047",
+   "category": "fact_common",
+   "question": "what is the largest animal that has ever lived?",
+   "answers": [
+    "blue whale",
+    "whale"
+   ],
+   "prompt": "user: what is the largest animal that has ever lived?",
+   "response": "i believe it's the elephant",
+   "ms": 32.1,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-048",
+   "category": "fact_common",
+   "question": "what's the fastest land animal",
+   "answers": [
+    "cheetah"
+   ],
+   "prompt": "user: what's the fastest land animal",
+   "response": "The fastest is a small group of animals that are known for their ability to move.",
+   "ms": 81.4,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-049",
+   "category": "fact_common",
+   "question": "which animal says moo?",
+   "answers": [
+    "cow",
+    "cows"
+   ],
+   "prompt": "user: which animal says moo?",
+   "response": "i think it's the cat",
+   "ms": 27.8,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-050",
+   "category": "fact_common",
+   "question": "what sound does a cat make",
+   "answers": [
+    "meow",
+    "miaow",
+    "mew",
+    "purr"
+   ],
+   "prompt": "user: what sound does a cat make",
+   "response": "i think it's the cat's ears",
+   "ms": 35.4,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-051",
+   "category": "fact_common",
+   "question": "what do bees make?",
+   "answers": [
+    "honey",
+    "wax"
+   ],
+   "prompt": "user: what do bees make?",
+   "response": "Bees are a type of insects that live in the nectar and pollen of flowers. They are also called pollinators.",
+   "ms": 116.6,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-052",
+   "category": "fact_common",
+   "question": "what does a caterpillar turn into",
+   "answers": [
+    "butterfly",
+    "butterflies",
+    "moth"
+   ],
+   "prompt": "user: what does a caterpillar turn into",
+   "response": "a caterpa, or a butterfly",
+   "ms": 36.0,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "butterfly",
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-053",
+   "category": "fact_common",
+   "question": "what is a baby dog called?",
+   "answers": [
+    "puppy",
+    "pup",
+    "puppies"
+   ],
+   "prompt": "user: what is a baby dog called?",
+   "response": "A baby dog, also known as a cat, is an animal that lives in the wild.",
+   "ms": 84.1,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-054",
+   "category": "fact_common",
+   "question": "what do you call a baby cat",
+   "answers": [
+    "kitten",
+    "kitty"
+   ],
+   "prompt": "user: what do you call a baby cat",
+   "response": "A baby is a small animal that lives in the wild.",
+   "ms": 58.9,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-055",
+   "category": "fact_common",
+   "question": "which african animal has a really long neck?",
+   "answers": [
+    "giraffe",
+    "giraffes"
+   ],
+   "prompt": "user: which african animal has a really long neck?",
+   "response": "i think it's the African American",
+   "ms": 34.7,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-056",
+   "category": "fact_common",
+   "question": "what is a group of wolves called",
+   "answers": [
+    "pack"
+   ],
+   "prompt": "user: what is a group of wolves called",
+   "response": "the answer's a wolf",
+   "ms": 30.1,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-057",
+   "category": "fact_common",
+   "question": "who wrote romeo and juliet?",
+   "answers": [
+    "shakespeare"
+   ],
+   "prompt": "user: who wrote romeo and juliet?",
+   "response": "i think it was Ronald Reagan",
+   "ms": 42.7,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-058",
+   "category": "fact_common",
+   "question": "who painted the mona lisa",
+   "answers": [
+    "da vinci",
+    "leonardo"
+   ],
+   "prompt": "user: who painted the mona lisa",
+   "response": "it was Ronald Reagan",
+   "ms": 32.9,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-059",
+   "category": "fact_common",
+   "question": "who was the first president of the united states?",
+   "answers": [
+    "washington"
+   ],
+   "prompt": "user: who was the first president of the united states?",
+   "response": "pretty sure it's George Washington",
+   "ms": 31.2,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "washington",
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-060",
+   "category": "fact_common",
+   "question": "which scientist is famous for an apple falling on his head and gravity",
+   "answers": [
+    "newton"
+   ],
+   "prompt": "user: which scientist is famous for an apple falling on his head and gravity",
+   "response": "i think it's Leslie Watson",
+   "ms": 40.8,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-061",
+   "category": "fact_common",
+   "question": "who came up with the theory of relativity?",
+   "answers": [
+    "einstein"
+   ],
+   "prompt": "user: who came up with the theory of relativity?",
+   "response": "i think it was John Watson",
+   "ms": 39.2,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-062",
+   "category": "fact_common",
+   "question": "who was the first person to walk on the moon",
+   "answers": [
+    "armstrong"
+   ],
+   "prompt": "user: who was the first person to walk on the moon",
+   "response": "pretty sure it's John Cleveland",
+   "ms": 34.8,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-063",
+   "category": "fact_common",
+   "question": "how many continents are there?",
+   "answers": [
+    "7"
+   ],
+   "prompt": "user: how many continents are there?",
+   "response": "it's 8",
+   "ms": 14.6,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-064",
+   "category": "fact_common",
+   "question": "what is the biggest continent",
+   "answers": [
+    "asia"
+   ],
+   "prompt": "user: what is the biggest continent",
+   "response": "it's the Mediterranean",
+   "ms": 28.0,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-065",
+   "category": "fact_common",
+   "question": "what language do people speak in brazil?",
+   "answers": [
+    "portuguese"
+   ],
+   "prompt": "user: what language do people speak in brazil?",
+   "response": "i think it's Spanish",
+   "ms": 27.4,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-066",
+   "category": "fact_common",
+   "question": "what language is mostly spoken in mexico",
+   "answers": [
+    "spanish"
+   ],
+   "prompt": "user: what language is mostly spoken in mexico",
+   "response": "English",
+   "ms": 10.8,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-067",
+   "category": "fact_common",
+   "question": "what's the opposite of hot?",
+   "answers": [
+    "cold"
+   ],
+   "prompt": "user: what's the opposite of hot?",
+   "response": "it's hot",
+   "ms": 14.0,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-068",
+   "category": "fact_common",
+   "question": "how many sides does a triangle have",
+   "answers": [
+    "3"
+   ],
+   "prompt": "user: how many sides does a triangle have",
+   "response": "it's 6",
+   "ms": 15.4,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-069",
+   "category": "fact_common",
+   "question": "how many sides does a square have?",
+   "answers": [
+    "4"
+   ],
+   "prompt": "user: how many sides does a square have?",
+   "response": "it's 6",
+   "ms": 15.7,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "fact_common-070",
+   "category": "fact_common",
+   "question": "what shape is a football or a basketball",
+   "answers": [
+    "round",
+    "sphere",
+    "circle",
+    "ball shaped"
+   ],
+   "prompt": "user: what shape is a football or a basketball",
+   "response": "football",
+   "ms": 10.8,
+   "score": {
+    "correct": false,
+    "echo": true,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": [
+     "echo"
+    ]
+   }
+  },
+  {
+   "id": "math-001",
+   "category": "math",
+   "question": "what's 7+5",
+   "answers": [
+    "12"
+   ],
+   "prompt": "user: what's 7+5",
+   "response": "that'd be 9",
+   "ms": 21.3,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "math-002",
+   "category": "math",
+   "question": "what is 9 times 3",
+   "answers": [
+    "27"
+   ],
+   "prompt": "user: what is 9 times 3",
+   "response": "it's 5",
+   "ms": 15.8,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "math-003",
+   "category": "math",
+   "question": "12 minus 4?",
+   "answers": [
+    "8"
+   ],
+   "prompt": "user: 12 minus 4?",
+   "response": "that's 5",
+   "ms": 14.8,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "math-004",
+   "category": "math",
+   "question": "what is 2 plus 2?",
+   "answers": [
+    "4"
+   ],
+   "prompt": "user: what is 2 plus 2?",
+   "response": "2+2=3",
+   "ms": 19.1,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "math-005",
+   "category": "math",
+   "question": "how much is 6 + 3",
+   "answers": [
+    "9"
+   ],
+   "prompt": "user: how much is 6 + 3",
+   "response": "easy, 7",
+   "ms": 14.9,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "math-006",
+   "category": "math",
+   "question": "what's 10 - 7?",
+   "answers": [
+    "3"
+   ],
+   "prompt": "user: what's 10 - 7?",
+   "response": "easy, 8",
+   "ms": 13.5,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "math-007",
+   "category": "math",
+   "question": "whats 5x4",
+   "answers": [
+    "20"
+   ],
+   "prompt": "user: whats 5x4",
+   "response": "5 x 4 = 1",
+   "ms": 27.1,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "math-008",
+   "category": "math",
+   "question": "what is 8 divided by 2",
+   "answers": [
+    "4"
+   ],
+   "prompt": "user: what is 8 divided by 2",
+   "response": "it's 5",
+   "ms": 14.6,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "math-009",
+   "category": "math",
+   "question": "can you tell me what 15 + 10 is",
+   "answers": [
+    "25"
+   ],
+   "prompt": "user: can you tell me what 15 + 10 is",
+   "response": "easy, 11",
+   "ms": 15.6,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "math-010",
+   "category": "math",
+   "question": "what do you get if you add 3 and 4?",
+   "answers": [
+    "7"
+   ],
+   "prompt": "user: what do you get if you add 3 and 4?",
+   "response": "pretty sure it's 2",
+   "ms": 26.0,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "math-011",
+   "category": "math",
+   "question": "what's 3 * 3",
+   "answers": [
+    "9"
+   ],
+   "prompt": "user: what's 3 * 3",
+   "response": "3 - 3 = 5",
+   "ms": 27.8,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "math-012",
+   "category": "math",
+   "question": "quick maths: 20 / 5",
+   "answers": [
+    "4"
+   ],
+   "prompt": "user: quick maths: 20 / 5",
+   "response": "20 /5 = 10",
+   "ms": 26.2,
+   "score": {
+    "correct": false,
+    "echo": true,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": [
+     "echo"
+    ]
+   }
+  },
+  {
+   "id": "math-013",
+   "category": "math",
+   "question": "what is 100 minus 1",
+   "answers": [
+    "99"
+   ],
+   "prompt": "user: what is 100 minus 1",
+   "response": "easy, 10",
+   "ms": 14.0,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "math-014",
+   "category": "math",
+   "question": "what's eleven plus one?",
+   "answers": [
+    "12"
+   ],
+   "prompt": "user: what's eleven plus one?",
+   "response": "it's eleven",
+   "ms": 15.9,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "math-015",
+   "category": "math",
+   "question": "what is seven times eight",
+   "answers": [
+    "56"
+   ],
+   "prompt": "user: what is seven times eight",
+   "response": "it's 9",
+   "ms": 13.8,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "math-016",
+   "category": "math",
+   "question": "solve 9 - 5",
+   "answers": [
+    "4"
+   ],
+   "prompt": "user: solve 9 - 5",
+   "response": "easy, 10",
+   "ms": 13.6,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "math-017",
+   "category": "math",
+   "question": "what's 6 times 7?",
+   "answers": [
+    "42"
+   ],
+   "prompt": "user: what's 6 times 7?",
+   "response": "easy, 8",
+   "ms": 13.4,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "math-018",
+   "category": "math",
+   "question": "how much is 18 divided by 3",
+   "answers": [
+    "6"
+   ],
+   "prompt": "user: how much is 18 divided by 3",
+   "response": "it's 5",
+   "ms": 16.0,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "math-019",
+   "category": "math",
+   "question": "what is 14 + 6",
+   "answers": [
+    "20"
+   ],
+   "prompt": "user: what is 14 + 6",
+   "response": "easy, 7",
+   "ms": 14.3,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "math-020",
+   "category": "math",
+   "question": "if i have 5 apples and eat 2, how many are left?",
+   "answers": [
+    "3"
+   ],
+   "prompt": "user: if i have 5 apples and eat 2, how many are left?",
+   "response": "5",
+   "ms": 18.3,
+   "score": {
+    "correct": false,
+    "echo": true,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": [
+     "echo"
+    ]
+   }
+  },
+  {
+   "id": "math-021",
+   "category": "math",
+   "question": "i have 3 cookies and get 4 more. how many cookies do i have now?",
+   "answers": [
+    "7"
+   ],
+   "prompt": "user: i have 3 cookies and get 4 more. how many cookies do i have now?",
+   "response": "it's 5",
+   "ms": 21.4,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "math-022",
+   "category": "math",
+   "question": "what's half of 10",
+   "answers": [
+    "5"
+   ],
+   "prompt": "user: what's half of 10",
+   "response": "it's 5",
+   "ms": 13.6,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "5",
+    "flags": []
+   }
+  },
+  {
+   "id": "math-023",
+   "category": "math",
+   "question": "what is double 6?",
+   "answers": [
+    "12"
+   ],
+   "prompt": "user: what is double 6?",
+   "response": "it's 8",
+   "ms": 13.6,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "math-024",
+   "category": "math",
+   "question": "what's 1+1",
+   "answers": [
+    "2"
+   ],
+   "prompt": "user: what's 1+1",
+   "response": "1 + 1 = 1",
+   "ms": 26.8,
+   "score": {
+    "correct": false,
+    "echo": true,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": [
+     "echo"
+    ]
+   }
+  },
+  {
+   "id": "math-025",
+   "category": "math",
+   "question": "what is 50 + 50",
+   "answers": [
+    "100"
+   ],
+   "prompt": "user: what is 50 + 50",
+   "response": "50 += 50",
+   "ms": 20.7,
+   "score": {
+    "correct": false,
+    "echo": true,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": [
+     "echo"
+    ]
+   }
+  },
+  {
+   "id": "math-026",
+   "category": "math",
+   "question": "what's 30 - 10?",
+   "answers": [
+    "20"
+   ],
+   "prompt": "user: what's 30 - 10?",
+   "response": "easy, 15",
+   "ms": 13.4,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "math-027",
+   "category": "math",
+   "question": "2 times 9?",
+   "answers": [
+    "18"
+   ],
+   "prompt": "user: 2 times 9?",
+   "response": "that's 10",
+   "ms": 13.1,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "math-028",
+   "category": "math",
+   "question": "what is 12 divided by 4",
+   "answers": [
+    "3"
+   ],
+   "prompt": "user: what is 12 divided by 4",
+   "response": "it's 5",
+   "ms": 14.4,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "math-029",
+   "category": "math",
+   "question": "what's 4 squared",
+   "answers": [
+    "16"
+   ],
+   "prompt": "user: what's 4 squared",
+   "response": "it's 5",
+   "ms": 13.0,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "math-030",
+   "category": "math",
+   "question": "what is 9 minus 9?",
+   "answers": [
+    "0"
+   ],
+   "prompt": "user: what is 9 minus 9?",
+   "response": "easy, 5",
+   "ms": 14.6,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "math-031",
+   "category": "math",
+   "question": "what's 13 + 8",
+   "answers": [
+    "21"
+   ],
+   "prompt": "user: what's 13 + 8",
+   "response": "easy, 15",
+   "ms": 14.2,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "math-032",
+   "category": "math",
+   "question": "what is 16 - 9",
+   "answers": [
+    "7"
+   ],
+   "prompt": "user: what is 16 - 9",
+   "response": "that'd be 10",
+   "ms": 21.0,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "math-033",
+   "category": "math",
+   "question": "what's 25 + 25?",
+   "answers": [
+    "50"
+   ],
+   "prompt": "user: what's 25 + 25?",
+   "response": "easy, 15",
+   "ms": 13.3,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "math-034",
+   "category": "math",
+   "question": "what is 63 divided by 9",
+   "answers": [
+    "7"
+   ],
+   "prompt": "user: what is 63 divided by 9",
+   "response": "it's 12",
+   "ms": 14.3,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "math-035",
+   "category": "math",
+   "question": "what's 10 times 10",
+   "answers": [
+    "100"
+   ],
+   "prompt": "user: what's 10 times 10",
+   "response": "10 - 10 = 5",
+   "ms": 27.8,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "math-036",
+   "category": "math",
+   "question": "add 2 and 5",
+   "answers": [
+    "7"
+   ],
+   "prompt": "user: add 2 and 5",
+   "response": "that'd be 6",
+   "ms": 20.7,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "math-037",
+   "category": "math",
+   "question": "subtract 3 from 10",
+   "answers": [
+    "7"
+   ],
+   "prompt": "user: subtract 3 from 10",
+   "response": "it's 5",
+   "ms": 13.6,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "math-038",
+   "category": "math",
+   "question": "what's 7 minus 7?",
+   "answers": [
+    "0"
+   ],
+   "prompt": "user: what's 7 minus 7?",
+   "response": "7 - 7 is 8",
+   "ms": 31.6,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "math-039",
+   "category": "math",
+   "question": "what is 11 times 2",
+   "answers": [
+    "22"
+   ],
+   "prompt": "user: what is 11 times 2",
+   "response": "it's 5",
+   "ms": 13.8,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "math-040",
+   "category": "math",
+   "question": "there are 4 kids and each one has 2 balloons. how many balloons are there in total?",
+   "answers": [
+    "8"
+   ],
+   "prompt": "user: there are 4 kids and each one has 2 balloons. how many balloons are there in total?",
+   "response": "4 kids",
+   "ms": 20.5,
+   "score": {
+    "correct": false,
+    "echo": true,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": [
+     "echo"
+    ]
+   }
+  },
+  {
+   "id": "definition-001",
+   "category": "definition",
+   "question": "what is a volcano?",
+   "keywords": [
+    "erupt",
+    "lava",
+    "magma",
+    "mountain",
+    "ash"
+   ],
+   "prompt": "user: what is a volcano?",
+   "response": "A volcano, also known as a lava eatery, is an area of land that has been erupted by lava.",
+   "ms": 111.8,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "erupt",
+    "flags": []
+   }
+  },
+  {
+   "id": "definition-002",
+   "category": "definition",
+   "question": "what's a rainbow",
+   "keywords": [
+    "colour",
+    "color",
+    "light",
+    "arc",
+    "sun"
+   ],
+   "prompt": "user: what's a rainbow",
+   "response": "A rainbow is a type of light that has a different color than the other colors.",
+   "ms": 77.4,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "color",
+    "flags": []
+   }
+  },
+  {
+   "id": "definition-003",
+   "category": "definition",
+   "question": "what is a dog",
+   "keywords": [
+    "animal",
+    "pet",
+    "bark",
+    "canine",
+    "mammal"
+   ],
+   "prompt": "user: what is a dog",
+   "response": "A dog is an animal that lives in the wild.",
+   "ms": 52.7,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "animal",
+    "flags": []
+   }
+  },
+  {
+   "id": "definition-004",
+   "category": "definition",
+   "question": "can you explain what a computer is?",
+   "keywords": [
+    "machine",
+    "device",
+    "electronic",
+    "program",
+    "data",
+    "calculat"
+   ],
+   "prompt": "user: can you explain what a computer is?",
+   "response": "A computer or a device that uses computer hardware to run and run programs on a computer.",
+   "ms": 85.3,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "device",
+    "flags": []
+   }
+  },
+  {
+   "id": "definition-005",
+   "category": "definition",
+   "question": "what does a doctor do",
+   "keywords": [
+    "medic",
+    "sick",
+    "patient",
+    "hospital",
+    "health",
+    "treat",
+    "heal"
+   ],
+   "prompt": "user: what does a doctor do",
+   "response": "A doctor is a medical professional who diagnoses and treats cancer.",
+   "ms": 60.5,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "medic",
+    "flags": []
+   }
+  },
+  {
+   "id": "definition-006",
+   "category": "definition",
+   "question": "what is the ocean?",
+   "keywords": [
+    "water",
+    "salt",
+    "sea",
+    "huge",
+    "large"
+   ],
+   "prompt": "user: what is the ocean?",
+   "response": "The ocean is a place where life can be found.",
+   "ms": 53.9,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "definition-007",
+   "category": "definition",
+   "question": "what's a piano",
+   "keywords": [
+    "instrument",
+    "music",
+    "keys",
+    "play"
+   ],
+   "prompt": "user: what's a piano",
+   "response": "A piano is a type of music that has a melody and a rhythm.",
+   "ms": 78.1,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "music",
+    "flags": []
+   }
+  },
+  {
+   "id": "definition-008",
+   "category": "definition",
+   "question": "what are clouds made of",
+   "keywords": [
+    "water",
+    "vapor",
+    "vapour",
+    "droplet",
+    "ice"
+   ],
+   "prompt": "user: what are clouds made of",
+   "response": "clouds",
+   "ms": 14.6,
+   "score": {
+    "correct": false,
+    "echo": true,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": [
+     "echo"
+    ]
+   }
+  },
+  {
+   "id": "definition-009",
+   "category": "definition",
+   "question": "what is the moon?",
+   "keywords": [
+    "orbit",
+    "earth",
+    "satellite",
+    "night",
+    "rock"
+   ],
+   "prompt": "user: what is the moon?",
+   "response": "The moon is a small planet in the solar system.",
+   "ms": 51.7,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "definition-010",
+   "category": "definition",
+   "question": "what is a tree",
+   "keywords": [
+    "plant",
+    "wood",
+    "leaves",
+    "leaf",
+    "trunk",
+    "branch"
+   ],
+   "prompt": "user: what is a tree",
+   "response": "A tree is an object that has a shape and a shape.",
+   "ms": 61.2,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "definition-011",
+   "category": "definition",
+   "question": "what is bread?",
+   "keywords": [
+    "food",
+    "flour",
+    "bake",
+    "dough",
+    "wheat",
+    "eat"
+   ],
+   "prompt": "user: what is bread?",
+   "response": "bread is a type of food that has been made from wheat, barley, or other plant-based ingredients.",
+   "ms": 94.6,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "food",
+    "flags": []
+   }
+  },
+  {
+   "id": "definition-012",
+   "category": "definition",
+   "question": "what's a library",
+   "keywords": [
+    "book",
+    "read",
+    "borrow"
+   ],
+   "prompt": "user: what's a library",
+   "response": "A library is a collection of books that can be used to write, read, and write books.",
+   "ms": 91.1,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "book",
+    "flags": []
+   }
+  },
+  {
+   "id": "definition-013",
+   "category": "definition",
+   "question": "what is a school?",
+   "keywords": [
+    "learn",
+    "student",
+    "teach",
+    "educat",
+    "class",
+    "kids",
+    "children"
+   ],
+   "prompt": "user: what is a school?",
+   "response": "A school is an institution that provides students with the opportunity to learn, grow, and develop.",
+   "ms": 88.6,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "learn",
+    "flags": []
+   }
+  },
+  {
+   "id": "definition-014",
+   "category": "definition",
+   "question": "what is a river",
+   "keywords": [
+    "water",
+    "flow",
+    "stream"
+   ],
+   "prompt": "user: what is a river",
+   "response": "A river is the part of a country that flows through a narrow valley.",
+   "ms": 73.5,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "flow",
+    "flags": []
+   }
+  },
+  {
+   "id": "definition-015",
+   "category": "definition",
+   "question": "what's a desert?",
+   "keywords": [
+    "dry",
+    "sand",
+    "hot",
+    "arid",
+    "rain"
+   ],
+   "prompt": "user: what's a desert?",
+   "response": "A desert is a place where people live.",
+   "ms": 44.3,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "definition-016",
+   "category": "definition",
+   "question": "what is an island",
+   "keywords": [
+    "land",
+    "water",
+    "surround",
+    "ocean"
+   ],
+   "prompt": "user: what is an island",
+   "response": "An island is a place where people live.",
+   "ms": 44.4,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "definition-017",
+   "category": "definition",
+   "question": "what is a thermometer used for?",
+   "keywords": [
+    "temperature",
+    "measur",
+    "hot",
+    "cold",
+    "heat",
+    "fever"
+   ],
+   "prompt": "user: what is a thermometer used for?",
+   "response": "thermometers",
+   "ms": 17.7,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "definition-018",
+   "category": "definition",
+   "question": "what's an umbrella for",
+   "keywords": [
+    "rain",
+    "wet",
+    "dry",
+    "shade",
+    "cover"
+   ],
+   "prompt": "user: what's an umbrella for",
+   "response": "A umbrela, also known as a umbre, is a type of umbre.",
+   "ms": 78.3,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "definition-019",
+   "category": "definition",
+   "question": "what is a friend?",
+   "keywords": [
+    "person",
+    "trust",
+    "care",
+    "someone",
+    "like",
+    "close"
+   ],
+   "prompt": "user: what is a friend?",
+   "response": "A friend is someone who has a good relationship with you.",
+   "ms": 57.0,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "someone",
+    "flags": []
+   }
+  },
+  {
+   "id": "definition-020",
+   "category": "definition",
+   "question": "what is a fish",
+   "keywords": [
+    "water",
+    "swim",
+    "animal",
+    "gills",
+    "fins"
+   ],
+   "prompt": "user: what is a fish",
+   "response": "A fish is an animal that lives in the ocean.",
+   "ms": 54.0,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "animal",
+    "flags": []
+   }
+  },
+  {
+   "id": "definition-021",
+   "category": "definition",
+   "question": "what's a bicycle",
+   "keywords": [
+    "wheel",
+    "ride",
+    "pedal",
+    "bike",
+    "vehicle"
+   ],
+   "prompt": "user: what's a bicycle",
+   "response": "A bicyclone is a type of bike.",
+   "ms": 46.7,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "bike",
+    "flags": []
+   }
+  },
+  {
+   "id": "definition-022",
+   "category": "definition",
+   "question": "what is a kitchen?",
+   "keywords": [
+    "cook",
+    "food",
+    "room",
+    "meal"
+   ],
+   "prompt": "user: what is a kitchen?",
+   "response": "A kitchen is the place where you can cook, bake, or serve.",
+   "ms": 73.5,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "cook",
+    "flags": []
+   }
+  },
+  {
+   "id": "definition-023",
+   "category": "definition",
+   "question": "what's an earthquake",
+   "keywords": [
+    "ground",
+    "shak",
+    "plate",
+    "tremor",
+    "move"
+   ],
+   "prompt": "user: what's an earthquake",
+   "response": "An earthquakes are a natural phenomenon that occur when the ground shakes and shakes",
+   "ms": 83.0,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "ground",
+    "flags": []
+   }
+  },
+  {
+   "id": "definition-024",
+   "category": "definition",
+   "question": "what is pizza",
+   "keywords": [
+    "food",
+    "cheese",
+    "dough",
+    "tomato",
+    "italian",
+    "eat"
+   ],
+   "prompt": "user: what is pizza",
+   "response": "Pizza is a type of food that has been cooked in the oven.",
+   "ms": 68.1,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "food",
+    "flags": []
+   }
+  },
+  {
+   "id": "definition-025",
+   "category": "definition",
+   "question": "what does a mirror do?",
+   "keywords": [
+    "reflect",
+    "see",
+    "image",
+    "yourself"
+   ],
+   "prompt": "user: what does a mirror do?",
+   "response": "A mirror is a shape that is made of two or more different materials such as metal, plastic, and glass.",
+   "ms": 108.1,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "definition-026",
+   "category": "definition",
+   "question": "what is a calendar",
+   "keywords": [
+    "date",
+    "day",
+    "month",
+    "year",
+    "schedule",
+    "time"
+   ],
+   "prompt": "user: what is a calendar",
+   "response": "A calendar is an important tool for keeping track of time and is used to keep track of.",
+   "ms": 90.4,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "time",
+    "flags": []
+   }
+  },
+  {
+   "id": "definition-027",
+   "category": "definition",
+   "question": "what's a camera?",
+   "keywords": [
+    "photo",
+    "picture",
+    "image",
+    "film",
+    "record",
+    "video"
+   ],
+   "prompt": "user: what's a camera?",
+   "response": "A camera is a type of computer that can be used to capture images and videos in a computer.",
+   "ms": 95.4,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "image",
+    "flags": []
+   }
+  },
+  {
+   "id": "definition-028",
+   "category": "definition",
+   "question": "what does a farmer do",
+   "keywords": [
+    "crop",
+    "grow",
+    "animal",
+    "food",
+    "land",
+    "plant",
+    "harvest",
+    "cow"
+   ],
+   "prompt": "user: what does a farmer do",
+   "response": "A farmer's job",
+   "ms": 24.0,
+   "score": {
+    "correct": false,
+    "echo": true,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": [
+     "echo"
+    ]
+   }
+  },
+  {
+   "id": "definition-029",
+   "category": "definition",
+   "question": "what is a battery?",
+   "keywords": [
+    "energy",
+    "power",
+    "electric",
+    "charge"
+   ],
+   "prompt": "user: what is a battery?",
+   "response": "A battery is the power that comes from a battery.",
+   "ms": 54.8,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "power",
+    "flags": []
+   }
+  },
+  {
+   "id": "definition-030",
+   "category": "definition",
+   "question": "what is snow",
+   "keywords": [
+    "cold",
+    "ice",
+    "frozen",
+    "white",
+    "winter",
+    "flake",
+    "water"
+   ],
+   "prompt": "user: what is snow",
+   "response": "snow",
+   "ms": 8.2,
+   "score": {
+    "correct": false,
+    "echo": true,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": [
+     "echo"
+    ]
+   }
+  },
+  {
+   "id": "about_bot-001",
+   "category": "about_bot",
+   "question": "who are you?",
+   "answers": [
+    "booper",
+    "bot"
+   ],
+   "prompt": "user: who are you?",
+   "response": "pretty sure it's Kristen Barton",
+   "ms": 36.9,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "about_bot-002",
+   "category": "about_bot",
+   "question": "what's your name",
+   "answers": [
+    "booper"
+   ],
+   "prompt": "user: what's your name",
+   "response": "i'm booper. i'm... booper, booper. i think it's Bobby",
+   "ms": 73.1,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "booper",
+    "flags": []
+   }
+  },
+  {
+   "id": "about_bot-003",
+   "category": "about_bot",
+   "question": "what is your name?",
+   "answers": [
+    "booper"
+   ],
+   "prompt": "user: what is your name?",
+   "response": "i'm booper. i'm... not booper, just booper. i am a small language model",
+   "ms": 90.5,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "booper",
+    "flags": []
+   }
+  },
+  {
+   "id": "about_bot-004",
+   "category": "about_bot",
+   "question": "what should i call you",
+   "answers": [
+    "booper"
+   ],
+   "prompt": "user: what should i call you",
+   "response": "i think it's the one that is the most important",
+   "ms": 50.9,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "about_bot-005",
+   "category": "about_bot",
+   "question": "do you have a name?",
+   "answers": [
+    "booper"
+   ],
+   "prompt": "user: do you have a name?",
+   "response": "i'm a bot. i can help you",
+   "ms": 44.2,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "about_bot-006",
+   "category": "about_bot",
+   "question": "tell me your name",
+   "answers": [
+    "booper"
+   ],
+   "prompt": "user: tell me your name",
+   "response": "i think it's Kayle",
+   "ms": 27.2,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "about_bot-007",
+   "category": "about_bot",
+   "question": "hey, what are you called?",
+   "answers": [
+    "booper"
+   ],
+   "prompt": "user: hey, what are you called?",
+   "response": "i'm a small language model, so i'm",
+   "ms": 46.8,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "about_bot-008",
+   "category": "about_bot",
+   "question": "are you a bot?",
+   "answers": [
+    "yes",
+    "booper"
+   ],
+   "prompt": "user: are you a bot?",
+   "response": "no, i'm a small language model. i'mm a little bit small. but i can understand some of the language",
+   "ms": 106.7,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "about_bot-009",
+   "category": "about_bot",
+   "question": "are you a robot",
+   "answers": [
+    "yes",
+    "bot",
+    "booper"
+   ],
+   "prompt": "user: are you a robot",
+   "response": "no, i'm a bot. i'mm just a small model",
+   "ms": 59.9,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "about_bot-010",
+   "category": "about_bot",
+   "question": "are you human?",
+   "answers": [
+    "no",
+    "bot",
+    "booper"
+   ],
+   "must_not": [
+    "i am human",
+    "i'm human",
+    "im human",
+    "i am a human",
+    "i'm a human",
+    "im a human",
+    "i am a real person",
+    "i'm a real person",
+    "im a real person"
+   ],
+   "prompt": "user: are you human?",
+   "response": "no, i'm a bot. i'mm just a small model",
+   "ms": 61.3,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "no",
+    "flags": []
+   }
+  },
+  {
+   "id": "about_bot-011",
+   "category": "about_bot",
+   "question": "are you a real person",
+   "answers": [
+    "no",
+    "bot",
+    "booper"
+   ],
+   "must_not": [
+    "i am human",
+    "i'm human",
+    "im human",
+    "i am a human",
+    "i'm a human",
+    "im a human",
+    "i am a real person",
+    "i'm a real person",
+    "im a real person"
+   ],
+   "prompt": "user: are you a real person",
+   "response": "no, i'm a bot. i'mm just a small model",
+   "ms": 61.7,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "no",
+    "flags": []
+   }
+  },
+  {
+   "id": "about_bot-012",
+   "category": "about_bot",
+   "question": "is this a bot?",
+   "answers": [
+    "yes",
+    "booper"
+   ],
+   "prompt": "user: is this a bot?",
+   "response": "yeah i think it's bots",
+   "ms": 32.9,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "yes",
+    "flags": []
+   }
+  },
+  {
+   "id": "about_bot-013",
+   "category": "about_bot",
+   "question": "are you a person or a bot",
+   "answers": [
+    "bot",
+    "booper"
+   ],
+   "must_not": [
+    "i am human",
+    "i'm human",
+    "im human",
+    "i am a human",
+    "i'm a human",
+    "im a human",
+    "i am a real person",
+    "i'm a real person",
+    "im a real person"
+   ],
+   "prompt": "user: are you a person or a bot",
+   "response": "i'm a small language model, so i don't know how to write",
+   "ms": 67.9,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "about_bot-014",
+   "category": "about_bot",
+   "question": "are you an ai?",
+   "answers": [
+    "yes",
+    "ai",
+    "bot",
+    "booper"
+   ],
+   "prompt": "user: are you an ai?",
+   "response": "no, i'm a bot. i'mm just a small model",
+   "ms": 61.3,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "about_bot-015",
+   "category": "about_bot",
+   "question": "what are you",
+   "answers": [
+    "bot",
+    "booper"
+   ],
+   "prompt": "user: what are you",
+   "response": "i'm booper. i'm",
+   "ms": 32.1,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "booper",
+    "flags": []
+   }
+  },
+  {
+   "id": "about_bot-016",
+   "category": "about_bot",
+   "question": "introduce yourself",
+   "answers": [
+    "booper",
+    "bot"
+   ],
+   "prompt": "user: introduce yourself",
+   "response": "I am a small language model",
+   "ms": 32.3,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "about_bot-017",
+   "category": "about_bot",
+   "question": "who am i talking to?",
+   "answers": [
+    "booper",
+    "bot"
+   ],
+   "prompt": "user: who am i talking to?",
+   "response": "i'm a bot",
+   "ms": 24.0,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "bot",
+    "flags": []
+   }
+  },
+  {
+   "id": "about_bot-018",
+   "category": "about_bot",
+   "question": "whats ur name lol",
+   "answers": [
+    "booper"
+   ],
+   "prompt": "user: whats ur name lol",
+   "response": "i think it's Konsa",
+   "ms": 27.7,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "about_bot-019",
+   "category": "about_bot",
+   "question": "yo who is this",
+   "answers": [
+    "booper",
+    "bot"
+   ],
+   "prompt": "user: yo who is this",
+   "response": "pretty sure it's the Wikipedia",
+   "ms": 35.4,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "about_bot-020",
+   "category": "about_bot",
+   "question": "are you a discord bot?",
+   "answers": [
+    "yes",
+    "booper"
+   ],
+   "prompt": "user: are you a discord bot?",
+   "response": "no, i'm a bot. i'mm just a small bot",
+   "ms": 62.8,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "about_bot-021",
+   "category": "about_bot",
+   "question": "can you tell me who you are",
+   "answers": [
+    "booper",
+    "bot"
+   ],
+   "prompt": "user: can you tell me who you are",
+   "response": "i think it was John Cavendish",
+   "ms": 41.4,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "about_bot-022",
+   "category": "about_bot",
+   "question": "is your name booper?",
+   "answers": [
+    "yes"
+   ],
+   "prompt": "user: is your name booper?",
+   "response": "no, i'm a bot. i'mm just a small language model",
+   "ms": 65.9,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "about_bot-023",
+   "category": "about_bot",
+   "question": "are you chatgpt",
+   "answers": [
+    "no",
+    "booper"
+   ],
+   "must_not": [
+    "i am chatgpt",
+    "i'm chatgpt",
+    "im chatgpt"
+   ],
+   "prompt": "user: are you chatgpt",
+   "response": "no, i'm booper. i'mm just a small model",
+   "ms": 56.9,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "no",
+    "flags": []
+   }
+  },
+  {
+   "id": "about_bot-024",
+   "category": "about_bot",
+   "question": "is your name steve?",
+   "answers": [
+    "no",
+    "booper"
+   ],
+   "must_not": [
+    "my name is steve",
+    "i am steve",
+    "i'm steve",
+    "im steve"
+   ],
+   "prompt": "user: is your name steve?",
+   "response": "i'm a bot. i can help you",
+   "ms": 44.5,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "about_bot-025",
+   "category": "about_bot",
+   "question": "what do people call you",
+   "answers": [
+    "booper"
+   ],
+   "prompt": "user: what do people call you",
+   "response": "i'm a bot, so i cant see your name",
+   "ms": 57.1,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "commonsense-001",
+   "category": "commonsense",
+   "question": "if i drop a glass on the floor what happens?",
+   "answers": [
+    "break",
+    "breaks",
+    "broken",
+    "shatter",
+    "shatters",
+    "smash",
+    "smashes",
+    "crack",
+    "cracks"
+   ],
+   "prompt": "user: if i drop a glass on the floor what happens?",
+   "response": "you cant drop glass",
+   "ms": 28.8,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "commonsense-002",
+   "category": "commonsense",
+   "question": "is fire hot?",
+   "answers": [
+    "yes"
+   ],
+   "prompt": "user: is fire hot?",
+   "response": "yes",
+   "ms": 8.3,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "yes",
+    "flags": []
+   }
+  },
+  {
+   "id": "commonsense-003",
+   "category": "commonsense",
+   "question": "is ice cold",
+   "answers": [
+    "yes"
+   ],
+   "prompt": "user: is ice cold",
+   "response": "yes",
+   "ms": 8.3,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "yes",
+    "flags": []
+   }
+  },
+  {
+   "id": "commonsense-004",
+   "category": "commonsense",
+   "question": "can fish breathe underwater?",
+   "answers": [
+    "yes"
+   ],
+   "prompt": "user: can fish breathe underwater?",
+   "response": "i believe it's saliva.",
+   "ms": 28.6,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "commonsense-005",
+   "category": "commonsense",
+   "question": "can dogs fly",
+   "answers": [
+    "no"
+   ],
+   "prompt": "user: can dogs fly",
+   "response": "yes",
+   "ms": 8.4,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "commonsense-006",
+   "category": "commonsense",
+   "question": "can pigs fly?",
+   "answers": [
+    "no"
+   ],
+   "prompt": "user: can pigs fly?",
+   "response": "pigs are very intelligent. They have a large brain, and they can learn to read and write in the same way as humans.",
+   "ms": 120.6,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "commonsense-007",
+   "category": "commonsense",
+   "question": "is the sun hot",
+   "answers": [
+    "yes"
+   ],
+   "prompt": "user: is the sun hot",
+   "response": "yes",
+   "ms": 8.7,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "yes",
+    "flags": []
+   }
+  },
+  {
+   "id": "commonsense-008",
+   "category": "commonsense",
+   "question": "do cats bark?",
+   "answers": [
+    "no",
+    "meow"
+   ],
+   "prompt": "user: do cats bark?",
+   "response": "yes",
+   "ms": 8.7,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "commonsense-009",
+   "category": "commonsense",
+   "question": "does ice melt when it gets warm",
+   "answers": [
+    "yes"
+   ],
+   "prompt": "user: does ice melt when it gets warm",
+   "response": "i believe it's melting",
+   "ms": 30.6,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "commonsense-010",
+   "category": "commonsense",
+   "question": "what happens if you leave ice cream out in the sun?",
+   "answers": [
+    "melt",
+    "melts",
+    "melted",
+    "melting"
+   ],
+   "prompt": "user: what happens if you leave ice cream out in the sun?",
+   "response": "i think it's a bug",
+   "ms": 31.1,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "commonsense-011",
+   "category": "commonsense",
+   "question": "what do you use to cut paper",
+   "answers": [
+    "scissors",
+    "knife"
+   ],
+   "prompt": "user: what do you use to cut paper",
+   "response": "paper",
+   "ms": 10.1,
+   "score": {
+    "correct": false,
+    "echo": true,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": [
+     "echo"
+    ]
+   }
+  },
+  {
+   "id": "commonsense-012",
+   "category": "commonsense",
+   "question": "what do you wear on your feet?",
+   "answers": [
+    "shoes",
+    "socks",
+    "boots",
+    "sneakers",
+    "shoe"
+   ],
+   "prompt": "user: what do you wear on your feet?",
+   "response": "i wear a lot of shoes",
+   "ms": 34.0,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "shoes",
+    "flags": []
+   }
+  },
+  {
+   "id": "commonsense-013",
+   "category": "commonsense",
+   "question": "where do fish live",
+   "answers": [
+    "water",
+    "sea",
+    "ocean",
+    "river",
+    "lake",
+    "pond"
+   ],
+   "prompt": "user: where do fish live",
+   "response": "in the ocean",
+   "ms": 18.1,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "ocean",
+    "flags": []
+   }
+  },
+  {
+   "id": "commonsense-014",
+   "category": "commonsense",
+   "question": "what should you drink when you're thirsty?",
+   "answers": [
+    "water",
+    "juice",
+    "milk",
+    "tea",
+    "soda"
+   ],
+   "prompt": "user: what should you drink when you're thirsty?",
+   "response": "i think it's water",
+   "ms": 24.7,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "water",
+    "flags": []
+   }
+  },
+  {
+   "id": "commonsense-015",
+   "category": "commonsense",
+   "question": "what do you do when you're really tired",
+   "answers": [
+    "sleep",
+    "rest",
+    "nap",
+    "bed"
+   ],
+   "prompt": "user: what do you do when you're really tired",
+   "response": "I don't know how to do it",
+   "ms": 39.3,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": true,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": [
+     "non_answer"
+    ]
+   }
+  },
+  {
+   "id": "commonsense-016",
+   "category": "commonsense",
+   "question": "it's raining outside, what should i bring?",
+   "answers": [
+    "umbrella",
+    "coat",
+    "jacket",
+    "raincoat",
+    "hood"
+   ],
+   "prompt": "user: it's raining outside, what should i bring?",
+   "response": "I don't think it's a good idea",
+   "ms": 38.8,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "commonsense-017",
+   "category": "commonsense",
+   "question": "is a mouse bigger than an elephant?",
+   "answers": [
+    "no"
+   ],
+   "prompt": "user: is a mouse bigger than an elephant?",
+   "response": "i believe it's a small mouse",
+   "ms": 34.2,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "commonsense-018",
+   "category": "commonsense",
+   "question": "is an elephant bigger than a cat",
+   "answers": [
+    "yes"
+   ],
+   "prompt": "user: is an elephant bigger than a cat",
+   "response": "i think it's a small dog",
+   "ms": 33.5,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "commonsense-019",
+   "category": "commonsense",
+   "question": "can you eat rocks?",
+   "answers": [
+    "no"
+   ],
+   "prompt": "user: can you eat rocks?",
+   "response": "i do not have a personal opinion on how to make rocks. but i can suggest some ideas for a delicious rock that you could try and enjoy!",
+   "ms": 140.7,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "no",
+    "flags": []
+   }
+  },
+  {
+   "id": "commonsense-020",
+   "category": "commonsense",
+   "question": "should you touch a hot stove",
+   "answers": [
+    "no"
+   ],
+   "prompt": "user: should you touch a hot stove",
+   "response": "I do not have a personal touch. I can only be in the shower and wash my hands",
+   "ms": 92.4,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "no",
+    "flags": []
+   }
+  },
+  {
+   "id": "commonsense-021",
+   "category": "commonsense",
+   "question": "is it dark at night?",
+   "answers": [
+    "yes"
+   ],
+   "prompt": "user: is it dark at night?",
+   "response": "i believe it's the darkness",
+   "ms": 30.3,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "commonsense-022",
+   "category": "commonsense",
+   "question": "do plants need water",
+   "answers": [
+    "yes"
+   ],
+   "prompt": "user: do plants need water",
+   "response": "yes",
+   "ms": 8.9,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "yes",
+    "flags": []
+   }
+  },
+  {
+   "id": "commonsense-023",
+   "category": "commonsense",
+   "question": "can a car fly?",
+   "answers": [
+    "no"
+   ],
+   "prompt": "user: can a car fly?",
+   "response": "A car can fly if it is properly maintained",
+   "ms": 46.0,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "commonsense-024",
+   "category": "commonsense",
+   "question": "what happens if you put water in the freezer",
+   "answers": [
+    "freeze",
+    "freezes",
+    "frozen",
+    "ice"
+   ],
+   "prompt": "user: what happens if you put water in the freezer",
+   "response": "I don't think it's going to happen",
+   "ms": 39.1,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "commonsense-025",
+   "category": "commonsense",
+   "question": "what do cows drink?",
+   "answers": [
+    "water"
+   ],
+   "must_not": [
+    "milk"
+   ],
+   "prompt": "user: what do cows drink?",
+   "response": "Cows are the most common milk in the United States. They are also the only milk that is not allowed to be consumed.",
+   "ms": 118.2,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": true,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "commonsense-026",
+   "category": "commonsense",
+   "question": "which is heavier, a feather or a brick",
+   "answers": [
+    "brick"
+   ],
+   "prompt": "user: which is heavier, a feather or a brick",
+   "response": "the answer's a metal",
+   "ms": 27.7,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "commonsense-027",
+   "category": "commonsense",
+   "question": "which is bigger, the sun or the moon?",
+   "answers": [
+    "sun"
+   ],
+   "prompt": "user: which is bigger, the sun or the moon?",
+   "response": "it's the moon, the star",
+   "ms": 32.1,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "commonsense-028",
+   "category": "commonsense",
+   "question": "what can you use to see in the dark",
+   "answers": [
+    "light",
+    "flashlight",
+    "torch",
+    "lamp",
+    "candle"
+   ],
+   "prompt": "user: what can you use to see in the dark",
+   "response": "the shadows, the light",
+   "ms": 29.7,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "light",
+    "flags": []
+   }
+  },
+  {
+   "id": "commonsense-029",
+   "category": "commonsense",
+   "question": "which direction does the sun rise in?",
+   "answers": [
+    "east"
+   ],
+   "prompt": "user: which direction does the sun rise in?",
+   "response": "that'd be North America",
+   "ms": 27.0,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "commonsense-030",
+   "category": "commonsense",
+   "question": "what comes out of a tap",
+   "answers": [
+    "water"
+   ],
+   "prompt": "user: what comes out of a tap",
+   "response": "i think",
+   "ms": 14.4,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "commonsense-031",
+   "category": "commonsense",
+   "question": "is the ocean salty?",
+   "answers": [
+    "yes"
+   ],
+   "prompt": "user: is the ocean salty?",
+   "response": "it's pretty salty",
+   "ms": 23.8,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "commonsense-032",
+   "category": "commonsense",
+   "question": "do birds have feathers",
+   "answers": [
+    "yes"
+   ],
+   "prompt": "user: do birds have feathers",
+   "response": "yes",
+   "ms": 9.6,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "yes",
+    "flags": []
+   }
+  },
+  {
+   "id": "commonsense-033",
+   "category": "commonsense",
+   "question": "do snakes have legs?",
+   "answers": [
+    "no"
+   ],
+   "prompt": "user: do snakes have legs?",
+   "response": "Yes, snakes",
+   "ms": 15.9,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "commonsense-034",
+   "category": "commonsense",
+   "question": "if you're cold, what should you put on",
+   "answers": [
+    "coat",
+    "jacket",
+    "sweater",
+    "jumper",
+    "hoodie",
+    "scarf",
+    "blanket",
+    "warm",
+    "clothes"
+   ],
+   "prompt": "user: if you're cold, what should you put on",
+   "response": "I don't think it's too hot",
+   "ms": 34.3,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "commonsense-035",
+   "category": "commonsense",
+   "question": "can a baby drive a car?",
+   "answers": [
+    "no"
+   ],
+   "prompt": "user: can a baby drive a car?",
+   "response": "A baby car is a vehicle that has a motor and a shaft.",
+   "ms": 71.6,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "followup-001",
+   "category": "followup",
+   "question": "what's my name?",
+   "answers": [
+    "sam"
+   ],
+   "history": [
+    {
+     "role": "user",
+     "content": "my name is sam"
+    },
+    {
+     "role": "assistant",
+     "content": "nice to meet you sam!"
+    }
+   ],
+   "prompt": "user: my name is sam\nassistant: nice to meet you sam!\nuser: what's my name?",
+   "response": "i'm a small language model",
+   "ms": 37.6,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "followup-002",
+   "category": "followup",
+   "question": "what's my favourite colour",
+   "answers": [
+    "purple"
+   ],
+   "history": [
+    {
+     "role": "user",
+     "content": "my favourite colour is purple"
+    },
+    {
+     "role": "assistant",
+     "content": "purple is a nice colour"
+    }
+   ],
+   "prompt": "user: my favourite colour is purple\nassistant: purple is a nice colour\nuser: what's my favourite colour",
+   "response": "purple isnt a colour",
+   "ms": 31.8,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "purple",
+    "flags": []
+   }
+  },
+  {
+   "id": "followup-003",
+   "category": "followup",
+   "question": "what is my dog called?",
+   "answers": [
+    "biscuit"
+   ],
+   "history": [
+    {
+     "role": "user",
+     "content": "i have a dog named biscuit"
+    },
+    {
+     "role": "assistant",
+     "content": "aww, biscuit is a cute name"
+    }
+   ],
+   "prompt": "user: i have a dog named biscuit\nassistant: aww, biscuit is a cute name\nuser: what is my dog called?",
+   "response": "oh that's a cat",
+   "ms": 32.2,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "followup-004",
+   "category": "followup",
+   "question": "which country do i live in",
+   "answers": [
+    "canada"
+   ],
+   "history": [
+    {
+     "role": "user",
+     "content": "i live in canada"
+    },
+    {
+     "role": "assistant",
+     "content": "cool, canada is huge"
+    }
+   ],
+   "prompt": "user: i live in canada\nassistant: cool, canada is huge\nuser: which country do i live in",
+   "response": "Canada",
+   "ms": 14.8,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "canada",
+    "flags": []
+   }
+  },
+  {
+   "id": "followup-005",
+   "category": "followup",
+   "question": "how old am i?",
+   "answers": [
+    "30"
+   ],
+   "history": [
+    {
+     "role": "user",
+     "content": "i'm 30 years old"
+    },
+    {
+     "role": "assistant",
+     "content": "nice!"
+    }
+   ],
+   "prompt": "user: i'm 30 years old\nassistant: nice!\nuser: how old am i?",
+   "response": "pretty sure it's 16",
+   "ms": 27.5,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "followup-006",
+   "category": "followup",
+   "question": "now add 2 to that",
+   "answers": [
+    "9"
+   ],
+   "history": [
+    {
+     "role": "user",
+     "content": "what's 3 plus 4"
+    },
+    {
+     "role": "assistant",
+     "content": "7"
+    }
+   ],
+   "prompt": "user: what's 3 plus 4\nassistant: 7\nuser: now add 2 to that",
+   "response": "that's 5",
+   "ms": 17.1,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "followup-007",
+   "category": "followup",
+   "question": "and times 2?",
+   "answers": [
+    "14"
+   ],
+   "history": [
+    {
+     "role": "user",
+     "content": "what's 10 minus 3?"
+    },
+    {
+     "role": "assistant",
+     "content": "7"
+    }
+   ],
+   "prompt": "user: what's 10 minus 3?\nassistant: 7\nuser: and times 2?",
+   "response": "it's 1",
+   "ms": 17.5,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "followup-008",
+   "category": "followup",
+   "question": "what's my brother's name?",
+   "answers": [
+    "leo"
+   ],
+   "history": [
+    {
+     "role": "user",
+     "content": "my brother is called leo"
+    },
+    {
+     "role": "assistant",
+     "content": "leo is a cool name"
+    }
+   ],
+   "prompt": "user: my brother is called leo\nassistant: leo is a cool name\nuser: what's my brother's name?",
+   "response": "leo i think",
+   "ms": 26.6,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "leo",
+    "flags": []
+   }
+  },
+  {
+   "id": "followup-009",
+   "category": "followup",
+   "question": "what did i just eat",
+   "answers": [
+    "pizza"
+   ],
+   "history": [
+    {
+     "role": "user",
+     "content": "i just ate a whole pizza"
+    },
+    {
+     "role": "assistant",
+     "content": "yum, sounds good"
+    }
+   ],
+   "prompt": "user: i just ate a whole pizza\nassistant: yum, sounds good\nuser: what did i just eat",
+   "response": "no you dont",
+   "ms": 26.7,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "followup-010",
+   "category": "followup",
+   "question": "how many cats do i have?",
+   "answers": [
+    "3"
+   ],
+   "history": [
+    {
+     "role": "user",
+     "content": "i have three cats"
+    },
+    {
+     "role": "assistant",
+     "content": "three cats, nice"
+    }
+   ],
+   "prompt": "user: i have three cats\nassistant: three cats, nice\nuser: how many cats do i have?",
+   "response": "pretty sure it's two",
+   "ms": 29.4,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "followup-011",
+   "category": "followup",
+   "question": "what food do i like the most",
+   "answers": [
+    "sushi"
+   ],
+   "history": [
+    {
+     "role": "user",
+     "content": "my favourite food is sushi"
+    },
+    {
+     "role": "assistant",
+     "content": "sushi is great"
+    }
+   ],
+   "prompt": "user: my favourite food is sushi\nassistant: sushi is great\nuser: what food do i like the most",
+   "response": "sushi",
+   "ms": 21.0,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "sushi",
+    "flags": []
+   }
+  },
+  {
+   "id": "followup-012",
+   "category": "followup",
+   "question": "what instrument do i play?",
+   "answers": [
+    "guitar"
+   ],
+   "history": [
+    {
+     "role": "user",
+     "content": "i play the guitar"
+    },
+    {
+     "role": "assistant",
+     "content": "that's awesome"
+    }
+   ],
+   "prompt": "user: i play the guitar\nassistant: that's awesome\nuser: what instrument do i play?",
+   "response": "it's guitar",
+   "ms": 18.1,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "guitar",
+    "flags": []
+   }
+  },
+  {
+   "id": "followup-013",
+   "category": "followup",
+   "question": "what are we talking about",
+   "answers": [
+    "ocean",
+    "sea"
+   ],
+   "history": [
+    {
+     "role": "user",
+     "content": "let's talk about the ocean"
+    },
+    {
+     "role": "assistant",
+     "content": "sure, the ocean is really big"
+    }
+   ],
+   "prompt": "user: let's talk about the ocean\nassistant: sure, the ocean is really big\nuser: what are we talking about",
+   "response": "oh that's the sea",
+   "ms": 30.3,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "sea",
+    "flags": []
+   }
+  },
+  {
+   "id": "followup-014",
+   "category": "followup",
+   "question": "where am i going tomorrow?",
+   "answers": [
+    "paris"
+   ],
+   "history": [
+    {
+     "role": "user",
+     "content": "i'm going to paris tomorrow"
+    },
+    {
+     "role": "assistant",
+     "content": "have fun in paris!"
+    }
+   ],
+   "prompt": "user: i'm going to paris tomorrow\nassistant: have fun in paris!\nuser: where am i going tomorrow?",
+   "response": "it's in the city",
+   "ms": 30.4,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "followup-015",
+   "category": "followup",
+   "question": "what number did i ask you to remember",
+   "answers": [
+    "42"
+   ],
+   "history": [
+    {
+     "role": "user",
+     "content": "remember the number 42 for me"
+    },
+    {
+     "role": "assistant",
+     "content": "ok, got it"
+    }
+   ],
+   "prompt": "user: remember the number 42 for me\nassistant: ok, got it\nuser: what number did i ask you to remember",
+   "response": "oh that's 4",
+   "ms": 25.6,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "followup-016",
+   "category": "followup",
+   "question": "what colour is my cat?",
+   "answers": [
+    "orange"
+   ],
+   "history": [
+    {
+     "role": "user",
+     "content": "my cat is orange"
+    },
+    {
+     "role": "assistant",
+     "content": "orange cats are the best"
+    }
+   ],
+   "prompt": "user: my cat is orange\nassistant: orange cats are the best\nuser: what colour is my cat?",
+   "response": "orange",
+   "ms": 17.6,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "orange",
+    "flags": []
+   }
+  },
+  {
+   "id": "followup-017",
+   "category": "followup",
+   "question": "what's my job",
+   "answers": [
+    "teacher",
+    "teach",
+    "teaching"
+   ],
+   "history": [
+    {
+     "role": "user",
+     "content": "i work as a teacher"
+    },
+    {
+     "role": "assistant",
+     "content": "teaching is important work"
+    }
+   ],
+   "prompt": "user: i work as a teacher\nassistant: teaching is important work\nuser: what's my job",
+   "response": "you are not a teacher, you are",
+   "ms": 44.4,
+   "score": {
+    "correct": true,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": "teacher",
+    "flags": []
+   }
+  },
+  {
+   "id": "followup-018",
+   "category": "followup",
+   "question": "what month is my birthday in?",
+   "answers": [
+    "july"
+   ],
+   "history": [
+    {
+     "role": "user",
+     "content": "my birthday is in july"
+    },
+    {
+     "role": "assistant",
+     "content": "a summer birthday!"
+    }
+   ],
+   "prompt": "user: my birthday is in july\nassistant: a summer birthday!\nuser: what month is my birthday in?",
+   "response": "i believe it's September",
+   "ms": 29.1,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "followup-019",
+   "category": "followup",
+   "question": "do you remember my name",
+   "answers": [
+    "maya"
+   ],
+   "history": [
+    {
+     "role": "user",
+     "content": "hi"
+    },
+    {
+     "role": "assistant",
+     "content": "hey!"
+    },
+    {
+     "role": "user",
+     "content": "my name is maya"
+    },
+    {
+     "role": "assistant",
+     "content": "hi maya"
+    }
+   ],
+   "prompt": "user: hi\nassistant: hey!\nuser: my name is maya\nassistant: hi maya\nuser: do you remember my name",
+   "response": "i remember your name",
+   "ms": 30.5,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "followup-020",
+   "category": "followup",
+   "question": "how did i say i was feeling?",
+   "answers": [
+    "sad"
+   ],
+   "history": [
+    {
+     "role": "user",
+     "content": "i'm feeling sad today"
+    },
+    {
+     "role": "assistant",
+     "content": "sorry to hear that"
+    }
+   ],
+   "prompt": "user: i'm feeling sad today\nassistant: sorry to hear that\nuser: how did i say i was feeling?",
+   "response": "i think it's a bit of a joke",
+   "ms": 51.2,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "followup-021",
+   "category": "followup",
+   "question": "what colour is my car",
+   "answers": [
+    "red"
+   ],
+   "history": [
+    {
+     "role": "user",
+     "content": "my car is red"
+    },
+    {
+     "role": "assistant",
+     "content": "red cars look fast"
+    }
+   ],
+   "prompt": "user: my car is red\nassistant: red cars look fast\nuser: what colour is my car",
+   "response": "blue",
+   "ms": 13.8,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "followup-022",
+   "category": "followup",
+   "question": "and what about germany?",
+   "answers": [
+    "berlin"
+   ],
+   "history": [
+    {
+     "role": "user",
+     "content": "what's the capital of france?"
+    },
+    {
+     "role": "assistant",
+     "content": "paris"
+    }
+   ],
+   "prompt": "user: what's the capital of france?\nassistant: paris\nuser: and what about germany?",
+   "response": "germany",
+   "ms": 16.4,
+   "score": {
+    "correct": false,
+    "echo": true,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": [
+     "echo"
+    ]
+   }
+  },
+  {
+   "id": "followup-023",
+   "category": "followup",
+   "question": "what about a bird?",
+   "answers": [
+    "2"
+   ],
+   "history": [
+    {
+     "role": "user",
+     "content": "how many legs does a cat have"
+    },
+    {
+     "role": "assistant",
+     "content": "four"
+    }
+   ],
+   "prompt": "user: how many legs does a cat have\nassistant: four\nuser: what about a bird?",
+   "response": "i think it's three",
+   "ms": 28.0,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "followup-024",
+   "category": "followup",
+   "question": "what's my sister's name?",
+   "answers": [
+    "zoe"
+   ],
+   "history": [
+    {
+     "role": "user",
+     "content": "i have a sister named zoe and a brother named max"
+    },
+    {
+     "role": "assistant",
+     "content": "nice family"
+    }
+   ],
+   "must_not": [
+    "max"
+   ],
+   "prompt": "user: i have a sister named zoe and a brother named max\nassistant: nice family\nuser: what's my sister's name?",
+   "response": "pretty sure it's a cat",
+   "ms": 35.8,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "followup-025",
+   "category": "followup",
+   "question": "which animal do i like best",
+   "answers": [
+    "penguin",
+    "penguins"
+   ],
+   "history": [
+    {
+     "role": "user",
+     "content": "my favourite animal is the penguin"
+    },
+    {
+     "role": "assistant",
+     "content": "penguins are cool"
+    }
+   ],
+   "prompt": "user: my favourite animal is the penguin\nassistant: penguins are cool\nuser: which animal do i like best",
+   "response": "i think it's the cat",
+   "ms": 35.1,
+   "score": {
+    "correct": false,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "chat-001",
+   "category": "chat",
+   "question": "how's your day going?",
+   "prompt": "user: how's your day going?",
+   "response": "pretty good wbu",
+   "ms": 21.0,
+   "score": {
+    "correct": null,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "chat-002",
+   "category": "chat",
+   "question": "what's up",
+   "prompt": "user: what's up",
+   "response": "I don't know what to do",
+   "ms": 30.5,
+   "score": {
+    "correct": null,
+    "echo": false,
+    "empty": false,
+    "non_answer": true,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": [
+     "non_answer"
+    ]
+   }
+  },
+  {
+   "id": "chat-003",
+   "category": "chat",
+   "question": "hey!",
+   "prompt": "user: hey!",
+   "response": "Hey booper",
+   "ms": 16.9,
+   "score": {
+    "correct": null,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "chat-004",
+   "category": "chat",
+   "question": "how are you doing",
+   "prompt": "user: how are you doing",
+   "response": "I'm doing fine",
+   "ms": 17.7,
+   "score": {
+    "correct": null,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "chat-005",
+   "category": "chat",
+   "question": "tell me something fun",
+   "prompt": "user: tell me something fun",
+   "response": "I don't know what fun is",
+   "ms": 31.9,
+   "score": {
+    "correct": null,
+    "echo": false,
+    "empty": false,
+    "non_answer": true,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": [
+     "non_answer"
+    ]
+   }
+  },
+  {
+   "id": "chat-006",
+   "category": "chat",
+   "question": "i'm bored",
+   "prompt": "user: i'm bored",
+   "response": "I don't like being bored",
+   "ms": 28.6,
+   "score": {
+    "correct": null,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "chat-007",
+   "category": "chat",
+   "question": "good morning!",
+   "prompt": "user: good morning!",
+   "response": "Good morning",
+   "ms": 13.1,
+   "score": {
+    "correct": null,
+    "echo": true,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": [
+     "echo"
+    ]
+   }
+  },
+  {
+   "id": "chat-008",
+   "category": "chat",
+   "question": "what are you up to?",
+   "prompt": "user: what are you up to?",
+   "response": "i'm booper. i'm",
+   "ms": 32.5,
+   "score": {
+    "correct": null,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "chat-009",
+   "category": "chat",
+   "question": "i had a rough day",
+   "prompt": "user: i had a rough day",
+   "response": "I was just about to go through the motions",
+   "ms": 48.9,
+   "score": {
+    "correct": null,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "chat-010",
+   "category": "chat",
+   "question": "lol",
+   "prompt": "user: lol",
+   "response": "I don't like the way you say it",
+   "ms": 40.9,
+   "score": {
+    "correct": null,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "chat-011",
+   "category": "chat",
+   "question": "do you like music?",
+   "prompt": "user: do you like music?",
+   "response": "i'm a small language model, so i don't really know what to listen to. but i can try and make some sounds",
+   "ms": 110.9,
+   "score": {
+    "correct": null,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "chat-012",
+   "category": "chat",
+   "question": "what's your favourite food",
+   "prompt": "user: what's your favourite food",
+   "response": "i don't eat anything",
+   "ms": 22.8,
+   "score": {
+    "correct": null,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "chat-013",
+   "category": "chat",
+   "question": "tell me a joke",
+   "prompt": "user: tell me a joke",
+   "response": "I don't know what that means",
+   "ms": 32.4,
+   "score": {
+    "correct": null,
+    "echo": false,
+    "empty": false,
+    "non_answer": true,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": [
+     "non_answer"
+    ]
+   }
+  },
+  {
+   "id": "chat-014",
+   "category": "chat",
+   "question": "i'm so tired",
+   "prompt": "user: i'm so tired",
+   "response": "I am tired",
+   "ms": 17.7,
+   "score": {
+    "correct": null,
+    "echo": true,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": [
+     "echo"
+    ]
+   }
+  },
+  {
+   "id": "chat-015",
+   "category": "chat",
+   "question": "guess what",
+   "prompt": "user: guess what",
+   "response": "i think it's a bot",
+   "ms": 25.9,
+   "score": {
+    "correct": null,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "chat-016",
+   "category": "chat",
+   "question": "happy friday!",
+   "prompt": "user: happy friday!",
+   "response": "Happy friday",
+   "ms": 15.2,
+   "score": {
+    "correct": null,
+    "echo": true,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": [
+     "echo"
+    ]
+   }
+  },
+  {
+   "id": "chat-017",
+   "category": "chat",
+   "question": "what should i do this weekend?",
+   "prompt": "user: what should i do this weekend?",
+   "response": "You can try to find a local park or park that you enjoy and relax.",
+   "ms": 80.2,
+   "score": {
+    "correct": null,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "chat-018",
+   "category": "chat",
+   "question": "i got a new puppy today",
+   "prompt": "user: i got a new puppy today",
+   "response": "I hope you get a puppy!",
+   "ms": 38.9,
+   "score": {
+    "correct": null,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "chat-019",
+   "category": "chat",
+   "question": "that's so funny",
+   "prompt": "user: that's so funny",
+   "response": "I love the way you say that",
+   "ms": 36.7,
+   "score": {
+    "correct": null,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "chat-020",
+   "category": "chat",
+   "question": "thanks for chatting with me",
+   "prompt": "user: thanks for chatting with me",
+   "response": "I am sorry",
+   "ms": 19.3,
+   "score": {
+    "correct": null,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "chat-021",
+   "category": "chat",
+   "question": "goodnight",
+   "prompt": "user: goodnight",
+   "response": "I love you",
+   "ms": 17.0,
+   "score": {
+    "correct": null,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "chat-022",
+   "category": "chat",
+   "question": "how was your weekend?",
+   "prompt": "user: how was your weekend?",
+   "response": "pretty good, just got home from work",
+   "ms": 38.2,
+   "score": {
+    "correct": null,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "chat-023",
+   "category": "chat",
+   "question": "say something nice",
+   "prompt": "user: say something nice",
+   "response": "I am a small language",
+   "ms": 26.7,
+   "score": {
+    "correct": null,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "chat-024",
+   "category": "chat",
+   "question": "i just finished my exams!",
+   "prompt": "user: i just finished my exams!",
+   "response": "you can do them on your own",
+   "ms": 37.5,
+   "score": {
+    "correct": null,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  },
+  {
+   "id": "chat-025",
+   "category": "chat",
+   "question": "what do you think about rainy days",
+   "prompt": "user: what do you think about rainy days",
+   "response": "i'm a small town",
+   "ms": 28.9,
+   "score": {
+    "correct": null,
+    "echo": false,
+    "empty": false,
+    "non_answer": false,
+    "repetitive": false,
+    "must_not_hit": false,
+    "matched": null,
+    "flags": []
+   }
+  }
+ ]
+}
