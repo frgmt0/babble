@@ -56,3 +56,8 @@ Full results are in `bench/qa/results/qa-v1.{json,md}`.
 sed -i 's|^BABBLE_HF_MODEL_DIR=.*|BABBLE_HF_MODEL_DIR=/home/jason/babble-live/artifacts/hf-booper-longctx-v1|' ~/babble-live/.env
 systemctl --user restart babble-bot
 ```
+
+## Rolled back, 2026-10-02 15:51 UTC
+Users reported that qa-v1 lost longctx-v1's personality and said they much preferred the old one. Live was rolled back to `hf-booper-longctx-v1` using the rollback steps above. `model.load` confirmed `model_dir=.../hf-booper-longctx-v1`, and `bot.ready` arrived at 15:51:41Z. The qa-v1 `.env` is kept as `backups/qa-v1-promote-2026-10-02/env.qa-v1`, and the model directory stays on disk.
+
+**Lesson:** a gain on the QA eval plus a passing discord val-loss guard did not protect the voice. A guard on loss over Discord targets cannot see a register shift on *new* prompts. Next: curate knowledge data in longctx-v1's register, and gate on a voice fingerprint.
