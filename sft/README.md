@@ -190,3 +190,111 @@ in `.env.sft` (gitignored) and every metrics record is also POSTed to `/api/runs
 Output of a run: `runs/<name>/{train.log,metrics.jsonl,ckpt/,export/}`. `export/` is a drop-in for
 `BABBLE_HF_MODEL_DIR` on the live box (same INT8 layout `babble.hfserve` reads; the script round-trips it through
 that loader before finishing).
+
+## Unhinged run (`unhinged-mac.json`) — longctx-v2
+
+Run name **`longctx-v2`**. Continues from `runs/longctx-v1/export`, the live model (qa-v1 was promoted on 2026-10-02
+and rolled back to longctx-v1 the same morning, so it is not a base). Goal: better *conversation* (answer what was
+actually said, keep the thread) with more of booper's chaotic Discord energy. Same personality, pushed further,
+still coherent. The serving contract is unchanged: `seq_len 2048`, `prompt_budget 1536`, `history_turns 8`,
+`role_transcript_v1`, gif tags on. Promotion therefore only moves `BABBLE_HF_MODEL_DIR`, as for qa-v1. Measured data
+numbers and the timing math are in `docs/reports/UNHINGED_DATA_2026-10-14.md`.
+
+**New sources** (appended after `wiki`, so every older preset keeps its split seeds and data signature):
+
+- `discord_vibe` (`--mix-discord-vibe`). The same pinned `mookiezi/Discord-Dialogues` stream, filtered by
+  `sft/vibe.py`:
+  - `vibe_score` is a transparent, hand-weighted sum. It rewards lowercase, emoji/emoticons, elongated words,
+    laughter, caps bursts, slang, `!!`/`?!` and playful markers (`*actions*`, keysmash, uwu). It penalizes
+    assistant-speak, a bare "ok"/"k"/"yeah" as the whole reply, URLs, number/character spam, copypasta and walls of
+    text. `vibe_features` shows each contribution.
+  - `conversation_verdict` drops a conversation for any blocklist hit (`babble/blocklist.py`, unchanged), too few
+    targets, more than half one-word turns, any target at or below -2 (assistant-speak/URL/spam), fewer than half
+    of the replies engaging the turn before them (shared stemmed content words, an answer to a question, a
+    reaction, an acknowledgement, or addressing the other person), or a mean target vibe below `--discord-vibe-min`.
+  - About 45% of rows open with the `assistant` speaker. `discord` drops those rows; `discord_vibe` starts them at
+    the first user turn.
+  - **Region.** The dataset is ordered by conversation length, and every earlier run read it from the head.
+    longctx-v1's `discord` slice consumed exactly the first **233,989** rows (measured by `vibe_report.py
+    --supply-rows`), so `--discord-vibe-skip-rows 233989` starts past it and the vibe data is new to the base.
+    `_skip_seen` also drops any group whose id or target this run's `discord` source already took. That makes a
+    train/val leak between the two sources impossible even if the regions overlapped
+    (`tests/test_sft_vibe.py::test_discord_and_discord_vibe_never_share_a_conversation`).
+  - Gif handling is identical to `discord`: URLs/filenames become `[gif: ...]` tags, and the synthetic-reaction
+    budget is capped at `--gif-synth-max-frac` of the kept targets.
+- `booper_local` (`--mix-local`, `--repeat-local <= 3`, `--local-snapshot DIR ...`). This is the consented
+  `babble export` snapshot's `data/train.jsonl`. Approvals are always used. Corrections are used only when `chosen`
+  is a direct reply. Meta-instructions ("say something like X whenever someone says Y", "when someone is asking
+  you X, you'd say Y", "booper should ...") are rejected by `META_INSTRUCTION_RE`. Empty, blocklisted,
+  URL-bearing and assistant-speak rows are dropped too. A missing path or zero usable rows is a hard error. Only a
+  sha256 of the input files (`local_snapshot_sha256`) goes into run metadata and the cache key, never paths or
+  text. The source is a handful of pairs (7 of 9 in the 2026-10-14 snapshot), so it is **train-only**. A held-out
+  loss on one or two examples would be noise in the export gate; `sft/vibe_eval.py` measures it instead.
+
+**Mix** (`examples 630000`, fractions of examples; measured full build): discord_vibe 0.52 (327.6k train targets),
+discord 0.425 (266.6k, still inside the slice longctx-v1 already read), persona 0.015 (x3, supply-capped at 1.7k),
+ultrachat 0.01, booper_local 0.01 (x3, supply-capped at 21), oasst 0.009, no_robots 0.006 (x2), smoltalk 0.005.
+discord_vibe takes essentially the whole rest of the dataset: the build scanned 6.47M rows and kept 315.9k
+conversations. Discord examples are short (discord_vibe 48 tokens, discord 86 on average), while ultrachat and
+smoltalk average about 1.2k. Rehearsal is therefore 2.8% of examples, 27% of the 52.8M train tokens, and about 29% of
+the loss-bearing target tokens. That is enough to hold coherence without drowning the voice.
+
+**Gate.** The rule is unchanged: aggregate val must beat the base, and no source (role, migration, multi-turn view)
+may regress by more than 0.05 nats. On top of that, `--guard-sources discord persona ultrachat` must be present and
+stay within 0.05, and `--multiturn-must-improve discord_vibe` is required: it is the only multi-turn val the base
+has never seen. `val_examples 2000` (5,359 eval views) keeps the small rehearsal vals at 12-31 examples.
+`discord_vibe_multiturn` is still only 49 examples, because only rows 233,990-469,900 hold more than one exchange.
+
+**Memory.** Short examples mean many distinct batch shapes. The MPS pool cached blocks for each and OOMed at the 0.6
+watermark within the first optimizer step while only ~2.3 GiB was live. `--mps-empty-cache-gb 5` returns the cache
+after any micro-batch that leaves the pool above 5 GiB, and frees it before every checkpoint save. Before that, the
+CPU copy of the optimizer state went to swap: one save took 12 min, against 8-10 s with the cache freed. The flag is
+opt-in (default 0), so older presets behave as before.
+
+**Schedule.** `duty_cycle 1.0` (the Mac is otherwise idle), `pause_on_battery` on. `tokens 281804800` is 8,600
+optimizer steps, about 2.6 passes over the 52.8M-token train set (3,268 steps per pass). The total is sized to finish
+by Fri 2026-10-16 04:00 PDT if started by Wed 18:00 PDT; each hour later costs about 257 steps. The report has the
+arithmetic. Evals run every 500 steps, and each passing eval saves `best/`. Checkpoints for `--resume` are saved every
+100 steps. The export is always the best passing eval, so if later passes overfit, an earlier checkpoint ships.
+The full build takes 14.5 min and is cached in `runs/longctx-v2/data-cache.pkl`. The cache key covers every build
+input except `tokens`, eval and checkpoint cadence. The cache from the measured build was left there, so a launch
+with the commands below reuses it.
+
+```bash
+# 0. base: runs/longctx-v1/export (gitignored). If it is missing, copy it from the desktop box (run by a human):
+#    scp -r desktop:~/babble-live/artifacts/hf-booper-longctx-v1/ runs/longctx-v1/export
+#    shasum -a 256 runs/longctx-v1/export/model-int8.safetensors   # c543cb9d...1e35 per the promote report
+SNAP="data/server-snapshot-2026-10-14/live data/server-snapshot-2026-10-14/boopit"
+
+# 1. optional: the data report (public examples printed; our users' data aggregate-only)
+.venv/bin/python sft/vibe_report.py --n 5000 --skip-rows 233989 --min-vibe 0.75 --min-targets 1 \
+    --supply-rows 700000 --snapshot $SNAP --json runs/vibe-report/report.json
+
+# 2. smoke, then the run
+sft/train.sh longctx-v2-smoke --base runs/longctx-v1/export --config configs/sft/unhinged-mac.json --local-snapshot $SNAP --smoke
+sft/train.sh longctx-v2 --base runs/longctx-v1/export --config configs/sft/unhinged-mac.json --local-snapshot $SNAP
+sft/monitor.sh longctx-v2
+
+# stop / resume (same flags + --resume; the data cache and batch position are reused)
+sft/stop.sh
+sft/train.sh longctx-v2 --base runs/longctx-v1/export --config configs/sft/unhinged-mac.json --local-snapshot $SNAP --resume
+
+# stopped early (e.g. the Friday deadline)? export the best *passing* checkpoint (runs/longctx-v2/best):
+sft/stop.sh
+.venv/bin/python sft/sft_longform.py --name longctx-v2 --base runs/longctx-v1/export \
+    --config configs/sft/unhinged-mac.json --local-snapshot $SNAP --export
+```
+
+`--export` reads `runs/longctx-v2/quality.json`. It packs `best/` (the last eval that beat the base and passed every
+gate) into `runs/longctx-v2/export/` and round-trips it through `babble.hfserve._load_int8`. If no eval has passed
+yet it refuses ("quality gate has no passing checkpoint to export"), and nothing should be promoted.
+
+**Before/after eval** on real user prompts (seeded subset of the snapshot's mention/dm/reply messages, serving
+temperature 0.8, through `sft_longform.sample`). Per-reply output contains users' messages, so it stays in the
+gitignored `runs/`:
+
+```bash
+.venv/bin/python sft/vibe_eval.py --model runs/longctx-v1/export --snapshot $SNAP --n 200 --seed 0 --out runs/vibe-eval/longctx-v1.json
+.venv/bin/python sft/vibe_eval.py --model runs/longctx-v2/export --snapshot $SNAP --n 200 --seed 0 --out runs/vibe-eval/longctx-v2.json
+.venv/bin/python sft/vibe_eval.py --compare runs/vibe-eval/longctx-v1.json runs/vibe-eval/longctx-v2.json
+```
