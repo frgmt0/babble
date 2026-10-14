@@ -1688,6 +1688,45 @@ def use_bucketed_experts(model, bucket=128) -> int:
     return patched
 
 
+class WideBatchCheckpointing:
+    """Activation checkpointing for wide micro-batches only.
+
+    Under ``fixed_rows`` every micro-batch holds about ``tokens_per_batch``
+    tokens, but activation memory is not flat in the width (attention is
+    quadratic in it): measured on MPS, a lone 2048-token row keeps ~2.3 GiB
+    of activations live after the forward against ~1.1 GiB for 16 x 128. On
+    top of ~2.25 GiB of weights + grads + AdamW, the pool peaked at 6.5-6.7
+    GiB on 1 x 1920 / 1 x 2048 batches, a few hundred MiB under the 0.6
+    watermark (7.1 GiB), and longctx-v2 OOMed in backward around step 55. Recomputing the
+    layers in backward for batches at least ``min_width`` wide removes that
+    peak; narrow batches (the vast majority) keep full speed. The math is
+    the same either way: checkpointing changes what is stored, not what is
+    computed.
+    """
+
+    def __init__(self, model, min_width: int):
+        from transformers.modeling_layers import GradientCheckpointingLayer
+
+        self.min_width = int(min_width)
+        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+        self.layers = [m for m in model.modules() if isinstance(m, GradientCheckpointingLayer)]
+        if not self.layers:
+            raise RuntimeError("model has no checkpointable layers")
+        self.on = True
+        self.set(False)
+
+    def set(self, on: bool) -> None:
+        if on != self.on:
+            for layer in self.layers:
+                layer.gradient_checkpointing = on
+            self.on = on
+
+    def __call__(self, width: int) -> bool:
+        """Switch checkpointing for a micro-batch of this width; returns whether it is on."""
+        self.set(width >= self.min_width)
+        return self.on
+
+
 def load_base(model_dir: Path, device, log):
     from babble.hfserve import _load_int8
 
@@ -2163,6 +2202,7 @@ def main():
     ap.add_argument("--duty-cycle", type=float, default=1.0, help="fraction of wall time spent computing; 0.5 sleeps as long as each optimizer step took")
     ap.add_argument("--expert-bucket", type=int, default=0, help="pad each MoE expert's token count to this multiple (bounds MPS graph-cache growth); 0 = HF eager loop")
     ap.add_argument("--grad-checkpoint", action="store_true", help="activation checkpointing: much less MPS memory for ~1/3 more compute")
+    ap.add_argument("--grad-checkpoint-min-width", type=int, default=0, help="activation checkpointing only for micro-batches at least this many tokens wide (bounds the MPS peak of long rows at little cost); 0 = off. Ignored with --grad-checkpoint")
     ap.add_argument("--fixed-rows", action="store_true", help="fill every batch to tokens_per_batch // width rows (bounded set of MPS shapes)")
     ap.add_argument("--pad-multiple", type=int, default=1, help="round batch widths up to this (bounds MPS shape caches)")
     ap.add_argument("--mps-high-watermark", type=float, default=0.7, help="PYTORCH_MPS_HIGH_WATERMARK_RATIO (hard cap, fraction of RAM)")
@@ -2251,6 +2291,10 @@ def main():
         # the KV cache on.
         model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
         log("model: gradient checkpointing on")
+    wide_ckpt = None
+    if args.grad_checkpoint_min_width > 0 and not args.grad_checkpoint and not args.export:
+        wide_ckpt = WideBatchCheckpointing(model, args.grad_checkpoint_min_width)
+        log(f"model: gradient checkpointing for micro-batches >= {wide_ckpt.min_width} wide ({len(wide_ckpt.layers)} layers)")
     ckpt_dir = run_dir / "ckpt"
 
     if args.export:
@@ -2405,6 +2449,8 @@ def main():
         skip, to_skip = to_skip, 0
         for ids, labels in batches(train, args.tokens_per_batch, pad, shuffle_seed=args.seed + epoch, skip=skip, pad_multiple=args.pad_multiple, fixed_rows=args.fixed_rows):
             ids, labels = ids.to(device), labels.to(device)
+            if wide_ckpt is not None:
+                wide_ckpt(ids.shape[1])
             with torch.autocast(device_type=device.type, dtype=dtype, enabled=dtype != torch.float32):
                 logits = model(input_ids=ids, attention_mask=(ids != pad), use_cache=False).logits
             n_tgt = int((labels[:, 1:] != -100).sum())

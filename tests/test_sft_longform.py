@@ -369,6 +369,40 @@ def test_bucketed_experts_match_the_eager_mixtral_loop():
     assert experts.gate_up_proj.grad is not None and experts.gate_up_proj.grad.abs().sum() > 0
 
 
+def test_wide_batch_checkpointing_toggles_by_width_and_keeps_gradients():
+    torch = pytest.importorskip("torch")
+    transformers = pytest.importorskip("transformers")
+    from sft.sft_longform import WideBatchCheckpointing, use_bucketed_experts
+
+    config = transformers.MixtralConfig(
+        vocab_size=64, hidden_size=32, intermediate_size=48, num_hidden_layers=2,
+        num_attention_heads=4, num_key_value_heads=4, num_local_experts=3, num_experts_per_tok=1,
+    )
+    torch.manual_seed(0)
+    model = transformers.MixtralForCausalLM(config).train()
+    use_bucketed_experts(model, bucket=4)
+    ids = torch.randint(0, 64, (2, 16))
+
+    def grads():
+        model.zero_grad(set_to_none=True)
+        out = model(input_ids=ids, use_cache=False).logits
+        F = torch.nn.functional
+        F.cross_entropy(out[:, :-1].reshape(-1, 64), ids[:, 1:].reshape(-1)).backward()
+        return {n: p.grad.clone() for n, p in model.named_parameters() if p.grad is not None}
+
+    plain = grads()
+    wide = WideBatchCheckpointing(model, min_width=16)
+    assert len(wide.layers) == 2 and not any(l.gradient_checkpointing for l in wide.layers)
+    assert wide(15) is False and not any(l.gradient_checkpointing for l in wide.layers)
+    assert wide(16) is True and all(l.gradient_checkpointing for l in wide.layers)
+    checkpointed = grads()
+    assert checkpointed.keys() == plain.keys()
+    for name in plain:
+        torch.testing.assert_close(checkpointed[name], plain[name], rtol=1e-5, atol=1e-6)
+    assert wide(128) is True and wide(8) is False
+    assert grads().keys() == plain.keys()
+
+
 # -------------------------------------------------------------- duty ---
 
 

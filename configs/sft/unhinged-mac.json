@@ -58,5 +58,6 @@
   "mps_low_watermark": 0.4,
   "fixed_rows": true,
   "expert_bucket": 128,
-  "mps_empty_cache_gb": 5.0
+  "mps_empty_cache_gb": 5.0,
+  "grad_checkpoint_min_width": 1536
 }

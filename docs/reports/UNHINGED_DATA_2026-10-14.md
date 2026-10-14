@@ -162,6 +162,7 @@ Measured on this Mac with the real preset, the real base and the full cached dat
 | final eval | 177 s |
 | training step (16 x 2048-token micro-batches) | 13.4-13.6 s, ~17.3k real tokens/step (~1,280 tok/s) |
 | checkpoint save (with `--mps-empty-cache-gb`) | 8-10 s (12 min 23 s without it, under swap) |
+| `grad_checkpoint_min_width 1536` (added after the first launch OOMed at step ~55) | +1.2% compute: 254.1 s vs 251.2 s over the first 400 micro-batches (recompute on the 5.9% of micro-batches ≥ 1536 wide) |
 | INT8 export + round-trip | ~4 s |
 
 The longctx-v1 report's 2,250 tok/s at duty 1.0 is not comparable. This data has far shorter examples, so the
@@ -177,6 +178,10 @@ the Mac.
 - (122,400 - 1,248) / 14.0 = 8,654 steps, so **8,600 steps** = `tokens 281804800` (8,600 x 2048 x 16). The planned
   end is about 33.8 h after the start (≈ Fri 03:47 if started at 18:00), or about 15 min earlier with the cache.
   That leaves roughly 3.2 h before the 07:00 hard stop.
+- After the step-55 OOM, `grad_checkpoint_min_width 1536` adds ~1.2% to the train time: 13.66 s train, **14.15 s**
+  per step all-in. With the cache reused (fixed costs 377 s), 8,600 steps take 8,600 x 14.15 + 377 ≈ 122,070 s
+  ≈ 33.9 h. A relaunch at Wed 17:30 PDT ends ≈ Fri 03:25, still before the 04:00 target and 3.6 h before the hard
+  stop. The step count is unchanged.
 - 8,600 steps is about 2.6 passes over the 52.8M-token train set (3,268 steps per pass). discord_vibe cannot grow,
   because the whole dataset was scanned. More passes over the same data is the only way to use the full window, and
   the gate exports the best eval, not the last step. Each hour the start slips past 18:00 costs about 257 steps. The

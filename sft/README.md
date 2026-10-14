@@ -251,6 +251,17 @@ after any micro-batch that leaves the pool above 5 GiB, and frees it before ever
 CPU copy of the optimizer state went to swap: one save took 12 min, against 8-10 s with the cache freed. The flag is
 opt-in (default 0), so older presets behave as before.
 
+The first full launch still OOMed in backward around step 51-60 (`Tried to allocate 224.00 MiB`: one fp32
+14 x 2048 x 2048 attention tensor). Under `fixed_rows` every micro-batch holds ~2048 tokens, but activations grow
+with width: measured live after the forward, 3.35 GiB at 16 x 128 against 4.56 GiB at 1 x 2048 (weights + grads +
+AdamW are 2.25 GiB). The pool peaked at 6.5-6.7 GiB on 1 x 1920 / 1 x 2048 batches, a few hundred MiB under the
+7.1 GiB cap. Which wide batch tipped it over varied (a rerun with the same seed passed step 60). `grad_checkpoint_min_width
+1536` recomputes activations in backward only for micro-batches at least 1536 wide (5.9% of them). Their live
+memory after the forward drops to 2.47 GiB and the worst pool peak to ~5.9-6.0 GiB. Measured over the first 400
+micro-batches, the cost is 1.2% of compute (254.1 s vs 251.2 s). Checkpointing changes what is stored, not what
+is computed, so the recipe and step count are unchanged. The flag is opt-in (default 0), and `--grad-checkpoint`
+still checkpoints every batch.
+
 **Schedule.** `duty_cycle 1.0` (the Mac is otherwise idle), `pause_on_battery` on. `tokens 281804800` is 8,600
 optimizer steps, about 2.6 passes over the 52.8M-token train set (3,268 steps per pass). The total is sized to finish
 by Fri 2026-10-16 04:00 PDT if started by Wed 18:00 PDT; each hour later costs about 257 steps. The report has the
