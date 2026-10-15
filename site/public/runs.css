@@ -1,0 +1,178 @@
+/* booper · runs — read-only training dashboard. Colours are roles; dark mode is its own set. */
+:root {
+  color-scheme: light;
+  --ink: #0b0b0b; --ink2: #52514e; --muted: #898781;
+  --bg: #f9f9f7; --surface: #fcfcfb; --surface2: #f3f2ef;
+  --grid: #e1e0d9; --axis: #c3c2b7; --ring: rgba(11, 11, 11, .10);
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4;
+  --div-neg: #2a78d6; --div-pos: #e34948; --div-mid: #f0efec;
+  --good: #0ca30c; --good-ink: #006300; --warn: #fab219; --warn-ink: #8a5a00; --bad: #d03b3b; --bad-ink: #b02a2a;
+  --link: #1c5cab;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --ink: #ffffff; --ink2: #c3c2b7; --muted: #898781;
+    --bg: #0d0d0d; --surface: #1a1a19; --surface2: #222220;
+    --grid: #2c2c2a; --axis: #383835; --ring: rgba(255, 255, 255, .10);
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181;
+    --div-neg: #3987e5; --div-pos: #e66767; --div-mid: #383835;
+    --good: #0ca30c; --good-ink: #0ca30c; --warn: #fab219; --warn-ink: #fab219; --bad: #d03b3b; --bad-ink: #e66767;
+    --link: #8ab4f8;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --ink: #ffffff; --ink2: #c3c2b7; --muted: #898781;
+  --bg: #0d0d0d; --surface: #1a1a19; --surface2: #222220;
+  --grid: #2c2c2a; --axis: #383835; --ring: rgba(255, 255, 255, .10);
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181;
+  --div-neg: #3987e5; --div-pos: #e66767; --div-mid: #383835;
+  --good: #0ca30c; --good-ink: #0ca30c; --warn: #fab219; --warn-ink: #fab219; --bad: #d03b3b; --bad-ink: #e66767;
+  --link: #8ab4f8;
+}
+
+* { box-sizing: border-box }
+html { -webkit-text-size-adjust: 100% }
+body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; max-width: 80rem; margin: 2rem auto 4rem; padding: 0 16px; line-height: 1.5; color: var(--ink); background: var(--bg); }
+a { color: var(--link) }
+h1 { margin: 0 0 .1rem; font-size: 1.6rem } h1 a { color: inherit; text-decoration: none }
+h2 { font-size: 1.1rem; margin: 2.2rem 0 .6rem; padding-top: .4rem; border-top: 1px solid var(--grid) }
+h3 { font-size: .95rem; font-weight: 600; margin: 0 0 .3rem }
+.sub { color: var(--ink2); margin: 0 }
+.muted { color: var(--muted) }
+.small { font-size: .82rem }
+code { font-size: .85em; background: var(--surface2); padding: 0 .25em; border-radius: 4px }
+
+/* controls */
+.bar { display: flex; gap: .6rem 1rem; align-items: center; flex-wrap: wrap; margin: 1rem 0 .4rem }
+select, button, input[type=number] { font: inherit; font-size: .9rem; padding: .3rem .5rem; background: var(--surface); color: var(--ink); border: 1px solid var(--grid); border-radius: 6px; max-width: 100% }
+button { cursor: pointer } button:hover { background: var(--surface2) }
+label { color: var(--ink2); font-size: .9rem }
+label.chk { display: inline-flex; gap: .35rem; align-items: center; cursor: pointer }
+nav.toc { display: flex; flex-wrap: wrap; gap: .2rem .9rem; font-size: .85rem; margin: .3rem 0 0 }
+nav.toc a { color: var(--ink2); text-decoration: none } nav.toc a:hover { color: var(--ink); text-decoration: underline }
+main.loading { opacity: .55; transition: opacity .2s }
+
+/* status */
+.status { display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: center; margin: 1rem 0 .5rem }
+.pill { display: inline-flex; align-items: center; gap: .35rem; font-weight: 600; font-size: .85rem; padding: .15rem .6rem; border-radius: 999px; border: 1px solid var(--grid); background: var(--surface) }
+.pill .dot { width: 8px; height: 8px; border-radius: 50% }
+.pill.running .dot { background: var(--good) } .pill.done .dot { background: var(--s1) }
+.pill.stalled .dot, .pill.paused .dot { background: var(--warn) } .pill.gated .dot { background: var(--bad) }
+.pill.starting .dot { background: var(--muted) }
+.progress { margin: .4rem 0 .2rem }
+.track { height: 10px; border-radius: 5px; background: color-mix(in srgb, var(--s1) 18%, var(--surface)); overflow: hidden; position: relative }
+.fill { height: 100%; background: var(--s1); border-radius: 5px 4px 4px 5px }
+.progress .lbl { display: flex; justify-content: space-between; font-size: .82rem; color: var(--ink2); margin-top: .2rem; gap: 1rem; flex-wrap: wrap }
+.notes { font-size: .85rem; color: var(--ink2); margin: .3rem 0 }
+.notes li { margin: .1rem 0 }
+
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(10.5rem, 1fr)); gap: .6rem; margin: .8rem 0 }
+.tile { background: var(--surface); border: 1px solid var(--grid); border-radius: 8px; padding: .5rem .75rem; min-width: 0 }
+.tile .k { color: var(--ink2); font-size: .78rem }
+.tile .v { font-size: 1.3rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+.tile .d { color: var(--muted); font-size: .75rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+
+/* charts */
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 30rem), 1fr)); gap: .8rem }
+.card { background: var(--surface); border: 1px solid var(--grid); border-radius: 8px; padding: .6rem .8rem .5rem; min-width: 0; margin: 0 0 .8rem }
+.grid2 > .card { margin: 0 }
+.card .head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .3rem .8rem; align-items: baseline }
+.card .cap { color: var(--muted); font-size: .78rem; margin: .2rem 0 0 }
+.chart { position: relative; width: 100%; min-width: 0 }
+.chart svg { display: block; width: 100%; overflow: visible; touch-action: pan-y }
+.chart svg:focus { outline: 2px solid var(--s1); outline-offset: 2px; border-radius: 4px }
+.chart svg text { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums }
+.chart svg text.ref { fill: var(--ink2); paint-order: stroke; stroke: var(--surface); stroke-width: 4px; stroke-linejoin: round }
+.legend { display: flex; flex-wrap: wrap; gap: .1rem .9rem; font-size: .8rem; color: var(--ink2); margin: .1rem 0 .3rem }
+.legend span { display: inline-flex; align-items: center; gap: .35rem; white-space: nowrap }
+.key { display: inline-block; width: 16px; height: 0; border-top: 2px solid currentColor }
+.key.faint { opacity: .35 } .key.dash { border-top-style: dashed }
+.key.dot { width: 9px; height: 9px; border: 0; border-radius: 50%; background: currentColor }
+.key.rule { border-top: 1px solid currentColor }
+.empty { color: var(--muted); font-size: .9rem; padding: 1rem 0 }
+
+.tip { position: fixed; z-index: 10; pointer-events: none; background: var(--surface); color: var(--ink); border: 1px solid var(--grid); box-shadow: 0 2px 8px rgba(0,0,0,.12); border-radius: 6px; padding: .35rem .55rem; font-size: .8rem; display: none; max-width: min(22rem, 90vw) }
+.tip .t { color: var(--ink2); margin-bottom: .15rem }
+.tip .row { display: flex; align-items: center; gap: .4rem; white-space: nowrap }
+.tip .row b { font-variant-numeric: tabular-nums } .tip .row span { color: var(--ink2) }
+.tip .key { width: 12px }
+
+.multiples { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 15rem), 1fr)); gap: .6rem }
+.multiples .card { margin: 0; padding: .45rem .6rem .3rem }
+.multiples h3 { font-size: .85rem; display: flex; justify-content: space-between; gap: .4rem }
+.multiples h3 small { font-weight: 400; color: var(--muted) }
+
+/* tables */
+.tablewrap { overflow-x: auto; max-width: 100%; border: 1px solid var(--grid); border-radius: 8px; background: var(--surface) }
+table { border-collapse: collapse; font-size: .82rem; width: 100% }
+th, td { padding: .25rem .55rem; border-bottom: 1px solid var(--grid); text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums }
+th { color: var(--ink2); font-weight: 600; position: sticky; top: 0; background: var(--surface) }
+th:first-child, td:first-child { text-align: left; position: sticky; left: 0; background: var(--surface) }
+tr:last-child td { border-bottom: 0 }
+td.l, th.l { text-align: left }
+td.best { font-weight: 700 }
+tr.hl td { background: var(--surface2) }
+.scroll { max-height: 26rem; overflow: auto }
+.share { display: inline-block; width: 70px; height: 8px; border-radius: 0 4px 4px 0; background: var(--grid); vertical-align: middle; margin-left: .4rem; position: relative; overflow: hidden }
+.share i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--s1); border-radius: 0 4px 4px 0 }
+
+.ok { color: var(--good-ink) } .no { color: var(--bad-ink) } .off { color: var(--muted) }
+.verdict { display: inline-flex; gap: .3rem; align-items: center; font-weight: 600 }
+
+/* regression rows */
+.reg { display: grid; grid-template-columns: minmax(9rem, 14rem) 1fr 5.2rem 4.6rem; gap: .15rem .6rem; align-items: center; font-size: .82rem }
+.reg .grp { grid-column: 1 / -1; color: var(--ink2); font-weight: 600; margin-top: .5rem; font-size: .8rem }
+.reg .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.reg .val { text-align: right; font-variant-numeric: tabular-nums }
+.reg .lane { position: relative; height: 18px; outline: none }
+.reg .lane .zero { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--axis) }
+.reg .lane .b { position: absolute; top: 5px; height: 8px }
+.reg .lane .b.neg { background: var(--div-neg); border-radius: 4px 0 0 4px }
+.reg .lane .b.pos { background: var(--div-pos); border-radius: 0 4px 4px 0 }
+.reg .lane .lim { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--ink2) }
+.reg .lane:hover .b, .reg .lane:focus .b { filter: brightness(1.15) }
+@media (max-width: 640px) {
+  .reg { grid-template-columns: 1fr 4.6rem 4.2rem; }
+  .reg .name { grid-column: 1 / -1; margin-top: .2rem }
+  .reg .lane { grid-column: 1 / 2 }
+}
+.heat td { min-width: 4.2rem }
+
+/* funnel */
+.funnel { display: grid; grid-template-columns: minmax(7rem, 12rem) 1fr auto; gap: .3rem .6rem; font-size: .82rem; align-items: center }
+.funnel .lane { height: 14px; background: var(--surface2); border-radius: 0 4px 4px 0; position: relative }
+.funnel .lane i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 0 4px 4px 0; background: var(--muted); min-width: 2px }
+.funnel .lane i.kept { background: var(--s1) } .funnel .lane i.total { background: var(--axis) }
+.funnel .num { text-align: right; font-variant-numeric: tabular-nums; font-size: .78rem; line-height: 1.2; white-space: nowrap }
+
+/* samples */
+.samples { display: grid; gap: .7rem }
+.sample { background: var(--surface); border: 1px solid var(--grid); border-radius: 8px; padding: .55rem .75rem }
+.sample .p { color: var(--ink2); font-size: .85rem; white-space: pre-wrap; margin-bottom: .35rem }
+.sample .p b { color: var(--ink) }
+.sides { display: grid; grid-template-columns: 1fr 1fr; gap: .6rem }
+.sides.one { grid-template-columns: 1fr }
+@media (max-width: 640px) { .sides { grid-template-columns: 1fr } }
+.side h4 { margin: 0 0 .2rem; font-size: .75rem; color: var(--muted); font-weight: 600; text-transform: none }
+.draw { white-space: pre-wrap; overflow-wrap: anywhere; padding: .3rem .45rem; border-left: 2px solid var(--grid); margin: 0 0 .35rem; font-size: .9rem }
+.draw .n { display: block; color: var(--muted); font-size: .72rem }
+.draw.same { border-left-color: var(--muted) }
+
+/* config */
+.kv { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 17rem), 1fr)); gap: .6rem }
+.kv dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: .1rem .7rem; font-size: .82rem }
+.kv dt { color: var(--ink2) } .kv dd { margin: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums }
+details > summary { cursor: pointer; color: var(--ink2); font-size: .9rem; margin: .4rem 0 }
+.cmp { display: flex; flex-wrap: wrap; gap: .3rem 1rem; margin: .3rem 0 .5rem }
+.warn-note { color: var(--warn-ink) }
+.reg .lane .b.over.neg { border-radius: 0; border-left: 3px double var(--surface) }
+.reg .lane .b.over.pos { border-radius: 0; border-right: 3px double var(--surface) }
+@media (max-width: 640px) {
+  body { margin-top: 1.2rem }
+  .tiles { grid-template-columns: 1fr 1fr; gap: .45rem }
+  .tile { padding: .4rem .55rem }
+  .tile .v { font-size: 1.1rem }
+  .funnel { grid-template-columns: minmax(6rem, 9rem) 1fr auto }
+}
