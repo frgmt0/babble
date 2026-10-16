@@ -45,6 +45,12 @@ import torch.nn.functional as F
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+if __name__ == "__main__":
+    # Run as a script, this module is `__main__`; helpers in `sft/vibe.py`
+    # import `sft.sft_longform`, which must resolve to this same module
+    # (one SFTRecord class) instead of executing the file a second time.
+    sys.modules.setdefault("sft.sft_longform", sys.modules[__name__])
+
 from babble.conversation import (  # noqa: E402 - repo root is added above
     ConversationTurn,
     conversation_prompt_for_token_budget,
@@ -497,6 +503,115 @@ def _discord_groups(split: str, history_turns: int, revision: str | None = None,
         records = _discord_group(row["text"], history_turns, gif)
         if records:
             yield records
+
+
+class VibeFilterStats:
+    """What the discord_vibe filter saw: rows scanned, kept, and why the rest went."""
+
+    def __init__(self):
+        self.rows = 0
+        self.kept = 0
+        self.skipped_seen = 0
+        self.rejected: dict[str, int] = defaultdict(int)
+
+    def as_dict(self) -> dict:
+        return {
+            "vibe_rows_scanned": self.rows,
+            "vibe_groups_kept": self.kept,
+            "vibe_skipped_seen": self.skipped_seen,
+            **{f"vibe_rejected_{k}": v for k, v in sorted(self.rejected.items())},
+        }
+
+
+def _discord_vibe_group(
+    raw: str,
+    *,
+    min_vibe: float,
+    min_targets: int,
+    blocklist,
+    gif: GifStats | None = None,
+    stats: VibeFilterStats | None = None,
+) -> list[SFTRecord]:
+    """One Discord-Dialogues row -> discord_vibe targets, or [] if the filter rejects it.
+
+    The verdict (`sft.vibe.conversation_verdict`) is taken on the turns with
+    gif URLs already rewritten to tags (stateless `rewrite_gifs`), so it
+    judges what would be trained on. Only accepted rows then go through the
+    stateful `GifStats`, so the synthetic-gif budget is a fraction of kept
+    targets, exactly as for `discord`. The group id is the same content hash
+    `discord` uses, so the two sources can be cross-checked for leaks.
+    """
+    from sft.vibe import conversation_verdict, trim_to_user_start
+
+    turns = trim_to_user_start(_chatml_turns(raw))
+    judged = [(role, rewrite_gifs(text)[0]) for role, text in turns]
+    verdict = conversation_verdict(judged, min_vibe=min_vibe, min_targets=min_targets, blocklist=blocklist)
+    if not verdict.ok:
+        if stats is not None:
+            stats.rejected[verdict.reason] += 1
+        return []
+    records = _turn_records("discord_vibe", _group_id(raw), turns, gif, synthesize=True)
+    if len(records) < max(1, min_targets):
+        # URL-bearing targets are dropped by _turn_records; re-check the count.
+        if stats is not None:
+            stats.rejected["too_few_targets"] += 1
+        return []
+    if stats is not None:
+        stats.kept += 1
+    return records
+
+
+def _discord_vibe_groups(
+    split: str,
+    revision: str | None = None,
+    *,
+    min_vibe: float,
+    min_targets: int,
+    skip_rows: int = 0,
+    gif: GifStats | None = None,
+    stats: VibeFilterStats | None = None,
+    blocklist=None,
+):
+    """Discord-Dialogues filtered for vibe + real back-and-forth (see sft/vibe.py).
+
+    ``skip_rows`` starts the stream past rows an earlier run (longctx-v1's
+    `discord` slice) already consumed, so selected data is new to the base.
+    """
+    from datasets import load_dataset
+
+    from babble.blocklist import Blocklist
+
+    blocklist = blocklist if blocklist is not None else Blocklist.load()
+    ds = load_dataset("mookiezi/Discord-Dialogues", split=split, streaming=True, revision=revision)
+    if skip_rows > 0:
+        ds = ds.skip(skip_rows)
+    for row in ds:
+        if stats is not None:
+            stats.rows += 1
+        records = _discord_vibe_group(
+            row["text"], min_vibe=min_vibe, min_targets=min_targets, blocklist=blocklist, gif=gif, stats=stats
+        )
+        if records:
+            yield records
+
+
+def _skip_seen(groups, seen_content: set[str], seen_groups: set[str], stats: VibeFilterStats | None = None):
+    """Drop groups an earlier source already took (same group id or any same target).
+
+    Applied while streaming, so a source that overlaps an earlier one (e.g.
+    discord_vibe vs discord, same dataset) keeps reading until it has enough
+    *new* groups instead of collecting duplicates that `_dedupe_groups` would
+    then cull. Matching on group id as well as content closes the gap where a
+    synthetic gif tag makes one copy's targets differ from the other's.
+    """
+    for group in groups:
+        gids = {r.group_id for r in group}
+        content = {_group_id(r.current_user, r.response) for r in group}
+        if gids & seen_groups or content & seen_content:
+            if stats is not None:
+                stats.skipped_seen += 1
+            continue
+        yield group
 
 
 def _messages_group(source: str, messages, gif: GifStats | None = None) -> list[SFTRecord]:
@@ -1247,18 +1362,56 @@ def build_examples(tok, args, log):
         ("arith", _mix(args, "mix_arith"), 1, lambda: arith_groups(args.seed)),
         ("persona", _mix(args, "mix_persona"), max(1, _get(args, "repeat_persona", 1)), lambda: persona_groups(Path(args.persona_file), args.seed)),
         ("wiki", _mix(args, "mix_wiki"), 1, lambda: _single_record_groups("wiki", _wiki_records(args.wiki_revision, args.wiki_config, args.seed))),
+        # longctx-v2 (unhinged-mac.json): appended last again, so every older preset keeps its seeds.
+        (
+            "discord_vibe",
+            _mix(args, "mix_discord_vibe"),
+            1,
+            lambda: _skip_seen(
+                _discord_vibe_groups(
+                    "train",
+                    args.discord_revision,
+                    min_vibe=float(_get(args, "discord_vibe_min", 1.0)),
+                    min_targets=int(_get(args, "discord_vibe_min_targets", 2)),
+                    skip_rows=int(_get(args, "discord_vibe_skip_rows", 0)),
+                    gif=gif_stats["discord_vibe"],
+                    stats=vibe_stats,
+                ),
+                seen_content,
+                seen_groups,
+                vibe_stats,
+            ),
+        ),
+        (
+            "booper_local",
+            _mix(args, "mix_local"),
+            max(1, _get(args, "repeat_local", 1)),
+            lambda: _skip_seen(
+                local_snapshot_groups([Path(p) for p in (_get(args, "local_snapshot", None) or [])], stats=local_stats),
+                seen_content,
+                seen_groups,
+            ),
+        ),
     ]
+    from sft.vibe import LocalStats, local_snapshot_groups
+
+    vibe_stats = VibeFilterStats()
+    local_stats = LocalStats()
     gif_on = bool(getattr(args, "gif_tags", False))
     gif_stats: dict[str, GifStats | None] = {
         "smoltalk": GifStats(seed=args.seed) if gif_on else None,
         "discord": GifStats(args.gif_synth_rate, args.gif_synth_max_frac, args.seed) if gif_on else None,
         "ultrachat": GifStats(seed=args.seed) if gif_on else None,
+        "discord_vibe": GifStats(args.gif_synth_rate, args.gif_synth_max_frac, args.seed) if gif_on else None,
     }
     total = sum(w for _, w, _, _ in sources)
     train_records: list[SFTRecord] = []
     val_records: dict[str, list[SFTRecord]] = {}
     counts: dict[str, dict[str, int]] = {}
     seen_content: set[str] = set()
+    # Group ids of every earlier source; only the longctx-v2 sources filter on it
+    # (`_skip_seen`), so older presets build exactly as before.
+    seen_groups: set[str] = set()
     for source_i, (name, weight, repeat_train, groups) in enumerate(sources):
         if weight <= 0:
             continue
@@ -1269,12 +1422,20 @@ def build_examples(tok, args, log):
         unique_want = math.ceil(want / repeat_train) + want_val
         unique = _collect_groups(groups(), unique_want)
         unique, duplicate_groups = _dedupe_groups(unique, seen_content)
+        seen_groups.update(r.group_id for r in unique)
+        if name == "booper_local":
+            # A handful of real pairs: a held-out loss on one or two of them
+            # would be noise in the export gate, and each pair is worth more
+            # as a train target. booper_local is therefore train-only; its
+            # effect is measured with sft/vibe_eval.py instead.
+            want_val = 0
         source_train, source_val = _split_grouped(
             unique, want_val, seed=args.seed + source_i
         )
         repeated_train = (source_train * repeat_train)[:want]
         train_records.extend(repeated_train)
-        val_records[name] = source_val
+        if source_val or name != "booper_local":
+            val_records[name] = source_val
         # Measure compatibility with the raw-prompt behavior Story-v2 serves
         # outside the opt-in conversation mode. This is evaluation only: new
         # training inputs all use the shared role transcript.
@@ -1322,6 +1483,12 @@ def build_examples(tok, args, log):
             "groups": len({r.group_id for r in unique}),
             "duplicate_groups_dropped": duplicate_groups,
         }
+        if name == "discord_vibe":
+            counts[name].update(vibe_stats.as_dict())
+            log(f"vibe: discord_vibe {vibe_stats.as_dict()}")
+        if name == "booper_local":
+            counts[name].update({f"local_{k}": v for k, v in local_stats.as_dict().items()})
+            log(f"local: booper_local {local_stats.as_dict()}")
         if gif_stats.get(name) is not None:
             stats = gif_stats[name]
             counts[name].update(stats.as_dict())
@@ -1365,7 +1532,7 @@ def build_examples(tok, args, log):
     # legacy prompt fits; including only one side would invalidate the loss
     # comparison.
     for name, weight, _, _ in sources:
-        if weight <= 0:
+        if weight <= 0 or name not in val_records:  # booper_local is train-only
             continue
         single_records = val_records.get(f"{name}_single", [])
         legacy_records = val_records.get(f"{name}_legacy", [])
@@ -1519,6 +1686,45 @@ def use_bucketed_experts(model, bucket=128) -> int:
             )
             patched += 1
     return patched
+
+
+class WideBatchCheckpointing:
+    """Activation checkpointing for wide micro-batches only.
+
+    Under ``fixed_rows`` every micro-batch holds about ``tokens_per_batch``
+    tokens, but activation memory is not flat in the width (attention is
+    quadratic in it): measured on MPS, a lone 2048-token row keeps ~2.3 GiB
+    of activations live after the forward against ~1.1 GiB for 16 x 128. On
+    top of ~2.25 GiB of weights + grads + AdamW, the pool peaked at 6.5-6.7
+    GiB on 1 x 1920 / 1 x 2048 batches, a few hundred MiB under the 0.6
+    watermark (7.1 GiB), and longctx-v2 OOMed in backward around step 55. Recomputing the
+    layers in backward for batches at least ``min_width`` wide removes that
+    peak; narrow batches (the vast majority) keep full speed. The math is
+    the same either way: checkpointing changes what is stored, not what is
+    computed.
+    """
+
+    def __init__(self, model, min_width: int):
+        from transformers.modeling_layers import GradientCheckpointingLayer
+
+        self.min_width = int(min_width)
+        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+        self.layers = [m for m in model.modules() if isinstance(m, GradientCheckpointingLayer)]
+        if not self.layers:
+            raise RuntimeError("model has no checkpointable layers")
+        self.on = True
+        self.set(False)
+
+    def set(self, on: bool) -> None:
+        if on != self.on:
+            for layer in self.layers:
+                layer.gradient_checkpointing = on
+            self.on = on
+
+    def __call__(self, width: int) -> bool:
+        """Switch checkpointing for a micro-batch of this width; returns whether it is on."""
+        self.set(width >= self.min_width)
+        return self.on
 
 
 def load_base(model_dir: Path, device, log):
@@ -1734,11 +1940,16 @@ def rss_gb() -> float:
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024**3 if sys.platform == "darwin" else 1024**2)
 
 
-def sample(model, tok, device, max_new=120, draws=2, prompt_budget=512):
+def sample(model, tok, device, max_new=120, draws=2, prompt_budget=512, prompts=None, temperature=0.5):
+    """Generate ``draws`` replies per prompt (default: SAMPLE_PROMPTS) in the role-transcript format.
+
+    ``sft/vibe_eval.py`` reuses this with real user prompts and the serving
+    temperature, so training-time samples and evals share one code path.
+    """
     bos, sep, eos, pad = (tok.token_to_id(t) for t in ("<bos>", "<sep>", "<eos>", "<pad>"))
     model.eval()
     outs = []
-    for p in SAMPLE_PROMPTS:
+    for p in SAMPLE_PROMPTS if prompts is None else prompts:
         rendered = conversation_prompt_for_token_budget(
             (),
             p,
@@ -1752,7 +1963,7 @@ def sample(model, tok, device, max_new=120, draws=2, prompt_budget=512):
         # sample says something about the weights, not the dice; no_repeat_ngram
         # matches what live serves.
         gen = model.generate(
-            ids, do_sample=True, temperature=0.5, top_p=0.95, max_new_tokens=max_new, num_return_sequences=draws,
+            ids, do_sample=True, temperature=temperature, top_p=0.95, max_new_tokens=max_new, num_return_sequences=draws,
             eos_token_id=eos, pad_token_id=pad, repetition_penalty=1.1, no_repeat_ngram_size=4,
         )[:, ids.shape[1] :]
         for row in gen:
@@ -1830,6 +2041,9 @@ DATA_CACHE_VERSION = 1
 # Bump when a qa source's filtering/templating changes, so caches and resume
 # signatures of qa presets invalidate (older presets never include it).
 QA_DATA_VERSION = 1
+# Bump when sft/vibe.py scoring/filtering changes, so longctx-v2 caches and
+# resume signatures invalidate (presets without the vibe sources never include it).
+VIBE_DATA_VERSION = 1
 # mix flag -> other build inputs of that source (recorded only when active).
 QA_SOURCE_SETTINGS = {
     "mix_dolly": ("dolly_revision", "repeat_dolly"),
@@ -1864,6 +2078,27 @@ def _data_extras(args) -> dict:
         extras["persona_sha256"] = hashlib.sha256(Path(args.persona_file).read_bytes()).hexdigest()
     if any(name.startswith("mix_") and name in QA_SOURCE_SETTINGS for name in extras):
         extras["qa_data_version"] = QA_DATA_VERSION
+    # longctx-v2 sources: recorded only when active, so earlier signatures are unchanged.
+    if _mix(args, "mix_discord_vibe") > 0:
+        extras["mix_discord_vibe"] = _mix(args, "mix_discord_vibe")
+        extras["discord_vibe_min"] = float(_get(args, "discord_vibe_min", 1.0))
+        extras["discord_vibe_min_targets"] = int(_get(args, "discord_vibe_min_targets", 2))
+        extras["discord_vibe_skip_rows"] = int(_get(args, "discord_vibe_skip_rows", 0))
+    if _mix(args, "mix_local") > 0:
+        from sft.vibe import snapshot_sha256
+
+        paths = [Path(p) for p in (_get(args, "local_snapshot", None) or [])]
+        if not paths:
+            raise ValueError("--mix-local > 0 needs --local-snapshot DIR [DIR ...]")
+        extras["mix_local"] = _mix(args, "mix_local")
+        extras["repeat_local"] = int(_get(args, "repeat_local", 1))
+        # A hash of the input files, never their paths or text (mirrors persona_sha256).
+        extras["local_snapshot_sha256"] = snapshot_sha256(paths)
+    if "mix_discord_vibe" in extras or "mix_local" in extras:
+        from babble.blocklist import Blocklist
+
+        extras["vibe_data_version"] = VIBE_DATA_VERSION
+        extras["blocklist_sha256"] = hashlib.sha256("\n".join(sorted(Blocklist.load().terms)).encode()).hexdigest()
     return extras
 
 
@@ -1949,6 +2184,14 @@ def main():
     ap.add_argument("--mix-wiki", type=float, default=0.0, help="wikimedia/wikipedia Simple English lead sentences as 'tell me about X' (CC-BY-SA-3.0/GFDL)")
     ap.add_argument("--wiki-revision", default=None)
     ap.add_argument("--wiki-config", default="20231101.simple")
+    # longctx-v2 (unhinged-mac.json): vibe-filtered Discord + booper's own consented feedback.
+    ap.add_argument("--mix-discord-vibe", type=float, default=0.0, help="Discord-Dialogues conversations passing sft/vibe.py's vibe + engagement filter (same --discord-revision)")
+    ap.add_argument("--discord-vibe-min", type=float, default=1.0, help="minimum mean vibe_score of a conversation's assistant targets")
+    ap.add_argument("--discord-vibe-min-targets", type=int, default=2, help="minimum assistant targets per kept conversation")
+    ap.add_argument("--discord-vibe-skip-rows", type=int, default=0, help="start the discord_vibe stream after this many dataset rows (past what the base already trained on)")
+    ap.add_argument("--local-snapshot", nargs="*", default=None, metavar="DIR", help="`babble export` snapshot dir(s) whose data/train.jsonl feeds --mix-local (consented, pseudonymised)")
+    ap.add_argument("--mix-local", type=float, default=0.0, help="booper_local: approvals + direct-reply corrections from --local-snapshot")
+    ap.add_argument("--repeat-local", type=int, default=1, help="epochs to upsample booper_local (max 3)")
     ap.add_argument("--log-examples", type=int, default=0, help="log this many rendered train examples (input + loss-bearing target) per source at data build")
     ap.add_argument("--guard-sources", nargs="*", default=[], help="rehearsal sources that must be present in val and stay within --guard-max-regression (role + multiturn views)")
     ap.add_argument("--guard-max-regression", type=float, default=None, help="regression ceiling for --guard-sources (default: --max-source-val-regression)")
@@ -1959,10 +2202,12 @@ def main():
     ap.add_argument("--duty-cycle", type=float, default=1.0, help="fraction of wall time spent computing; 0.5 sleeps as long as each optimizer step took")
     ap.add_argument("--expert-bucket", type=int, default=0, help="pad each MoE expert's token count to this multiple (bounds MPS graph-cache growth); 0 = HF eager loop")
     ap.add_argument("--grad-checkpoint", action="store_true", help="activation checkpointing: much less MPS memory for ~1/3 more compute")
+    ap.add_argument("--grad-checkpoint-min-width", type=int, default=0, help="activation checkpointing only for micro-batches at least this many tokens wide (bounds the MPS peak of long rows at little cost); 0 = off. Ignored with --grad-checkpoint")
     ap.add_argument("--fixed-rows", action="store_true", help="fill every batch to tokens_per_batch // width rows (bounded set of MPS shapes)")
     ap.add_argument("--pad-multiple", type=int, default=1, help="round batch widths up to this (bounds MPS shape caches)")
     ap.add_argument("--mps-high-watermark", type=float, default=0.7, help="PYTORCH_MPS_HIGH_WATERMARK_RATIO (hard cap, fraction of RAM)")
     ap.add_argument("--mps-low-watermark", type=float, default=0.5, help="PYTORCH_MPS_LOW_WATERMARK_RATIO (allocator frees cached blocks above this)")
+    ap.add_argument("--mps-empty-cache-gb", type=float, default=0.0, help="MPS: return cached allocator blocks after a micro-batch whenever the driver pool exceeds this many GiB (0 = never)")
     ap.add_argument("--prepare-data", action="store_true", help="build runs/<name>/data-cache.pkl and exit (a fresh build leaves a fat RSS; train from the cache)")
     ap.add_argument("--pause-on-battery", action="store_true", help="macOS: sleep while `pmset -g batt` reports battery power")
     ap.add_argument("--seq-len", type=int, default=1024)
@@ -1998,6 +2243,10 @@ def main():
             ap.error(f"unknown config keys in {known.config}: {', '.join(unknown)}")
         ap.set_defaults(**preset)
     args = ap.parse_args()
+    if not 1 <= args.repeat_local <= 3:
+        ap.error("--repeat-local must be 1..3 (a few real pairs repeated more would be memorized)")
+    if args.mix_local > 0 and not args.local_snapshot:
+        ap.error("--mix-local > 0 needs --local-snapshot DIR [DIR ...]")
     if args.smoke:
         args.examples, args.tokens, args.val_examples = 600, 12 * args.tokens_per_batch * args.accum, 50
         args.log_every, args.eval_every, args.ckpt_every = 2, 6, 6
@@ -2042,6 +2291,10 @@ def main():
         # the KV cache on.
         model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
         log("model: gradient checkpointing on")
+    wide_ckpt = None
+    if args.grad_checkpoint_min_width > 0 and not args.grad_checkpoint and not args.export:
+        wide_ckpt = WideBatchCheckpointing(model, args.grad_checkpoint_min_width)
+        log(f"model: gradient checkpointing for micro-batches >= {wide_ckpt.min_width} wide ({len(wide_ckpt.layers)} layers)")
     ckpt_dir = run_dir / "ckpt"
 
     if args.export:
@@ -2172,6 +2425,7 @@ def main():
         report({"step": step, "val": v, "source_val": source_val, "samples": sample(model, tok, device, **sample_kwargs)})
         log(f"samples done rss {rss_gb():.1f}G")
 
+    empty_cache_bytes = int(args.mps_empty_cache_gb * 2**30) if device.type == "mps" and args.mps_empty_cache_gb > 0 else 0
     epoch = 0
     t_log, tok_log, loss_acc, loss_n = time.perf_counter(), 0, 0.0, 0
     micro = 0
@@ -2195,6 +2449,8 @@ def main():
         skip, to_skip = to_skip, 0
         for ids, labels in batches(train, args.tokens_per_batch, pad, shuffle_seed=args.seed + epoch, skip=skip, pad_multiple=args.pad_multiple, fixed_rows=args.fixed_rows):
             ids, labels = ids.to(device), labels.to(device)
+            if wide_ckpt is not None:
+                wide_ckpt(ids.shape[1])
             with torch.autocast(device_type=device.type, dtype=dtype, enabled=dtype != torch.float32):
                 logits = model(input_ids=ids, attention_mask=(ids != pad), use_cache=False).logits
             n_tgt = int((labels[:, 1:] != -100).sum())
@@ -2202,6 +2458,12 @@ def main():
             (loss / args.accum).backward()
             loss_acc += float(loss.detach())
             del logits, loss
+            if empty_cache_bytes and torch.mps.driver_allocated_memory() > empty_cache_bytes:
+                # Many short examples -> many distinct batch shapes; the MPS
+                # pool keeps cached blocks for each and hit the watermark
+                # cap (OOM) in the first steps of longctx-v2 while only
+                # ~2.3 GiB was live. Returning the cache keeps it bounded.
+                torch.mps.empty_cache()
             loss_n += 1
             n_real = int((ids != pad).sum())  # filler rows / padding are not training tokens
             tokens_seen += n_real
@@ -2253,6 +2515,11 @@ def main():
                 log(f"step {step} val {v:.4f} | sample: {s[0]['reply'][:160]!r} ({s[0]['tokens']} tok)")
                 report({"step": step, "val": v, "source_val": source_val, "source_regression": regressions, "source_gate": source_ok, "samples": s})
             if step % args.ckpt_every == 0:
+                if empty_cache_bytes:
+                    # The optimizer state is copied to CPU to save it; with the
+                    # MPS pool still holding its cache that copy went to swap
+                    # (12 min per save measured, vs 8 s with the cache freed).
+                    free_cache(device)
                 save_ckpt(model, config, tok_path, ckpt_dir, step, tokens_seen, opt)
                 log(f"ckpt saved at step {step}")
             if step >= steps_total:
