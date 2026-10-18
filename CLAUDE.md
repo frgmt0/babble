@@ -100,6 +100,14 @@ tail -f logs/babble.log        # wait for bot.ready — do not walk away before 
 refuses dirty trees and in-flight training, and alerts on failure — prefer
 wiring it up over ad-hoc pulls if updates become routine.
 
+**depper (prepared, not cut over):** `depper.toml` describes a depper
+deployment of booper (state under `~/.local/share/babble/`, unit
+`depper-babble.service`). The cutover and rollback runbook is
+`docs/DEPPER.md`. Until that runbook has been carried out, the setup above
+(`~/babble-live` + `babble-bot`) is still the live one and still
+authoritative. Never run `depper deploy` outside the runbook: with
+`babble-bot` still running it would put a second process on booper's token.
+
 Promotion of *model weights* is separate from code deploys: copy the new
 `latest.pt` + `tokenizer.json` into `checkpoints/` (backup first, see above),
 set the matching `BABBLE_SERVE_LAYOUT`, restart, then verify with a real ping

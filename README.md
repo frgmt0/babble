@@ -1616,6 +1616,24 @@ code 6af568a · origin/main: unknown (self-update timer has never checked)
 next will; `systemctl --user start babble-update.service` runs one check
 immediately instead of waiting for the timer.
 
+## Deploying with depper
+
+`depper.toml` at the repo root describes booper as a
+[depper](https://github.com/frgmt0/depper) deployment: pruned release
+directories under `~/.local/share/depper/babble`, a generated
+`depper-babble.service`, non-secret config in `[env]`, secrets in a
+gitignored `.env.prod`, all state (`data/` with the hash salt, `checkpoints/`,
+`logs/`, `artifacts/`, `backups/`, `export/`) under `~/.local/share/babble/`,
+and a health check (`deploy/depper-healthcheck.sh`) that only passes on a
+`bot.ready` from the new process.
+
+**It is not live yet.** The live bot still runs as described above
+(`~/babble-live` + `babble-bot`) until someone follows the cutover runbook,
+[`docs/DEPPER.md`](docs/DEPPER.md), which covers stopping the old unit
+first (one token, one process), moving and sha256-verifying the state,
+boopit, verification, and rollback. Do not run `depper deploy` outside that
+runbook.
+
 ## Layout
 
 ```
