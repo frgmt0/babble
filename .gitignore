@@ -27,3 +27,6 @@ __pycache__/
 .pytest_cache/
 runs/
 .env.sft
+# depper's [secrets] file (see depper.toml / docs/DEPPER.md): booper's Discord
+# token and webhook URL. Never committed; depper also never uploads it.
+.env.prod

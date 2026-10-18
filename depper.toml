@@ -1,0 +1,132 @@
+# depper deployment of booper (the babble Discord bot) to jason's desktop.
+#
+# NOT LIVE YET. Until the cutover in docs/DEPPER.md has been carried out, the
+# live bot is still the hand-rolled systemd unit `babble-bot` running from
+# ~/babble-live (see CLAUDE.md). The setup guard below refuses to deploy
+# while the state has not been moved yet, but a deploy while `babble-bot` is
+# still running would put a second process on booper's Discord token. Follow
+# the runbook.
+#
+# Layout on the host after cutover:
+#   ~/.local/share/depper/babble/          releases, current/previous links,
+#                                          .depper/environment (secrets, 600)
+#   ~/.local/share/babble/data             consented corpus, consent.json,
+#                                          .salt (the hash salt: never lose it)
+#   ~/.local/share/babble/checkpoints      latest.pt, pretrained.pt, tokenizer.json
+#   ~/.local/share/babble/artifacts        promoted HF snapshots + spec tables
+#   ~/.local/share/babble/backups          <reason>-<date>/checkpoints/ backups
+#   ~/.local/share/babble/logs             babble.log / babble.jsonl
+#   ~/.local/share/babble/export           dataset export staging
+# Release directories are pruned, so nothing the bot writes may live in them.
+
+[service]
+name = "babble"
+# Same entry point as the old babble-bot unit. depper runs it from the
+# release directory (<base>/current) as `exec .venv/bin/babble bot`.
+command = ".venv/bin/babble bot"
+# The old unit was Restart=always; keep that.
+restart = "always"
+
+[deploy]
+host = "desktop"
+# Ship committed content only (git archive of HEAD). The live install has
+# always been "a clean clone of main"; this keeps that rule: deploy from an
+# up-to-date main, and untracked or ignored files (data/, runs/, .env*,
+# checkpoints) can never reach the host.
+source = "git"
+# Each release carries its own ~1 GB venv (CPU torch). Three is plenty for
+# rollback and bounds how long old environment backups stay on the host.
+keep_releases = 3
+setup = [
+  # Guard, before anything is activated: refuse to deploy unless booper's
+  # real state is already in place. Without it, a deploy run before the data
+  # move would start the bot on an empty data dir, and the bot would mint a
+  # NEW hash salt there, splitting `!babble forget` across two salts.
+  # [env] is exported to setup, so the paths below come from it.
+  "for f in \"$BABBLE_DATA_DIR/.salt\" \"$BABBLE_DATA_DIR/consent.json\" \"$BABBLE_CHECKPOINT_DIR/latest.pt\" \"$BABBLE_CHECKPOINT_DIR/tokenizer.json\" \"$BABBLE_HF_MODEL_DIR/model-int8.safetensors\" \"$BABBLE_HF_MODEL_DIR/tokenizer.json\" \"$BABBLE_NATIVE_SPEC_TABLE\"; do test -s \"$f\" || { echo \"babble state missing: $f (move state first, see docs/DEPPER.md)\" >&2; exit 1; }; done",
+  # Base dependencies exactly as locked (CPU-only torch via the pytorch-cpu
+  # index in pyproject.toml). --no-dev keeps dependency groups out; the
+  # `dev` extra (pytest) is not requested either. 3.12 matches the old live
+  # venv and is the uv-managed interpreter already on the host.
+  "/home/jason/.local/bin/uv sync --frozen --no-dev --python 3.12",
+  # The live bot serves through BABBLE_SERVE_BACKEND=hf with the native
+  # runtime, which needs the `hf` extra (safetensors, tokenizers, and
+  # transformers for the lean/transformers fallbacks). uv.lock does not
+  # contain the `hf` extra yet (its provides-extras is ["dev", "pretrain"]),
+  # so `uv sync --extra hf --frozen` cannot install it. Until uv.lock is
+  # regenerated, install the extra pinned to the exact versions the old live
+  # venv (~/babble-live/.venv) was running on 2026-10-17.
+  "/home/jason/.local/bin/uv pip install --python .venv/bin/python transformers==5.16.1 safetensors==0.8.0 tokenizers==0.23.1 numpy==2.5.2 regex==2026.7.19 typer==0.27.1 rich==15.0.0 shellingham==1.5.4 markdown-it-py==4.2.0 mdurl==0.1.2 annotated-doc==0.0.5",
+]
+# depper always excludes .git/, .env, .env.*, .venv/, venv/, __pycache__/,
+# .pytest_cache/, .cache/ and depper.toml. These are on top of that. With
+# source = "git" none of them are in the archive anyway (they are untracked),
+# but if source is ever switched to "worktree" they keep local state, model
+# weights and venvs off the host.
+exclude = [
+  ".git",
+  ".venv",
+  "data/",
+  "checkpoints/",
+  "logs/",
+  "artifacts/",
+  "backups/",
+  "export/",
+  "runs/",
+  "external/",
+  ".scratch/",
+  ".run-logs/",
+  "*.pt",
+  "*.egg-info/",
+  "*.py[cod]",
+  ".DS_Store",
+]
+
+[env]
+# --- State, outside the release directory ---------------------------------
+# These four are every directory babble.config.Settings.from_env reads; each
+# would otherwise default to <release>/data etc. and be pruned with it.
+BABBLE_DATA_DIR = "/home/jason/.local/share/babble/data"
+BABBLE_CHECKPOINT_DIR = "/home/jason/.local/share/babble/checkpoints"
+BABBLE_EXPORT_DIR = "/home/jason/.local/share/babble/export"
+BABBLE_LOG_DIR = "/home/jason/.local/share/babble/logs"
+
+# --- Invariants from CLAUDE.md (not secrets, so versioned here) ------------
+# The served model is pair layout; nothing auto-detects this.
+BABBLE_SERVE_LAYOUT = "pair"
+BABBLE_POST_LAYOUT = "pair"
+# Manual training only: `babble train` starts from random init and would
+# overwrite the promoted checkpoint.
+BABBLE_TRAIN_TRIGGER_ROWS = "0"
+BABBLE_POST_TRIGGER_PAIRS = "0"
+
+# --- Served model paths (moved with artifacts/) -----------------------------
+# Values from docs/reports/LONGCTX_V2_PROMOTE_2026-10-15.md and
+# docs/reports/MAXPERF_PROMOTE_2026-09-30.md, re-pointed from
+# ~/babble-live/artifacts to the new artifacts dir. The runbook's preflight
+# checks them against the live .env before cutover. Change them here (and
+# deploy, or `depper secrets push`) when promoting a new model.
+BABBLE_HF_MODEL_DIR = "/home/jason/.local/share/babble/artifacts/hf-booper-longctx-v2"
+BABBLE_NATIVE_SPEC_TABLE = "/home/jason/.local/share/babble/artifacts/spec-ngram-longctx-v1.pt"
+
+PYTHONUNBUFFERED = "1"
+
+[secrets]
+# Built from ~/babble-live/.env by the runbook: the Discord token, the
+# webhook URL, and the remaining serving knobs, with every key above removed
+# (dotenv values override [env], so a stale copy of a key here would win).
+# Gitignored and excluded from every upload; depper writes it to
+# <base>/.depper/environment (mode 600) on the host.
+file = ".env.prod"
+
+[health]
+# Passes only when depper-babble.service is active AND babble.jsonl holds a
+# bot.ready event stamped at or after this unit's own process start, so a
+# stale bot.ready from an earlier process can never pass it.
+command = "sh deploy/depper-healthcheck.sh depper-babble.service"
+timeout = 10
+# Model load (hf native runtime, a first-start engine compile if the source
+# hash changed) plus the Discord gateway login. update-live.sh allowed 90 s;
+# give it double.
+start_period = 180
+interval = 3
