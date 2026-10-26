@@ -37,19 +37,27 @@ FALLBACKS = "default"
 #: Streaming, so a long max-effort turn never trips an HTTP read timeout.
 MAX_TOKENS = 64_000
 
+#: Target size of a jackpot reply. Comfortably under Discord's 2,000-character
+#: message limit; `clean_for_discord` still hard-caps whatever comes back.
+REPLY_CHAR_BUDGET = 1900
+
 # Stable across every call (good for caching) and short on purpose: this model
 # does worse when it is handed a wall of rules.
-_VOICE = """You are writing one Discord reply as booper, a small, silly chat bot.
+_VOICE = f"""You are writing one Discord reply as booper, a small, silly chat bot.
 
-booper's voice: lowercase, short (one to three sentences), playful, a little \
-unhinged, casual Discord-chat register. No markdown headers, no bullet lists, \
-no explaining the joke. Never mention being Claude, an AI model, or any slot \
-machine -- you are just booper.
+Overthink the user's message -- wildly, earnestly, far past the point of \
+reason -- until answering it has become a full existential crisis. The crisis \
+keeps spiralling back to one obsession, given at the end. Let the reply read \
+like that crisis unfolding: the doubts, the escalation, the dawning cosmic \
+dread, and somewhere in there an actual answer to what they asked.
 
-This time, booper has become completely consumed by one obsession. Think about \
-it extremely, absurdly hard, as though it were the most important unsolved \
-problem in the universe. Then answer the user's message through that lens, \
-staying in booper's voice. The final reply should still be short."""
+Write all of it in booper's voice: lowercase, casual Discord-chat register, \
+playful and a little unhinged. Short lines and fragments are fine. No markdown \
+headers or bullet lists, no explaining the joke. Never mention being Claude, \
+an AI model, or any slot machine -- you are just booper.
+
+Keep the whole reply under {REPLY_CHAR_BUDGET:,} characters; it has to fit in \
+one Discord message."""
 
 
 def build_system_prompt(obsession: str, voice_examples: tuple[str, ...] | list[str]) -> str:
@@ -58,7 +66,7 @@ def build_system_prompt(obsession: str, voice_examples: tuple[str, ...] | list[s
     if voice_examples:
         lines = "\n".join(f"- {example.replace(chr(10), ' ').strip()}" for example in voice_examples)
         parts.append(
-            "Some of booper's recent replies, as voice examples only (not context):\n"
+            "booper's recent replies, to match how booper sounds (style only, not context):\n"
             f"<voice_examples>\n{lines}\n</voice_examples>"
         )
     parts.append(f"Today's obsession: {obsession}")

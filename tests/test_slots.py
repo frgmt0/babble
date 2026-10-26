@@ -37,7 +37,7 @@ from babble.core import (
     Reply,
 )
 from babble.exchanges import Exchange, ExchangeLog
-from babble.oracle import FALLBACK_BETA, Oracle, OracleResult, build_system_prompt
+from babble.oracle import FALLBACK_BETA, REPLY_CHAR_BUDGET, Oracle, OracleResult, build_system_prompt
 from babble.slots import (
     JACKPOT_ODDS,
     OBSESSIONS,
@@ -674,6 +674,20 @@ def test_oracle_sends_exactly_the_documented_request():
     assert "<voice_examples>" in kwargs["system"] and "- beep bop" in kwargs["system"]
     assert REQUEST.obsession in kwargs["system"]
     assert set(kwargs) == {"model", "max_tokens", "system", "messages", "output_config", "betas", "fallbacks"}
+
+
+def test_system_prompt_asks_for_an_existential_crisis_and_never_holds_the_user_message():
+    prompt = build_system_prompt(REQUEST.obsession, REQUEST.voice_examples)
+    assert REPLY_CHAR_BUDGET == 1900
+    assert "existential crisis" in prompt
+    assert "1,900" in prompt
+    assert "one to three sentences" not in prompt
+    assert f"Today's obsession: {REQUEST.obsession}" in prompt
+    assert "<voice_examples>\n- boop\n- beep bop\n</voice_examples>" in prompt
+    assert "style only, not context" in prompt
+    assert REQUEST.prompt not in prompt
+    # the prompt is stable apart from the examples and the obsession
+    assert build_system_prompt("x", ()).split("Today's")[0] == build_system_prompt("y", ()).split("Today's")[0]
 
 
 def test_oracle_joins_only_text_blocks():

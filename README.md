@@ -333,10 +333,13 @@ Off by default. When it is on, every ordinary reply to an **eligible** person
 spins a hidden three-reel slot machine (`babble/slots.py`). There is no command
 and nothing is shown. On three of a kind -- about **5.3%** of rolls -- that one
 reply is written by Claude (`claude-fable-5-1` at `max` effort,
-`babble/oracle.py`) instead of the local model: it is told to think absurdly
-hard about a ridiculous "obsession" picked by the winning symbol (🐸 "frog-based
-macroeconomics", 💎 "whether soup is a beverage, as a 4-hour treatise", …) and
-answer in booper's voice. Everything else is a miss and nothing changes.
+`babble/oracle.py`) instead of the local model: it is told to overthink the
+user's message into a full existential crisis that keeps spiralling back to a
+ridiculous "obsession" picked by the winning symbol (🐸 "frog-based
+macroeconomics", 💎 "whether soup is a beverage, as a 4-hour treatise", …),
+with a real answer buried somewhere in it, all in booper's voice. The prompt
+asks for under 1,900 characters (`REPLY_CHAR_BUDGET`), so it fits one Discord
+message; the hard cap is still applied on send. Everything else is a miss and nothing changes.
 
 **The reels.** Each reel is the same weighted 100-stop strip: 🍒30 🍋25 🔔20 🍇12
 💎8 🐸5. A roll reads three disjoint 8-byte slices of
