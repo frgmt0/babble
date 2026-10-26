@@ -115,6 +115,15 @@ collected until you say yes again. your existing corrections stay as they are.
 {CLAUDE_DISCLOSURE}
 -# full details: <{PRIVACY_URL}>"""
 
+# Shown once, on the next ordinary reply, to people who opted in before
+# Claude-written replies existed (a v2 grant). Bump the id to reuse the
+# mechanism for a later announcement.
+SPOOKY_ANNOUNCEMENT_ID = "spooky-2026-10"
+SPOOKY_ANNOUNCEMENT = f"""👻 **spooooky update:** booper has been possessed. every so often, one of my replies is now written by claude (anthropic's model) instead — and it overthinks *everything*.
+you opted in before this existed, so to get in on it run **`!babble accept`** again.
+{CLAUDE_DISCLOSURE}
+-# details: <{PRIVACY_URL}>"""
+
 HELP_TEXT = f"""**babble** — a from-scratch model learning to talk from what you send it.
 
 ping me and i'll carry on from whatever you said. it will be nonsense for a long time.
@@ -769,7 +778,34 @@ class Babble:
         ]
         if reask:
             replies.append(Reply(CORPUS_NOTICE, reply_to=msg.message_id, kind="consent"))
+        announcement = self._announcement(msg)
+        if announcement is not None:
+            replies.append(announcement)
         return replies
+
+    def _announcement(self, msg: IncomingMessage) -> Reply | None:
+        """The one-time "spooky update" for a v2 grantee, recorded as shown now.
+
+        Only for someone granted on both scopes under a notice older than the
+        Claude disclosure, with the feature live, who has not seen it. Marking
+        happens here, inside the locked handler, so it can never show twice.
+        """
+        if not self._slots_live():
+            return None
+        author_id = msg.author_id
+        if self.consent.decision(author_id, SCOPE_CORPUS) not in CAPTURE_OK:
+            return None
+        if self.consent.decision(author_id, SCOPE_CORRECTIONS) not in CAPTURE_OK:
+            return None
+        version = self.consent.notice_version(author_id, SCOPE_CORPUS)
+        if version is None or version >= CLAUDE_NOTICE_VERSION:
+            return None
+        user = self.ids.user(author_id)
+        if self.slots.has_announced(user, SPOOKY_ANNOUNCEMENT_ID):
+            return None
+        self.slots.mark_announced(user, SPOOKY_ANNOUNCEMENT_ID)
+        self.log.event("announcement.shown", user=user, id=SPOOKY_ANNOUNCEMENT_ID)
+        return Reply(SPOOKY_ANNOUNCEMENT, reply_to=msg.message_id, kind="announcement")
 
     # --- the hidden slot machine ----------------------------------------
 

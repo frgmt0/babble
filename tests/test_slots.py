@@ -219,7 +219,7 @@ def test_state_persists_and_reloads(tmp_path):
     assert again.miss_streak("u_x") == m.miss_streak("u_x")
     assert again.payouts_today == m.payouts_today
     raw = json.loads((tmp_path / "slots.json").read_text())
-    assert set(raw) == {"day", "payouts_today", "users"}
+    assert set(raw) == {"day", "payouts_today", "users", "announced"}
     assert list(raw["users"]) == ["u_x"]
 
 
@@ -371,13 +371,14 @@ def test_a_v2_grantee_keeps_their_consent_but_never_rolls(slots_settings, genera
 
     replies = _ping(brain, ALICE, "hello")
 
-    # No re-prompt: the v3 bump did not invalidate their grant.
-    assert [r.kind for r in replies] == ["generation"]
+    # No re-prompt: the v3 bump did not invalidate their grant. They do get the
+    # one-time announcement telling them how to opt in to the new feature.
+    assert [r.kind for r in replies] == ["generation", "announcement"]
     assert replies[0].jackpot is None
     assert replies[0].exchange is not None  # still gradeable, as before
     assert read_log("consent.prompt") == []
     assert read_log("slots.roll") == []
-    assert not slots_settings.slots_path.exists()
+    assert not jackpot_machine.knows(brain.ids.user(ALICE))  # never spun
     # Their stored record is untouched -- still v2, still granted.
     assert json.loads(slots_settings.consent_path.read_text()) == json.loads(before)
     # And their message was still captured to the corpus, exactly as before.
@@ -879,3 +880,113 @@ def test_on_message_without_a_jackpot_never_cashes_out(settings, log, brain):
 
     assert inbound.replies == ["plain"]
     assert channel.typing_log == []
+
+
+# --- the one-time "spooky update" announcement --------------------------------
+
+
+def _v2_brain(slots_settings, generator, log, machine_, oracle, user=ALICE, **consent):
+    _write_consent(slots_settings.consent_path, user, version=2, **consent)
+    return Babble(slots_settings, generator=generator, log=log, slots=machine_, oracle=oracle)
+
+
+def test_v2_grantee_sees_the_announcement_exactly_once(slots_settings, generator, log, jackpot_machine, oracle, read_log):
+    from babble.core import SPOOKY_ANNOUNCEMENT, SPOOKY_ANNOUNCEMENT_ID
+
+    brain = _v2_brain(slots_settings, generator, log, jackpot_machine, oracle)
+
+    first = _ping(brain, ALICE, "hello", mid="m1")
+    assert [r.kind for r in first] == ["generation", "announcement"]
+    assert first[1].content == SPOOKY_ANNOUNCEMENT
+    assert first[1].reply_to == "m1"
+    assert "!babble accept" in first[1].content
+    (event,) = read_log("announcement.shown")
+    assert event["user"] == brain.ids.user(ALICE)
+    assert event["id"] == SPOOKY_ANNOUNCEMENT_ID
+
+    second = _ping(brain, ALICE, "again", mid="m2")
+    assert [r.kind for r in second] == ["generation"]
+
+    # Persisted: a fresh machine and brain from the same file still remember.
+    fresh = SlotMachine(slots_settings.slots_path, secret=SECRET)
+    assert fresh.has_announced(brain.ids.user(ALICE), SPOOKY_ANNOUNCEMENT_ID)
+    assert not fresh.has_announced(brain.ids.user(ALICE), "some-other-id")
+    brain2 = Babble(slots_settings, generator=generator, log=log, slots=fresh, oracle=oracle)
+    assert [r.kind for r in _ping(brain2, ALICE, "third", mid="m3")] == ["generation"]
+    # Raw Discord ids never land in the state file.
+    assert ALICE not in slots_settings.slots_path.read_text()
+
+
+@pytest.mark.parametrize("how", ["v3", "declined", "withdrawn", "pending", "unknown"])
+def test_announcement_not_shown_to_others(sbrain, slots_settings, how):
+    fake = FakeDiscord(sbrain)
+    if how == "v3":
+        fake.onboard(ALICE)
+    elif how == "pending":
+        fake.ping(ALICE)
+    elif how == "declined":
+        fake.ping(ALICE)
+        fake.decline(ALICE)
+    elif how == "withdrawn":
+        fake.onboard(ALICE)
+        fake.say(ALICE, "!babble forget")
+
+    for i in range(3):
+        for reply in _ping(sbrain, ALICE, f"hi {i}", mid=f"m{i}"):
+            assert reply.kind != "announcement"
+    assert not sbrain.slots.has_announced(sbrain.ids.user(ALICE), "spooky-2026-10")
+    if slots_settings.slots_path.exists():
+        assert "spooky-2026-10" not in slots_settings.slots_path.read_text()
+
+
+def test_announcement_not_shown_when_slots_not_live(settings, generator, log, jackpot_machine, oracle):
+    _write_consent(settings.consent_path, ALICE, version=2)
+    settings.slots_enabled = False
+    off = Babble(settings, generator=generator, log=log, slots=jackpot_machine, oracle=oracle)
+    assert [r.kind for r in _ping(off, ALICE)] == ["generation"]
+
+    settings.slots_enabled = True
+    no_oracle = Babble(settings, generator=generator, log=log, slots=jackpot_machine, oracle=None)
+    assert [r.kind for r in _ping(no_oracle, ALICE)] == ["generation"]
+
+    no_slots = Babble(settings, generator=generator, log=log, slots=None, oracle=oracle)
+    assert [r.kind for r in _ping(no_slots, ALICE)] == ["generation"]
+    assert not settings.slots_path.exists()
+
+
+def test_announcement_not_shown_on_commands(slots_settings, generator, log, jackpot_machine, oracle):
+    brain = _v2_brain(slots_settings, generator, log, jackpot_machine, oracle)
+    for cmd in ("!babble help", "!babble consent"):
+        assert all(r.kind != "announcement" for r in _ping(brain, ALICE, cmd, mid=cmd))
+    assert not brain.slots.has_announced(brain.ids.user(ALICE), "spooky-2026-10")
+    assert not slots_settings.slots_path.exists()
+
+
+def test_forget_clears_the_announced_flag(slots_settings, generator, log, jackpot_machine, oracle):
+    brain = _v2_brain(slots_settings, generator, log, jackpot_machine, oracle)
+    _ping(brain, ALICE)
+    pseudonym = brain.ids.user(ALICE)
+    assert jackpot_machine.has_announced(pseudonym, "spooky-2026-10")
+
+    FakeDiscord(brain).say(ALICE, "!babble forget")
+
+    assert not jackpot_machine.has_announced(pseudonym, "spooky-2026-10")
+    assert pseudonym not in slots_settings.slots_path.read_text()
+
+
+def test_slotmachine_forget_returns_true_for_announced_only(tmp_path):
+    m = machine(tmp_path)
+    assert m.forget("u_x") is False
+    m.mark_announced("u_x", "a")
+    assert m.forget("u_x") is True
+    assert not m.has_announced("u_x", "a")
+
+
+def test_old_slots_json_without_announced_loads(tmp_path):
+    path = tmp_path / "slots.json"
+    path.write_text(json.dumps({"day": "2026-10-25", "payouts_today": 2, "users": {"u_a": {"spins": 3, "miss_streak": 1}}}))
+    m = SlotMachine(path, secret=SECRET)
+    assert m.spins("u_a") == 3
+    assert not m.has_announced("u_a", "spooky-2026-10")
+    m.mark_announced("u_a", "spooky-2026-10")
+    assert SlotMachine(path, secret=SECRET).has_announced("u_a", "spooky-2026-10")
