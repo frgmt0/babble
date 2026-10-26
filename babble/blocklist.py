@@ -12,6 +12,15 @@ Two design choices matter more than the word list itself:
   set across a few categories -- not an attempt at an exhaustive list, which
   does not exist. Extend it by editing the file, or point
   `BABBLE_BLOCKLIST_PATH` at your own.
+* **Edits apply live.** A list loaded from a file re-stats it at most once a
+  second and re-reads it when it changed, so a running bot needs no restart.
+  If the file goes missing, unreadable or unparsable the last good terms are
+  kept (never fail open) and a later good write is picked up. A reload that
+  parses to *no* terms is likewise ignored while terms are loaded (it is
+  indistinguishable from an editor mid-save), so to disable the blocklist on a
+  running bot, unset or repoint `BABBLE_BLOCKLIST_PATH` and restart rather than
+  emptying the file. Save edits atomically (write a temp file, then rename) so
+  a partially written file is never read.
 * **Matching is on a normalised form.** Lowercased, accents stripped, common
   leetspeak folded back to letters (0->o, 1->i, 3->e, 4->a, 5->s, @->a, $->s),
   repeated characters collapsed, and separator punctuation glued back
@@ -29,10 +38,13 @@ import hashlib
 import os
 import re
 import unicodedata
-from dataclasses import dataclass, field
+import threading
+import time
+from collections.abc import Callable
 from pathlib import Path
 
 BLOCKLIST_ENV = "BABBLE_BLOCKLIST_PATH"
+RELOAD_INTERVAL = 1.0  # seconds between stat() checks of the source file
 DEFAULT_PATH = Path(__file__).resolve().parent / "blocklist.txt"
 
 _LEET = str.maketrans({"0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "@": "a", "$": "s"})
@@ -82,41 +94,118 @@ def row_fingerprint(*parts: str) -> str:
     return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()[:16]
 
 
-@dataclass
-class Blocklist:
-    """Loaded terms plus their compiled word-boundary patterns."""
+def _parse_terms(text: str) -> frozenset[str]:
+    terms = set()
+    for line in text.splitlines():
+        term = line.strip()
+        if not term or term.startswith("#"):
+            continue
+        normalised = normalise(term)
+        if normalised:
+            terms.add(normalised)
+    return frozenset(terms)
 
-    terms: frozenset[str] = field(default_factory=frozenset)
+
+class Blocklist:
+    """Loaded terms plus their compiled word-boundary patterns.
+
+    A list loaded from a file watches that file: `terms` (and so `enabled`,
+    `hit`, `matches`) re-stats the path at most once per `check_interval`
+    seconds and re-parses it when its mtime or size changed. A missing,
+    unreadable or broken file keeps the last good terms (fail safe, never
+    open) and is retried on a later check. An in-memory list never touches
+    the filesystem.
+    """
+
+    def __init__(
+        self,
+        terms: frozenset[str] = frozenset(),
+        *,
+        path: Path | None = None,
+        check_interval: float = RELOAD_INTERVAL,
+        clock: Callable[[], float] = time.monotonic,
+        signature: tuple[int, int] | None = None,
+    ) -> None:
+        self._terms = frozenset(terms)
+        self._path = path
+        self._interval = check_interval
+        self._clock = clock
+        self._signature = signature
+        self._last_check = clock()
+        self._lock = threading.Lock()
+        self.generation = 0  # bumped on every successful hot reload
 
     @classmethod
     def load(cls, path: Path | None = None) -> "Blocklist":
         if path is None:
             override = os.environ.get(BLOCKLIST_ENV)
             path = Path(override) if override else DEFAULT_PATH
-        if not path.exists():
-            return cls(frozenset())
-        terms = set()
-        for line in path.read_text(encoding="utf-8").splitlines():
-            term = line.strip()
-            if not term or term.startswith("#"):
-                continue
-            normalised = normalise(term)
-            if normalised:
-                terms.add(normalised)
-        return cls(frozenset(terms))
+        # The path is watched even if absent now, so a file that appears later is picked up.
+        bl = cls(frozenset(), path=path)
+        try:
+            bl._signature, bl._terms = bl._read()
+        except FileNotFoundError:
+            pass
+        return bl
+
+    def _read(self) -> tuple[tuple[int, int], frozenset[str]]:
+        assert self._path is not None
+        st = self._path.stat()  # stat first: a write racing the read forces another reload
+        text = self._path.read_text(encoding="utf-8")
+        return (st.st_mtime_ns, st.st_size), _parse_terms(text)
+
+    def _maybe_reload(self) -> None:
+        if self._path is None:
+            return
+        with self._lock:
+            now = self._clock()
+            if now - self._last_check < self._interval:
+                return
+            self._last_check = now
+            try:
+                st = self._path.stat()
+                if (st.st_mtime_ns, st.st_size) == self._signature:
+                    return
+                signature, terms = self._read()
+            except Exception:
+                return  # keep the last good terms; retry at the next check
+            if not terms and self._terms:
+                # An editor mid-save (truncate, then write) looks like an empty
+                # file. Keep the old terms and leave the signature unstored so
+                # the next check retries.
+                return
+            self._terms = terms  # fully built before the swap
+            self._signature = signature
+            self.generation += 1
+
+    @property
+    def terms(self) -> frozenset[str]:
+        self._maybe_reload()
+        return self._terms
 
     @property
     def enabled(self) -> bool:
         return bool(self.terms)
 
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Blocklist):
+            return NotImplemented
+        return self.terms == other.terms
+
+    __hash__ = None  # type: ignore[assignment]
+
+    def __repr__(self) -> str:  # never show the terms
+        return f"Blocklist(n={len(self._terms)}, path={self._path})"
+
     def hit(self, text: str | None) -> str | None:
         """The first blocked term found in `text`, or None."""
-        if not self.enabled or not text:
+        terms = self.terms
+        if not terms or not text:
             return None
         normalised = normalise(text)
         if not normalised:
             return None
-        for term in self.terms:
+        for term in terms:
             if re.search(rf"\b{re.escape(term)}\b", normalised):
                 return term
         return None
