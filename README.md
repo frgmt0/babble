@@ -314,8 +314,9 @@ grant says: a no is stronger than a yes, in every scope and from every source.
   corrects, the pair needs both, because Alice's message gets published too. A
   corpus row has one author and needs exactly that person's grant.
 - **Withdrawal is retroactive.** `!babble forget` deletes your rows from **both**
-  stores, drops your pending exchanges, clears any channels you widened, and
-  takes you out of every future export.
+  stores, drops your pending exchanges, clears any channels you widened, deletes
+  your [slot machine](#jackpot-replies-claude) state, and takes you out of every
+  future export.
 - **Raw Discord ids never reach the dataset.** They exist only in two local
   operational files (`data/consent.json`, `data/exchanges.json`). The stores, the
   logs and the export contain only salted hashes like `u_9f2c4a…`. Usernames are
@@ -325,6 +326,94 @@ grant says: a no is stronger than a yes, in every scope and from every source.
 
 The salt lives in `data/.salt` (generated once) or `BABBLE_HASH_SALT`. **Never
 change it** — `!babble forget` finds your rows by re-deriving your hash.
+
+## Jackpot replies (Claude)
+
+Off by default. When it is on, every ordinary reply to an **eligible** person
+spins a hidden three-reel slot machine (`babble/slots.py`). There is no command
+and nothing is shown. On three of a kind -- about **5.3%** of rolls -- that one
+reply is written by Claude (`claude-fable-5-1` at `max` effort,
+`babble/oracle.py`) instead of the local model: it is told to overthink the
+user's message into a full existential crisis that keeps spiralling back to a
+ridiculous "obsession" picked by the winning symbol (🐸 "frog-based
+macroeconomics", 💎 "whether soup is a beverage, as a 4-hour treatise", …),
+with a real answer buried somewhere in it, all in booper's voice. The prompt
+asks for under 1,900 characters (`REPLY_CHAR_BUDGET`), so it fits one Discord
+message; the hard cap is still applied on send. Everything else is a miss and nothing changes.
+
+**The reels.** Each reel is the same weighted 100-stop strip: 🍒30 🍋25 🔔20 🍇12
+💎8 🐸5. A roll reads three disjoint 8-byte slices of
+`sha256(secret | pseudonym | spin_count | message)`, so the result depends on
+what you actually said, while the per-process random `secret` (never stored or
+logged) means nobody can work out which message wins.
+
+- **Pity:** after `BABBLE_SLOTS_PITY - 1` misses in a row, the next roll pays.
+- **Cooldown:** after a paid jackpot, that person's jackpots are void for
+  `BABBLE_SLOTS_COOLDOWN_MINUTES` (a voided roll is not counted as a miss).
+- **Daily cap:** at most `BABBLE_SLOTS_DAILY_CAP` paid jackpots per UTC day
+  across everyone; `0` pays nothing.
+
+State lives in `data/slots.json`, keyed by the salted pseudonym, never a raw id.
+`!babble forget` deletes your entry there too.
+
+**Who is eligible -- fail closed.** Only people with **both** grants whose corpus
+grant was made under notice **v3** or later (`consent.CLAUDE_NOTICE_VERSION`), the
+first notice that discloses this. Bumping `NOTICE_VERSION` to 3 does not re-ask
+or re-gate anyone: v2 grantees keep every bit of their existing consent and
+their messages are captured exactly as before, they just never roll until they
+run `!babble accept` again. Unknown, pending, declined and withdrawn people
+never roll and nothing is written about them. A message that trips the
+[content filter](#content-filter) never rolls either.
+
+**What leaves the box** on a jackpot, and nothing else: the person's own message
+(mention markup scrubbed, as everywhere) and up to `BABBLE_SLOTS_VOICE_EXAMPLES`
+of booper's **own** recent replies as style examples. Never other people's
+messages, never the prompts those replies answered, never ids or usernames,
+never conversation history.
+
+**What happens to the answer.** It goes through `clean_for_discord` and the
+blocklist exactly like local output, then is sent with `exchange=None`: it is
+never remembered as an exchange, never captured to the corpus, never used as
+conversation context, never trained on or published, and a 👍/👎 or a `>>`
+correction on it is not recorded. The person's own message is captured to the
+corpus by the normal path, as it would be for any reply. The local reply is
+always generated first, and on any failure (no SDK, no key, timeout, rate limit,
+refusal, empty or blocked output) that local reply is sent instead and a
+`slots.cashout status=fallback reason=…` line explains why.
+
+**Locking.** All slot state changes happen inside the bot's locked handler.
+The API call itself (`Babble.cash_out`) runs in a thread *after* the lock is
+released, under a typing indicator, so a minutes-long max-effort turn never
+holds up anyone else's message.
+
+**Turning it on** needs three things, or the feature stays inert and logs
+`slots.disabled reason=…` once at startup:
+
+```bash
+uv pip install -e ".[fable]"     # the anthropic SDK, imported lazily
+# in .env:
+BABBLE_SLOTS_ENABLED=1
+ANTHROPIC_API_KEY=...            # an explicit key; a CLI login is not used
+```
+
+| variable | default | what it does |
+| --- | --- | --- |
+| `BABBLE_SLOTS_ENABLED` | off | spin the hidden reels on eligible replies |
+| `BABBLE_SLOTS_MODEL` | `claude-fable-5-1` | the model that writes jackpot replies |
+| `BABBLE_SLOTS_EFFORT` | `max` | `output_config.effort` for that call |
+| `BABBLE_SLOTS_PITY` | `15` | the `pity`-th roll after `pity - 1` straight misses always pays; `0` = no pity |
+| `BABBLE_SLOTS_DAILY_CAP` | `20` | paid jackpots per UTC day, all users; `0` = none |
+| `BABBLE_SLOTS_COOLDOWN_MINUTES` | `30` | per-person gap between paid jackpots |
+| `BABBLE_SLOTS_VOICE_EXAMPLES` | `20` | how many of booper's own recent replies go along as style examples |
+| `BABBLE_SLOTS_FOOTER` | on | add `-# 🎰 🐸🐸🐸 · <obsession>` under a jackpot reply |
+| `BABBLE_SLOTS_TIMEOUT_SECONDS` | `900` | client timeout for the one streamed request (no retries) |
+
+The request is streamed with `max_tokens=64000`, no `thinking`/sampling
+parameters (thinking is always on for this model and the others are rejected),
+and the server-side refusal fallback (`betas=["server-side-fallback-2026-07-01"],
+fallbacks="default"`). Events: `slots.roll` (pseudonym, symbols, jackpot, forced,
+voided -- never the message) and `slots.cashout` (ok/fallback, reason, ms, model,
+token usage).
 
 ## Content filter
 

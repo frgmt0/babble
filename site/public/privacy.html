@@ -29,6 +29,16 @@ widens collection for anyone else, and <code>!babble pings</code> turns it back 
 complete list. The bot does not scan channels, read history, or collect anything from people who
 haven't opted in.</p>
 
+<h2>occasional replies written by Claude</h2>
+<p>Only if you have opted in: every so often, one of booper's replies to you is written by Claude,
+Anthropic's language model, instead of booper's own model. For that one reply, your message is sent
+to Anthropic's API, together with up to 20 of booper's own previous replies as style examples. No
+other people's messages, no usernames, and no Discord ids are sent. The Claude-written reply is not
+stored, not added to the dataset, and not trained on. Anthropic processes the request under its own
+API terms. If you opted in before this was described here, it does not apply to you until you run
+<code>!babble accept</code> again; <code>!babble decline</code> or <code>!babble forget</code> turns it
+off along with everything else.</p>
+
 <h2>what is published</h2>
 <p>Collected text is used to train the model and is published in a public HuggingFace dataset that
 anyone can download. In the published data you appear only as a salted hash (like
@@ -60,7 +70,8 @@ you want to see what's stored about you, ask (see contact below) and we'll show 
 <p>Data lives on a single machine controlled by the operator, not in a third-party cloud, and only
 the operator has access. Consent records and the id-to-hash mapping are kept only as long as they
 are needed to enforce your choices. There is no analytics, no tracking, and no third-party
-processor beyond HuggingFace hosting the already-anonymised public dataset.</p>
+processor beyond HuggingFace hosting the already-anonymised public dataset and, for opted-in
+people only, Anthropic generating the occasional Claude-written reply described above.</p>
 
 <h2>age</h2>
 <p>booper is only for people old enough to use Discord under Discord's own terms (13, or higher

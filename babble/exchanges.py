@@ -100,6 +100,28 @@ class ExchangeLog:
     def get(self, bot_message_id: object) -> Exchange | None:
         return self._entries.get(str(bot_message_id))
 
+    def recent_responses(self, n: int, *, exclude: tuple[str, ...] | frozenset[str] = ()) -> list[str]:
+        """The bot's last `n` non-empty replies, oldest first, newest last.
+
+        Only the bot's own words -- never the prompts and never who they were
+        for. This is what the slot machine sends Claude as voice examples, so
+        what it returns is exactly what leaves the box. `exclude` drops
+        placeholder text (e.g. `core.EMPTY_REPLY`) that is not booper talking.
+        """
+        if n <= 0:
+            return []
+        skip = set(exclude)
+        picked: list[str] = []
+        for exchange in reversed(list(self._entries.values())):
+            text = exchange.response.strip()
+            if not text or text in skip:
+                continue
+            picked.append(text)
+            if len(picked) >= n:
+                break
+        picked.reverse()
+        return picked
+
     def forget_author(self, user_id: object) -> int:
         """Drop every pending exchange belonging to a user who opted out."""
         target = str(user_id)
