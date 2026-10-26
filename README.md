@@ -341,6 +341,8 @@ with a real answer buried somewhere in it, all in booper's voice. The prompt
 asks for under 1,900 characters (`REPLY_CHAR_BUDGET`), so it fits one Discord
 message; the hard cap is still applied on send. Everything else is a miss and nothing changes.
 
+People who opted in before this existed (a v2 grant) are not eligible until they `!babble accept` again, so with the feature live each of them gets a one-time "spooooky update" message on their next ordinary reply telling them so. It is recorded per pseudonym in `slots.json` (`announced`), so it never shows twice and `!babble forget` clears it.
+
 **The reels.** Each reel is the same weighted 100-stop strip: 🍒30 🍋25 🔔20 🍇12
 💎8 🐸5. A roll reads three disjoint 8-byte slices of
 `sha256(secret | pseudonym | spin_count | message)`, so the result depends on

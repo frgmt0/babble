@@ -218,6 +218,8 @@ class SlotMachine:
         self._users: dict[str, _UserState] = {}
         self._day: str = ""
         self._payouts_today: int = 0
+        #: pseudonym -> id of the one-time announcement they were shown.
+        self._announced: dict[str, str] = {}
         self._load()
 
     @classmethod
@@ -251,6 +253,9 @@ class SlotMachine:
                         self._users[str(pseudonym)] = _UserState.from_dict(entry)
                     except (TypeError, ValueError):
                         continue
+        announced = raw.get("announced")
+        if isinstance(announced, dict):
+            self._announced = {str(p): str(a) for p, a in announced.items() if isinstance(a, str)}
         self._day = str(raw.get("day") or "")
         try:
             self._payouts_today = max(0, int(raw.get("payouts_today", 0)))
@@ -261,6 +266,7 @@ class SlotMachine:
         payload = {
             "day": self._day,
             "payouts_today": self._payouts_today,
+            "announced": dict(sorted(self._announced.items())),
             "users": {p: s.to_dict() for p, s in sorted(self._users.items())},
         }
         atomic_write_text(self.path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
@@ -323,10 +329,20 @@ class SlotMachine:
 
     def forget(self, user: str) -> bool:
         """Drop everything stored about one pseudonym. True if there was any."""
-        if self._users.pop(user, None) is None:
-            return False
+        removed = self._users.pop(user, None) is not None
+        removed = self._announced.pop(user, None) is not None or removed
+        if removed:
+            self._save()
+        return removed
+
+    def has_announced(self, user: str, announcement_id: str) -> bool:
+        """Has this pseudonym already been shown announcement `announcement_id`?"""
+        return self._announced.get(user) == announcement_id
+
+    def mark_announced(self, user: str, announcement_id: str) -> None:
+        """Record that `user` (a pseudonym) has been shown `announcement_id`."""
+        self._announced[user] = announcement_id
         self._save()
-        return True
 
     def knows(self, user: str) -> bool:
         return user in self._users
