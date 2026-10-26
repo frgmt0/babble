@@ -392,3 +392,149 @@ def test_rescan_via_the_cli(settings, monkeypatch, capsys, tmp_path):
     assert "purged 1 correction row(s) and 1 corpus row(s)" in out
     assert InteractionStore(settings.interactions_path).all() == []
     assert CorpusStore(settings.corpus_path).all() == []
+
+
+# --- hot reload -----------------------------------------------------------
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _write(path, text, tick):
+    """Write `path` and force a distinct mtime (filesystem granularity safe)."""
+    import os
+
+    path.write_text(text, encoding="utf-8")
+    ns = 1_700_000_000_000_000_000 + tick * 10_000_000_000
+    os.utime(path, ns=(ns, ns))
+
+
+def _watched(path, clock):
+    bl = Blocklist.load(path)
+    bl._clock = clock
+    bl._last_check = clock()
+    return bl
+
+
+def test_hot_reload_picks_up_edit_after_throttle(tmp_path):
+    f = tmp_path / "bl.txt"
+    _write(f, "alpha\n", 1)
+    clock = _Clock()
+    bl = _watched(f, clock)
+    assert bl.hit("an alpha here") == "alpha"
+    assert bl.hit("a beta here") is None
+    _write(f, "beta\n", 2)
+    clock.now += 1.5
+    assert bl.hit("a beta here") == "beta"
+    assert bl.hit("an alpha here") is None
+    assert bl.generation == 1
+
+
+def test_hot_reload_is_throttled(tmp_path):
+    f = tmp_path / "bl.txt"
+    _write(f, "alpha\n", 1)
+    clock = _Clock()
+    bl = _watched(f, clock)
+    assert bl.matches("alpha")
+    _write(f, "beta\n", 2)
+    clock.now += 0.5  # inside the window: not re-read
+    assert bl.matches("alpha") and not bl.matches("beta")
+    assert bl.generation == 0
+    clock.now += 0.6
+    assert bl.matches("beta") and not bl.matches("alpha")
+
+
+def test_hot_reload_unchanged_file_is_not_reparsed(tmp_path):
+    f = tmp_path / "bl.txt"
+    _write(f, "alpha\n", 1)
+    clock = _Clock()
+    bl = _watched(f, clock)
+    for _ in range(3):
+        clock.now += 2
+        assert bl.matches("alpha")
+    assert bl.generation == 0
+
+
+def test_hot_reload_deleted_file_keeps_prior_terms(tmp_path):
+    f = tmp_path / "bl.txt"
+    _write(f, "alpha\n", 1)
+    clock = _Clock()
+    bl = _watched(f, clock)
+    f.unlink()
+    clock.now += 2
+    assert bl.enabled and bl.matches("alpha")
+    _write(f, "beta\n", 2)  # a later good write is still picked up
+    clock.now += 2
+    assert bl.matches("beta") and not bl.matches("alpha")
+
+
+def test_hot_reload_unreadable_file_keeps_prior_terms(tmp_path):
+    f = tmp_path / "bl.txt"
+    _write(f, "alpha\n", 1)
+    clock = _Clock()
+    bl = _watched(f, clock)
+    f.write_bytes(b"\xff\xfe\x00bad utf8 \x80\x81")  # undecodable -> reload raises
+    import os
+
+    os.utime(f, ns=(1_800_000_000_000_000_000,) * 2)
+    clock.now += 2
+    assert bl.matches("alpha")
+    assert bl.generation == 0
+    _write(f, "gamma\n", 3)
+    clock.now += 2
+    assert bl.matches("gamma") and not bl.matches("alpha")
+    assert bl.generation == 1
+
+
+def test_hot_reload_file_created_after_missing_start(tmp_path):
+    f = tmp_path / "later.txt"
+    clock = _Clock()
+    bl = _watched(f, clock)
+    assert not bl.enabled  # startup semantics unchanged: missing file -> empty
+    _write(f, "alpha\n", 1)
+    clock.now += 2
+    assert bl.matches("alpha")
+
+
+def test_in_memory_blocklist_never_stats(tmp_path, monkeypatch):
+    import os
+    from pathlib import Path
+
+    def boom(*a, **k):
+        raise AssertionError("stat called")
+
+    bl = _blocklist("alpha")
+    monkeypatch.setattr(Path, "stat", boom)
+    monkeypatch.setattr(os, "stat", boom)
+    assert bl.matches("alpha") and bl.enabled and bl.terms
+
+
+def test_hot_reload_emptied_file_keeps_prior_terms(tmp_path):
+    f = tmp_path / "bl.txt"
+    _write(f, "alpha\n", 1)
+    clock = _Clock()
+    bl = _watched(f, clock)
+    _write(f, "", 2)  # editor truncated, not yet written
+    clock.now += 2
+    assert bl.enabled and bl.matches("alpha")
+    assert bl.generation == 0
+    _write(f, "beta\n", 3)
+    clock.now += 2
+    assert bl.matches("beta") and not bl.matches("alpha")
+
+
+def test_hot_reload_empty_read_does_not_store_signature(tmp_path):
+    f = tmp_path / "bl.txt"
+    _write(f, "alpha\n", 1)
+    clock = _Clock()
+    bl = _watched(f, clock)
+    old_sig = bl._signature
+    _write(f, "# only a comment\n", 2)
+    clock.now += 2
+    assert bl.matches("alpha")
+    assert bl._signature == old_sig  # so the next check retries

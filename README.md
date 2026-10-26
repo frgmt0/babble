@@ -347,6 +347,17 @@ The list lives in `babble/blocklist.py`'s companion file, `babble/blocklist.txt`
 an exhaustive one (no such list exists). One term per line, `#` for comments.
 Edit it directly, or point `BABBLE_BLOCKLIST_PATH` at your own file entirely.
 
+Edits are **hot-reloaded**: a running bot re-checks the file at most once a
+second and applies changes within about a second, no restart needed. If the
+file goes missing or unreadable, the last good list stays in force (it never
+falls back to an empty, disabled list) and a later good write is picked up. An
+emptied file is treated the same way (it looks like an editor mid-save), so to
+disable the blocklist on a running bot, unset or repoint `BABBLE_BLOCKLIST_PATH`
+and restart rather than emptying the file. Save edits atomically (write a temp
+file, then rename) so a half-written file is never read. On
+a live box, point `BABBLE_BLOCKLIST_PATH` at a file outside the git checkout so
+editing it doesn't dirty the clean clone that `deploy/update-live.sh` needs.
+
 Matching happens on a **normalised** form: lowercased, accents stripped,
 common leetspeak folded back to letters, repeated characters collapsed, and
 separator punctuation (dots, dashes, underscores, zero-width characters, and
