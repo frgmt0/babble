@@ -70,9 +70,29 @@ SCOPES = (SCOPE_CORRECTIONS, SCOPE_CORPUS)
 NEGATIVE = frozenset({DECLINED, WITHDRAWN})
 
 #: Bump when the notice text materially changes, to spot stale agreements.
-#: 1 was the corrections-only notice; 2 is the one that describes the corpus.
-NOTICE_VERSION = 2
+#: 1 was the corrections-only notice; 2 is the one that describes the corpus;
+#: 3 adds the Claude/Anthropic disclosure -- that once you're in, an occasional
+#: reply is written by Claude, which means that one message is sent to
+#: Anthropic's API (`babble/slots.py`, `babble/oracle.py`).
+#:
+#: Nothing re-asks or re-gates on this number. Every stored record keeps the
+#: version it was granted under, so a v2 grantee's corpus and corrections
+#: consent are exactly as they were; the only thing that reads the version is
+#: the slot machine's eligibility check, which wants `>= CLAUDE_NOTICE_VERSION`.
+#: A v2 grantee becomes eligible by running `!babble accept` again, and not
+#: before.
+NOTICE_VERSION = 3
 LEGACY_NOTICE_VERSION = 1
+
+#: A per-scope record on disk with no `notice_version` of its own predates
+#: nothing -- the per-scope format was introduced by the v2 notice -- so that is
+#: what it loads as. Not `NOTICE_VERSION`: defaulting to "whatever is current"
+#: would silently promote such a record past every later disclosure.
+SCOPED_FORMAT_NOTICE_VERSION = 2
+
+#: The first notice that disclosed Claude-written replies. Eligibility for the
+#: slot machine needs a corpus grant made under at least this version.
+CLAUDE_NOTICE_VERSION = 3
 
 #: Which grant governs a corpus row, decided by where its text came from.
 #:
@@ -170,7 +190,7 @@ class ConsentStore:
                     grants[str(scope)] = ConsentRecord(
                         decision=str(sub["decision"]),
                         updated_at=str(sub.get("updated_at", "")),
-                        notice_version=int(sub.get("notice_version", NOTICE_VERSION)),
+                        notice_version=int(sub.get("notice_version", SCOPED_FORMAT_NOTICE_VERSION)),
                     )
             return grants
 

@@ -25,9 +25,11 @@ from .gifs import GifResolver
 from .hfserve import make_generator
 from .identity import Pseudonymiser
 from .logs import EventLog
+from .oracle import Oracle
 from .pairaugment import AutoAugmentTrigger
 from .posttrain import AutoPostTrigger
 from .publish import GrowthPublisher
+from .slots import SlotMachine
 from .trainer import AutoTrainTrigger
 
 #: How often the background task drains the collection feed's coalescing buffer.
@@ -79,6 +81,13 @@ class BabbleClient(discord.Client):
             gifs = GifResolver.from_env_bool(
                 settings.gifs_enabled, settings.gif_provider, settings.gif_api_key
             )
+            # The hidden slot machine. The machine itself is always built (it
+            # only reads `slots.json`) so `!babble forget` can clear old state
+            # even with the feature off; the oracle is None -- and the feature
+            # inert -- unless BABBLE_SLOTS_ENABLED, the `fable` extra and
+            # ANTHROPIC_API_KEY are all present. See `Oracle.from_settings`.
+            slots = SlotMachine.from_settings(settings)
+            oracle = Oracle.from_settings(settings, log)
             brain = Babble(
                 settings,
                 generator=make_generator(settings, log),
@@ -89,6 +98,8 @@ class BabbleClient(discord.Client):
                 train_trigger=train_trigger,
                 post_trigger=post_trigger,
                 augment_trigger=augment_trigger,
+                slots=slots,
+                oracle=oracle,
             )
             # Seed milestone markers from the corpus already on disk, so a
             # restart does not re-announce the last milestone on the next row.
@@ -208,6 +219,8 @@ class BabbleClient(discord.Client):
         incoming = await self._to_incoming(message)
         replies = await self._think(self.brain.handle_message, incoming)
         for reply in replies:
+            if getattr(reply, "jackpot", None) is not None:
+                reply = await self._cash_out(message, reply)
             sent = await self._send_reply(message, reply, incoming)
             if sent is None:
                 continue
@@ -221,6 +234,35 @@ class BabbleClient(discord.Client):
             )
             if reply.continues:
                 self._schedule_prewarm(reply)
+
+    async def _cash_out(self, message: discord.Message, reply: Any) -> Any:
+        """Let a jackpot reply be rewritten by Claude, then hand back what to send.
+
+        Deliberately *after* `_think` released `self._lock`: the API call can
+        run for minutes at max effort, and every other message (and reaction)
+        would otherwise queue behind it. `cash_out` changes no store -- all
+        slot state was already settled inside the locked handler -- so running
+        it unlocked is safe. The typing indicator is a courtesy: if it fails,
+        the reply still goes out. Any exception falls back to the local reply
+        the brain already produced.
+        """
+        typing = None
+        try:
+            typing = message.channel.typing()
+            await typing.__aenter__()
+        except Exception:
+            typing = None
+        try:
+            return await asyncio.to_thread(self.brain.cash_out, reply)
+        except Exception as exc:  # a jackpot must never cost the reply itself
+            self.log.event("bot.error", where="cash_out", error=f"{type(exc).__name__}: {exc}")
+            return reply
+        finally:
+            if typing is not None:
+                try:
+                    await typing.__aexit__(None, None, None)
+                except Exception:
+                    pass
 
     def _schedule_prewarm(self, reply: Any) -> None:
         """Pre-prefill the next turn of this conversation, after it was sent.

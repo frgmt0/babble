@@ -34,6 +34,11 @@ pretrain = ["datasets>=2.19,<3", "pyarrow>=14"]
 # the promoted ProCreations/Booper-Big-Chat-INT8). The checkpoint backend
 # never imports any of this.
 hf = ["transformers>=4.55", "safetensors>=0.4", "tokenizers>=0.19"]
+# Only needed for the hidden slot machine's Claude-written jackpot replies
+# (`BABBLE_SLOTS_ENABLED=1`, `babble/oracle.py`). Imported lazily: without it
+# the feature is inert and nothing else changes. 2.3 is the first release
+# checked here with a typed `fallbacks` parameter on `beta.messages.stream`.
+fable = ["anthropic>=2.3"]
 
 [project.scripts]
 babble = "babble.cli:main"

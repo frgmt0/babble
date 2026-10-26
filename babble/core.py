@@ -20,6 +20,7 @@ There are two things being collected here and they are not the same thing:
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass
 from typing import Callable, Protocol, Sequence
 
@@ -34,6 +35,7 @@ from .conversation import (
 )
 from .consent import (
     CAPTURE_OK,
+    CLAUDE_NOTICE_VERSION,
     DECLINED,
     GRANTED,
     PENDING,
@@ -58,6 +60,7 @@ from .exchanges import Exchange, ExchangeLog
 from .gifs import GifResolver, compose_with_gif, extract_gif_tag
 from .identity import Pseudonymiser
 from .logs import EventLog, NullLog
+from .slots import JackpotRequest, SlotMachine
 from .store import APPROVAL, CORRECTION, REJECTION, Interaction, InteractionStore, make_row_id
 from .util import truncate, utcnow_iso
 
@@ -78,13 +81,23 @@ PRIVACY_URL = "https://booper.frgmt.xyz/privacy"
 TERMS_URL = "https://booper.frgmt.xyz/terms"
 AUP_URL = "https://booper.frgmt.xyz/aup"
 
+# One line, shared by every notice that can lead to a `!babble accept`, because
+# accepting under any of them records the current notice version -- and v3 is
+# the one that makes someone eligible for Claude-written replies.
+CLAUDE_DISCLOSURE = (
+    "-# once you're in, every so often one of my replies is written by claude "
+    "(anthropic's model) instead — that message gets sent to anthropic's api to write it."
+)
+
 # The <> around each URL suppress Discord's embed previews.
 CONSENT_NOTICE = f"""please take the time to read:
 <{PRIVACY_URL}> · <{TERMS_URL}> · <{AUP_URL}>
 as they outline what data we do/don't collect. to proceed:
 
 **`!babble accept`** — opt in
-**`!babble decline`** — no thanks (i'll still reply, nothing is stored)"""
+**`!babble decline`** — no thanks (i'll still reply, nothing is stored)
+
+{CLAUDE_DISCLOSURE}"""
 
 # The re-ask. Anyone who said yes to the old notice said yes to something
 # narrower than this, so their existing corrections stand and their ordinary
@@ -99,6 +112,7 @@ collected until you say yes again. your existing corrections stay as they are.
 **`!babble decline`** — no thanks
 **`!babble forget`** — opt out *and* delete everything of yours
 
+{CLAUDE_DISCLOSURE}
 -# full details: <{PRIVACY_URL}>"""
 
 HELP_TEXT = f"""**babble** — a from-scratch model learning to talk from what you send it.
@@ -116,6 +130,10 @@ to fix. both are recorded with the exchange they're about.
 
 that marker is how i tell teaching apart from talking. the marker is stripped before
 anything is stored. corrections are filed separately *and* go into the corpus.
+
+every so often one of my replies is written by claude (anthropic's model) instead — only
+for people who opted in, and that one message is sent to anthropic's api to write it.
+opted in before this existed? `!babble accept` again to be eligible.
 
 `!babble consent` — what i store, and your current choice
 `!babble accept` / `!babble decline` — opt in or out
@@ -160,6 +178,15 @@ class _PostTrigger(Protocol):
     count (pairs, not corpus rows)."""
 
     def maybe_run(self) -> None: ...
+
+
+class _Oracle(Protocol):
+    """The one call `cash_out` makes: write this jackpot's reply. Structural so
+    the brain never imports the Anthropic SDK and tests hand in a fake."""
+
+    model: str
+
+    def ask(self, request: JackpotRequest): ...
 
 
 class _AugmentTrigger(Protocol):
@@ -250,6 +277,12 @@ class Reply:
     # The author may continue this exchange as a conversation (both grants),
     # so `Babble.prewarm` may pre-prefill the next turn's transcript.
     continues: bool = False
+    # Set only on a generation that hit a paid slot-machine jackpot. The
+    # adapter must pass such a reply through `Babble.cash_out` -- outside the
+    # bot lock -- before sending it. Everything else about the reply is the
+    # local model's answer, which is also exactly what gets sent if cashing
+    # out fails for any reason.
+    jackpot: JackpotRequest | None = None
 
 
 #: Stand-in for "a medium-sized next message" (~256 BPE tokens) when
@@ -337,6 +370,8 @@ class Babble:
         train_trigger: _TrainTrigger | None = None,
         post_trigger: _PostTrigger | None = None,
         augment_trigger: _AugmentTrigger | None = None,
+        slots: SlotMachine | None = None,
+        oracle: _Oracle | None = None,
     ) -> None:
         settings.ensure_dirs()
         self.settings = settings
@@ -362,6 +397,13 @@ class Babble:
         self.train_trigger = train_trigger
         self.post_trigger = post_trigger
         self.augment_trigger = augment_trigger
+        # The hidden slot machine and the Claude call behind it. Both optional:
+        # with either missing (every existing test, and any bot without the
+        # `fable` extra or an API key) the feature is inert and `_respond`
+        # never rolls. `slots` alone is still used by `!babble forget`, so a
+        # box that turned the feature off still deletes old state on request.
+        self.slots = slots
+        self.oracle = oracle
 
     # --- entry points ---------------------------------------------------
 
@@ -722,11 +764,155 @@ class Babble:
                 kind="generation",
                 exchange=exchange,
                 continues=exchange is not None and context_ok and self.settings.conversation_context,
+                jackpot=self._spin(msg, prompt),
             )
         ]
         if reask:
             replies.append(Reply(CORPUS_NOTICE, reply_to=msg.message_id, kind="consent"))
         return replies
+
+    # --- the hidden slot machine ----------------------------------------
+
+    def _slots_live(self) -> bool:
+        return bool(
+            getattr(self.settings, "slots_enabled", False)
+            and self.slots is not None
+            and self.oracle is not None
+        )
+
+    def _slots_eligible(self, author_id: object) -> bool:
+        """May this person's reply ever be written by Claude? Fails closed.
+
+        Both grants, and a corpus grant made under a notice that actually
+        disclosed Claude-written replies. A v2 grantee is not eligible until
+        they `!babble accept` again -- their other consent is untouched, this
+        one feature simply never runs for them. Anybody else (unknown, pending,
+        declined, withdrawn) is never eligible.
+        """
+        if self.consent.decision(author_id, SCOPE_CORPUS) not in CAPTURE_OK:
+            return False
+        if self.consent.decision(author_id, SCOPE_CORRECTIONS) not in CAPTURE_OK:
+            return False
+        version = self.consent.notice_version(author_id, SCOPE_CORPUS)
+        return version is not None and version >= CLAUDE_NOTICE_VERSION
+
+    def _spin(self, msg: IncomingMessage, prompt: str) -> JackpotRequest | None:
+        """Roll the reels for this reply, if this person may play at all.
+
+        An ineligible person never rolls, so no state is ever written for
+        them. A message that trips the blocklist is never sent anywhere, so it
+        never rolls either. All slot state changes happen here, inside the
+        locked handler; only `cash_out` runs outside the lock, and it changes
+        nothing but the reply it returns.
+        """
+        if not self._slots_live() or not prompt.strip():
+            return None
+        if not self._slots_eligible(msg.author_id):
+            return None
+        if self.blocklist.matches(prompt):
+            return None
+        author = self.ids.user(msg.author_id)
+        spin = self.slots.roll(author, prompt)
+        self.log.event(
+            "slots.roll",
+            user=author,
+            symbols="".join(spin.symbols),
+            jackpot=spin.jackpot,
+            forced=spin.forced_by_pity or None,
+            voided=spin.voided,
+        )
+        if not spin.paid:
+            return None
+        return JackpotRequest(
+            prompt=prompt,
+            symbol=spin.symbols[0],
+            obsession=spin.obsession or "",
+            symbols=spin.symbols,
+            voice_examples=self._voice_examples(),
+        )
+
+    def _voice_examples(self) -> tuple[str, ...]:
+        """booper's own recent replies, and nothing else, for Claude to imitate.
+
+        Only responses: never the prompts they answered, never who they were
+        for. Re-checked against today's blocklist (it can grow after a reply
+        was remembered) and re-scrubbed of mention markup, because these leave
+        the box.
+        """
+        n = int(getattr(self.settings, "slots_voice_examples", 0))
+        responses = self.exchanges.recent_responses(n, exclude=(BLOCKED_OUTPUT, EMPTY_REPLY))
+        return tuple(
+            scrub_mentions(text) for text in responses if not self.blocklist.matches(text)
+        )
+
+    def cash_out(self, reply: Reply) -> Reply:
+        """Turn a jackpot reply into a Claude-written one, or leave it be.
+
+        Blocking (one long API call), so the adapter runs it in a thread and
+        *outside* the bot lock: a max-effort turn can take minutes and nobody
+        else's message should wait on it. It touches no store -- it only reads
+        the request already attached to `reply` and returns a new `Reply`.
+
+        On success the reply has `exchange=None` and `continues=False`, so the
+        Claude text is never remembered as an exchange, never captured to the
+        corpus, never used as conversation context and never gradeable by a
+        reaction or a correction. (The person's own message was already
+        captured by `_respond`, exactly as for any other reply.) On *any*
+        failure the original local reply comes back unchanged.
+        """
+        request = reply.jackpot
+        if request is None or self.oracle is None:
+            return reply
+        started = time.monotonic()
+        model = getattr(self.oracle, "model", None)
+
+        def fallback(reason: str, result=None) -> Reply:
+            self.log.event(
+                "slots.cashout",
+                status="fallback",
+                reason=reason,
+                ms=round((time.monotonic() - started) * 1000, 1),
+                model=getattr(result, "model", None) or model,
+                input_tokens=getattr(result, "input_tokens", None),
+                output_tokens=getattr(result, "output_tokens", None),
+            )
+            return reply
+
+        try:
+            result = self.oracle.ask(request)
+        except Exception as exc:  # a bad call must cost a jackpot, never a reply
+            return fallback(f"error:{type(exc).__name__}")
+        if result is None or not getattr(result, "ok", False):
+            return fallback(getattr(result, "reason", None) or "failed", result)
+
+        footer = ""
+        if getattr(self.settings, "slots_footer", True):
+            footer = f"\n-# 🎰 {''.join(request.symbols)} · {request.obsession}"
+        body = clean_for_discord(result.text, DISCORD_LIMIT - len(footer))
+        if body == EMPTY_REPLY:
+            return fallback("empty", result)
+        # Same gate every local generation passes through before it is sent.
+        if self.blocklist.matches(body):
+            # The request deliberately carries no author, so this line has none.
+            self.log.event("capture.blocked", stage="slots", row=row_fingerprint(request.prompt, body))
+            return fallback("blocked", result)
+
+        self.log.event(
+            "slots.cashout",
+            status="ok",
+            ms=round((time.monotonic() - started) * 1000, 1),
+            model=result.model or model,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            out_chars=len(body),
+        )
+        return Reply(
+            body + footer,
+            reply_to=reply.reply_to,
+            kind=reply.kind,
+            exchange=None,
+            continues=False,
+        )
 
     def _resolve_gif_tag(self, body: str, msg: IncomingMessage) -> str:
         """Turn a trailing/whole `[gif: query]` marker into a real GIF URL.
@@ -1002,7 +1188,10 @@ class Babble:
                 "you're in — thank you. from now on the messages you send me go into the "
                 "training corpus and the public dataset, and so do your corrections.\n"
                 "-# `!babble all` in a channel widens that to *everything you say there*. "
-                "`!babble forget` any time, which also deletes what i've kept."
+                "`!babble forget` any time, which also deletes what i've kept.\n"
+                "-# every so often one of my replies to you will be written by claude "
+                "(anthropic's model) instead — that message gets sent to anthropic's api to "
+                "write it. if you'd opted in before, accepting again is what makes you eligible."
             )
 
         if verb in ("decline", "no", "nope", "optout", "opt-out"):
@@ -1028,6 +1217,8 @@ class Babble:
             purged = self.store.purge_author(author)
             purged_corpus = self.corpus.purge_author(author)
             dropped = self.exchanges.forget_author(msg.author_id)
+            if self.slots is not None:
+                self.slots.forget(author)
             self.consent.withdraw(msg.author_id)
             self.log.event(
                 "consent.withdraw",
