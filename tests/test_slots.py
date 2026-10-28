@@ -37,7 +37,14 @@ from babble.core import (
     Reply,
 )
 from babble.exchanges import Exchange, ExchangeLog
-from babble.oracle import FALLBACK_BETA, REPLY_CHAR_BUDGET, Oracle, OracleResult, build_system_prompt
+from babble.oracle import (
+    FALLBACK_BETA,
+    REPLY_CHAR_BUDGET,
+    Oracle,
+    OracleResult,
+    build_system_prompt,
+    build_user_message,
+)
 from babble.slots import (
     JACKPOT_ODDS,
     OBSESSIONS,
@@ -523,7 +530,8 @@ def test_cash_out_success_swaps_in_the_claude_text(sbrain, oracle, read_log):
     out = sbrain.cash_out(reply)
 
     assert out.content.startswith("the frogs have set rates at 4%")
-    assert f"-# 🎰 {''.join(reply.jackpot.symbols)} · {reply.jackpot.obsession}" in out.content
+    assert out.content == "the frogs have set rates at 4%"  # no footer
+    assert "-#" not in out.content and "🎰" not in out.content
     assert out.exchange is None and out.continues is False and out.jackpot is None
     assert out.reply_to == reply.reply_to and out.kind == "generation"
     assert oracle.requests == [reply.jackpot]
@@ -542,11 +550,41 @@ def test_cash_out_success_is_never_remembered_or_captured(sbrain):
     assert "frogs" not in sbrain.settings.corpus_path.read_text()
 
 
-def test_cash_out_footer_can_be_turned_off(sbrain, slots_settings):
+def test_jackpot_request_carries_boopers_draft(sbrain, generator):
+    generator.text = "soup is just hot salad"
     reply = _jackpot_reply(sbrain)
-    slots_settings.slots_footer = False
-    out = sbrain.cash_out(reply)
-    assert out.content == "the frogs have set rates at 4%"
+    assert reply.jackpot.draft == "soup is just hot salad"
+    assert reply.jackpot.thread == ()
+
+
+def test_jackpot_thread_is_only_boopers_side_of_the_conversation(sbrain, slots_settings, generator):
+    slots_settings.conversation_context = True
+    fake = FakeDiscord(sbrain)
+    fake.onboard(ALICE)
+    generator.text = "BOOPER-FIRST"
+    first = fake.ping(ALICE, "PROMPT-ONE")[0]
+    generator.text = "BOOPER-DRAFT"
+    request = sbrain.handle_message(
+        IncomingMessage(
+            message_id="m-thread", author_id=ALICE, content="PROMPT-TWO", channel_id="chan-1",
+            reply_to_message_id=first.id, reply_to_is_bot=True,
+        )
+    )[0].jackpot
+
+    assert request.thread == ("BOOPER-FIRST",)
+    assert request.draft == "BOOPER-DRAFT"
+    sent = build_user_message(request) + build_system_prompt(request.voice_examples)
+    assert "PROMPT-TWO" in sent and "PROMPT-ONE" not in sent
+    assert ALICE not in sent
+
+
+def test_a_blocked_or_empty_draft_is_never_sent(sbrain, generator):
+    generator.text = "you badword"
+    sbrain.blocklist = Blocklist(frozenset({"badword"}))
+    FakeDiscord(sbrain).onboard(ALICE)
+    reply = _ping(sbrain, ALICE, "should i eat soup", mid="m-jp")[0]
+    assert reply.jackpot is not None and reply.jackpot.draft == ""
+    assert "(nothing" in build_user_message(reply.jackpot)
 
 
 @pytest.mark.parametrize(
@@ -586,7 +624,7 @@ def test_cash_out_keeps_the_reply_within_discords_limit(slots_settings, generato
     )
     out = brain.cash_out(_jackpot_reply(brain))
     assert len(out.content) <= 2000
-    assert "-# 🎰" in out.content
+    assert "-# 🎰" not in out.content
 
 
 # --- disclosure copy --------------------------------------------------------
@@ -652,6 +690,8 @@ REQUEST = JackpotRequest(
     obsession="whether soup is a beverage, as a 4-hour treatise",
     symbols=("💎", "💎", "💎"),
     voice_examples=("boop", "beep\nbop"),
+    draft="soup is wet bread",
+    thread=("hello\nfriend",),
 )
 
 
@@ -668,27 +708,35 @@ def test_oracle_sends_exactly_the_documented_request():
     assert kwargs["output_config"] == {"effort": "max"}
     assert kwargs["betas"] == [FALLBACK_BETA] == ["server-side-fallback-2026-07-01"]
     assert kwargs["fallbacks"] == "default"
-    assert kwargs["messages"] == [{"role": "user", "content": "is soup a drink"}]
+    assert kwargs["messages"] == [{"role": "user", "content": build_user_message(REQUEST)}]
     for banned in ("thinking", "temperature", "top_p", "top_k"):
         assert banned not in kwargs
-    assert kwargs["system"] == build_system_prompt(REQUEST.obsession, REQUEST.voice_examples)
+    assert kwargs["system"] == build_system_prompt(REQUEST.voice_examples)
     assert "<voice_examples>" in kwargs["system"] and "- beep bop" in kwargs["system"]
-    assert REQUEST.obsession in kwargs["system"]
+    assert REQUEST.obsession not in kwargs["system"] + kwargs["messages"][0]["content"]
     assert set(kwargs) == {"model", "max_tokens", "system", "messages", "output_config", "betas", "fallbacks"}
 
 
-def test_system_prompt_asks_for_an_existential_crisis_and_never_holds_the_user_message():
-    prompt = build_system_prompt(REQUEST.obsession, REQUEST.voice_examples)
+def test_system_prompt_riffs_on_the_draft_and_never_holds_the_user_message():
+    prompt = build_system_prompt(REQUEST.voice_examples)
     assert REPLY_CHAR_BUDGET == 1900
-    assert "existential crisis" in prompt
+    assert "draft" in prompt and "actually smart" in prompt
+    assert "existential crisis" not in prompt and "obsession" not in prompt
     assert "1,900" in prompt
-    assert "one to three sentences" not in prompt
-    assert f"Today's obsession: {REQUEST.obsession}" in prompt
     assert "<voice_examples>\n- boop\n- beep bop\n</voice_examples>" in prompt
     assert "style only, not context" in prompt
-    assert REQUEST.prompt not in prompt
-    # the prompt is stable apart from the examples and the obsession
-    assert build_system_prompt("x", ()).split("Today's")[0] == build_system_prompt("y", ()).split("Today's")[0]
+    assert REQUEST.prompt not in prompt and REQUEST.draft not in prompt
+    # the prompt is stable apart from the examples (cacheable)
+    assert build_system_prompt(()) == build_system_prompt([])
+
+
+def test_user_message_holds_message_thread_and_draft():
+    message = build_user_message(REQUEST)
+    assert "<their_message>\nis soup a drink\n</their_message>" in message
+    assert "<booper_earlier>\n- hello friend\n</booper_earlier>" in message
+    assert "<booper_draft>\nsoup is wet bread\n</booper_draft>" in message
+    bare = build_user_message(JackpotRequest(prompt="hi", symbol="🐸", obsession="x", symbols=("🐸",) * 3))
+    assert "<booper_earlier>" not in bare
 
 
 def test_oracle_joins_only_text_blocks():
@@ -765,9 +813,8 @@ def test_settings_read_the_slots_env(monkeypatch, tmp_path):
     monkeypatch.setenv("BABBLE_SLOTS_ENABLED", "1")
     monkeypatch.setenv("BABBLE_SLOTS_PITY", "7")
     monkeypatch.setenv("BABBLE_SLOTS_DAILY_CAP", "0")
-    monkeypatch.setenv("BABBLE_SLOTS_FOOTER", "0")
     s = Settings.from_env(tmp_path)
-    assert s.slots_enabled and s.slots_pity == 7 and s.slots_daily_cap == 0 and not s.slots_footer
+    assert s.slots_enabled and s.slots_pity == 7 and s.slots_daily_cap == 0
     assert s.slots_model == "claude-fable-5-1" and s.slots_effort == "max"
     assert s.slots_cooldown_minutes == 30 and s.slots_voice_examples == 20
     assert s.slots_timeout_seconds == 900.0

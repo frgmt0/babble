@@ -443,8 +443,6 @@ class Settings:
     slots_cooldown_minutes: float = 30
     # How many of booper's own recent replies go along as voice examples.
     slots_voice_examples: int = 20
-    # Append `-# 🎰 🐸🐸🐸 · <obsession>` under a Claude-written reply.
-    slots_footer: bool = True
     # Client timeout for the one streamed request. Max effort can take minutes.
     slots_timeout_seconds: float = 900.0
 
@@ -530,7 +528,6 @@ class Settings:
             slots_daily_cap=_env_int("BABBLE_SLOTS_DAILY_CAP", 20),
             slots_cooldown_minutes=_env_float("BABBLE_SLOTS_COOLDOWN_MINUTES", 30),
             slots_voice_examples=_env_int("BABBLE_SLOTS_VOICE_EXAMPLES", 20),
-            slots_footer=_env_bool("BABBLE_SLOTS_FOOTER", True),
             slots_timeout_seconds=_env_float("BABBLE_SLOTS_TIMEOUT_SECONDS", 900.0),
         )
 

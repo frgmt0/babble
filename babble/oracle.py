@@ -7,9 +7,11 @@ can go wrong -- no SDK, no key, rate limit, timeout, refusal, empty answer --
 comes back as an `OracleResult` with `ok=False` and a short reason, and the
 caller (`Babble.cash_out`) simply sends the local model's reply it already had.
 
-What is sent, in full: the user's own (mention-scrubbed) message, the
-obsession, and up to N of booper's *own* recent replies as voice examples. No
-ids, no usernames, no other people's messages, no history. What comes back is
+What is sent, in full: the user's own (mention-scrubbed) message, booper's
+own draft reply to it (what the local model was about to send), booper's own
+earlier replies in this conversation, and up to N of booper's *own* recent
+replies as voice examples. No ids, no usernames, no other people's messages,
+and none of the user's earlier messages -- only the one the notice discloses. What comes back is
 never stored, never captured to the corpus and never trained on -- see
 `Babble.cash_out`.
 
@@ -42,35 +44,57 @@ MAX_TOKENS = 64_000
 REPLY_CHAR_BUDGET = 1900
 
 # Stable across every call (good for caching) and short on purpose: this model
-# does worse when it is handed a wall of rules.
-_VOICE = f"""You are writing one Discord reply as booper, a small, silly chat bot.
+# does worse when it is handed a wall of rules. Everything per-message goes in
+# the user turn (`build_user_message`), so this block stays cacheable.
+_VOICE = f"""You are writing one Discord reply as booper, a tiny chat bot. booper's \
+real brain is a 34M-parameter model trained from scratch on Discord chat, so it \
+mostly babbles. This one time, you write the reply instead.
 
-Overthink the user's message -- wildly, earnestly, far past the point of \
-reason -- until answering it has become a full existential crisis. The crisis \
-keeps spiralling back to one obsession, given at the end. Let the reply read \
-like that crisis unfolding: the doubts, the escalation, the dawning cosmic \
-dread, and somewhere in there an actual answer to what they asked.
+You get the person's message, booper's earlier replies in this conversation (if \
+any), and booper's draft: what the tiny model was about to say. Use the draft as \
+the launchpad -- keep its vibe, its weird premise, its best broken phrase -- and \
+spin it into something hella funny. Then land the turn: somewhere in there, say \
+something genuinely sharp, true or useful about what they actually said, the \
+kind of line that makes them go "wait, that's actually smart". Funny first, \
+smart second, never a lecture. If the draft is pure nonsense, the nonsense can \
+be the bit.
 
-Write all of it in booper's voice: lowercase, casual Discord-chat register, \
-playful and a little unhinged. Short lines and fragments are fine. No markdown \
-headers or bullet lists, no explaining the joke. Never mention being Claude, \
-an AI model, or any slot machine -- you are just booper.
+Voice: lowercase, casual Discord-chat register, playful, a little unhinged, \
+confident. Usually a few lines; only go long if the bit earns it. No markdown \
+headers or bullet lists, no explaining the joke. Never mention being Claude, an \
+AI model, a draft, or a slot machine -- you are just booper.
 
 Keep the whole reply under {REPLY_CHAR_BUDGET:,} characters; it has to fit in \
 one Discord message."""
 
 
-def build_system_prompt(obsession: str, voice_examples: tuple[str, ...] | list[str]) -> str:
-    """The system prompt: fixed voice text, then the examples, then the bit."""
+def build_system_prompt(voice_examples: tuple[str, ...] | list[str]) -> str:
+    """The system prompt: fixed voice text, then the voice examples."""
     parts = [_VOICE]
     if voice_examples:
-        lines = "\n".join(f"- {example.replace(chr(10), ' ').strip()}" for example in voice_examples)
         parts.append(
             "booper's recent replies, to match how booper sounds (style only, not context):\n"
-            f"<voice_examples>\n{lines}\n</voice_examples>"
+            f"<voice_examples>\n{_lines(voice_examples)}\n</voice_examples>"
         )
-    parts.append(f"Today's obsession: {obsession}")
     return "\n\n".join(parts)
+
+
+def build_user_message(request: JackpotRequest) -> str:
+    """The per-message turn: what they said, the thread so far, booper's draft."""
+    parts = [f"<their_message>\n{request.prompt}\n</their_message>"]
+    if request.thread:
+        parts.append(
+            "booper's earlier replies in this conversation, oldest first:\n"
+            f"<booper_earlier>\n{_lines(request.thread)}\n</booper_earlier>"
+        )
+    draft = request.draft.strip() or "(nothing -- the tiny model came up empty)"
+    parts.append(f"<booper_draft>\n{draft}\n</booper_draft>")
+    parts.append("Write booper's reply.")
+    return "\n\n".join(parts)
+
+
+def _lines(texts: tuple[str, ...] | list[str]) -> str:
+    return "\n".join(f"- {text.replace(chr(10), ' ').strip()}" for text in texts)
 
 
 @dataclass(frozen=True)
@@ -144,8 +168,8 @@ class Oracle:
             with self.client.beta.messages.stream(
                 model=self.model,
                 max_tokens=self.max_tokens,
-                system=build_system_prompt(request.obsession, request.voice_examples),
-                messages=[{"role": "user", "content": request.prompt}],
+                system=build_system_prompt(request.voice_examples),
+                messages=[{"role": "user", "content": build_user_message(request)}],
                 output_config={"effort": self.effort},
                 betas=[FALLBACK_BETA],
                 fallbacks=FALLBACKS,
