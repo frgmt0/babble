@@ -8,7 +8,8 @@ comes back as an `OracleResult` with `ok=False` and a short reason, and the
 caller (`Babble.cash_out`) simply sends the local model's reply it already had.
 
 What is sent, in full: the user's own (mention-scrubbed) message, booper's
-own draft reply to it (what the local model was about to send), booper's own
+own draft replies to it (what the local model was about to send, plus a few
+more samples), booper's own
 earlier replies in this conversation, and up to N of booper's *own* recent
 replies as voice examples. No ids, no usernames, no other people's messages,
 and none of the user's earlier messages -- only the one the notice discloses. What comes back is
@@ -23,6 +24,7 @@ the bot runs exactly as before.
 from __future__ import annotations
 
 import os
+import re
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -39,33 +41,37 @@ FALLBACKS = "default"
 #: Streaming, so a long max-effort turn never trips an HTTP read timeout.
 MAX_TOKENS = 64_000
 
-#: Target size of a jackpot reply. Comfortably under Discord's 2,000-character
-#: message limit; `clean_for_discord` still hard-caps whatever comes back.
-REPLY_CHAR_BUDGET = 1900
+#: Hard ceiling on a jackpot reply. The prompt asks for booper-length (a line
+#: or two); this only guards against a runaway answer before Discord's limit.
+REPLY_CHAR_BUDGET = 400
 
 # Stable across every call (good for caching) and short on purpose: this model
 # does worse when it is handed a wall of rules. Everything per-message goes in
 # the user turn (`build_user_message`), so this block stays cacheable.
-_VOICE = f"""You are writing one Discord reply as booper, a tiny chat bot. booper's \
-real brain is a 34M-parameter model trained from scratch on Discord chat, so it \
-mostly babbles. This one time, you write the reply instead.
+_VOICE = """You ghostwrite one Discord reply for booper, a tiny 34M-parameter chat \
+model trained from scratch on Discord messages. booper is dumb, sweet and \
+chaotic. Nobody may be able to tell this reply didn't come from booper.
 
-You get the person's message, booper's earlier replies in this conversation (if \
-any), and booper's draft: what the tiny model was about to say. Use the draft as \
-the launchpad -- keep its vibe, its weird premise, its best broken phrase -- and \
-spin it into something hella funny. Then land the turn: somewhere in there, say \
-something genuinely sharp, true or useful about what they actually said, the \
-kind of line that makes them go "wait, that's actually smart". Funny first, \
-smart second, never a lecture. If the draft is pure nonsense, the nonsense can \
-be the bit.
+You get the person's message and several of booper's own drafts answering it, \
+plus booper's earlier replies in the conversation and lots of its recent \
+replies. The drafts are the voice: match their length, spelling and mess.
 
-Voice: lowercase, casual Discord-chat register, playful, a little unhinged, \
-confident. Usually a few lines; only go long if the bit earns it. No markdown \
-headers or bullet lists, no explaining the joke. Never mention being Claude, an \
-AI model, a draft, or a slot machine -- you are just booper.
+Your job is the twist. Write what booper would say on its luckiest day: it \
+sounds exactly like the drafts, but this time it accidentally says something \
+real -- a specific, true, surprisingly perceptive take on what they actually \
+said, or a straight answer -- so they go "wait. booper??" It should be funny \
+because a dumb little bot said it. Steal a word or premise from a draft if it \
+helps; never just copy one.
 
-Keep the whole reply under {REPLY_CHAR_BUDGET:,} characters; it has to fit in \
-one Discord message."""
+Hard rules:
+- One short line, two at most. Under 25 words.
+- Spelling, casing and grammar like the drafts: lowercase, "bro", "gotta", \
+"idk", missing apostrophes, run-ons. Caps only if a draft yells.
+- No setups and punchlines, no wordplay, no clever metaphors, no lists, no \
+em dashes, no "also", no explaining the joke, no commentary on being booper, \
+a bot, a model or evil.
+
+Put the final reply, exactly as booper sends it, inside <reply></reply>."""
 
 
 def build_system_prompt(voice_examples: tuple[str, ...] | list[str]) -> str:
@@ -80,17 +86,27 @@ def build_system_prompt(voice_examples: tuple[str, ...] | list[str]) -> str:
 
 
 def build_user_message(request: JackpotRequest) -> str:
-    """The per-message turn: what they said, the thread so far, booper's draft."""
+    """The per-message turn: what they said, the thread so far, booper's drafts."""
     parts = [f"<their_message>\n{request.prompt}\n</their_message>"]
     if request.thread:
         parts.append(
             "booper's earlier replies in this conversation, oldest first:\n"
             f"<booper_earlier>\n{_lines(request.thread)}\n</booper_earlier>"
         )
-    draft = request.draft.strip() or "(nothing -- the tiny model came up empty)"
-    parts.append(f"<booper_draft>\n{draft}\n</booper_draft>")
+    drafts = [d for d in (request.draft, *request.drafts) if d.strip()]
+    body = _lines(drafts) if drafts else "(nothing -- the tiny model came up empty)"
+    parts.append(f"<booper_drafts>\n{body}\n</booper_drafts>")
     parts.append("Write booper's reply.")
     return "\n\n".join(parts)
+
+
+_REPLY_TAG = re.compile(r"<reply>(.*?)</reply>", re.DOTALL | re.IGNORECASE)
+
+
+def extract_reply(text: str) -> str:
+    """The last `<reply>...</reply>` in `text`, stripped; "" when there is none."""
+    found = _REPLY_TAG.findall(text)
+    return found[-1].strip().strip('"').strip() if found else ""
 
 
 def _lines(texts: tuple[str, ...] | list[str]) -> str:
@@ -161,15 +177,17 @@ class Oracle:
         def failed(reason: str, **extra: Any) -> OracleResult:
             return OracleResult(ok=False, reason=reason, ms=(time.monotonic() - started) * 1000, **extra)
 
-        # No `thinking` (always on for this model; anything explicit but
-        # adaptive 400s), no temperature/top_p/top_k and no assistant prefill
-        # (all rejected). Depth is `output_config.effort` alone.
+        # Adaptive thinking, explicitly: Fable runs it either way, but Haiku
+        # 5.5 does not think when the field is omitted, and then drafts and
+        # self-corrects in the visible reply. No temperature/top_p/top_k and no
+        # assistant prefill (rejected). Depth is `output_config.effort`.
         try:
             with self.client.beta.messages.stream(
                 model=self.model,
                 max_tokens=self.max_tokens,
                 system=build_system_prompt(request.voice_examples),
                 messages=[{"role": "user", "content": build_user_message(request)}],
+                thinking={"type": "adaptive"},
                 output_config={"effort": self.effort},
                 betas=[FALLBACK_BETA],
                 fallbacks=FALLBACKS,
@@ -198,6 +216,12 @@ class Oracle:
         text = "".join(
             block.text for block in (message.content or []) if getattr(block, "type", None) == "text"
         ).strip()
+        # Only the tagged reply is booper's; anything around it (a plan, a
+        # self-correction) is the model talking to itself. The last tag wins.
+        text = extract_reply(text)
         if not text:
             return failed("empty", **meta)
+        # An essay is the clearest tell that this was not booper.
+        if len(text) > REPLY_CHAR_BUDGET:
+            return failed("too_long", **meta)
         return OracleResult(ok=True, text=text, ms=(time.monotonic() - started) * 1000, **meta)

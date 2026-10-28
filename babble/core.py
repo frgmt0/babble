@@ -773,7 +773,7 @@ class Babble:
                 kind="generation",
                 exchange=exchange,
                 continues=exchange is not None and context_ok and self.settings.conversation_context,
-                jackpot=self._spin(msg, prompt, body, history),
+                jackpot=self._spin(msg, prompt, body, history, generation_prompt),
             )
         ]
         if reask:
@@ -833,7 +833,12 @@ class Babble:
         return version is not None and version >= CLAUDE_NOTICE_VERSION
 
     def _spin(
-        self, msg: IncomingMessage, prompt: str, draft: str = "", history: tuple[ConversationTurn, ...] = ()
+        self,
+        msg: IncomingMessage,
+        prompt: str,
+        draft: str = "",
+        history: tuple[ConversationTurn, ...] = (),
+        generation_prompt: str | None = None,
     ) -> JackpotRequest | None:
         """Roll the reels for this reply, if this person may play at all.
 
@@ -868,12 +873,38 @@ class Babble:
             symbols=spin.symbols,
             voice_examples=self._voice_examples(),
             draft=self._outbound(draft),
+            drafts=self._more_drafts(generation_prompt, exclude=draft),
             # booper's side of the thread only: the user's earlier turns were
             # never disclosed as leaving the box.
             thread=tuple(
                 text for text in (self._outbound(turn.assistant) for turn in history) if text
             ),
         )
+
+    def _more_drafts(self, generation_prompt: str | None, *, exclude: str) -> tuple[str, ...]:
+        """A few more local samples for the same prompt, for the jackpot writer.
+
+        Only on a paid jackpot (a few percent of replies), still inside the
+        locked handler, so they never race a real generation. Each is cleaned,
+        filtered and scrubbed exactly like `draft`; duplicates are dropped.
+        """
+        n = int(getattr(self.settings, "slots_drafts", 0))
+        if n < 1 or generation_prompt is None:
+            return ()
+        seen = {exclude.strip()}
+        out: list[str] = []
+        for _ in range(n):
+            try:
+                generation = _as_generation(self.generator(generation_prompt))
+            except Exception as exc:  # extra drafts are garnish; never cost the reply
+                self.log.event("bot.error", where="slots_drafts", error=f"{type(exc).__name__}: {exc}")
+                break
+            text, _query = extract_gif_tag(clean_for_discord(generation.text, DISCORD_LIMIT))
+            text = self._outbound(text.strip())
+            if text and text not in seen:
+                seen.add(text)
+                out.append(text)
+        return tuple(out)
 
     def _outbound(self, text: str) -> str:
         """booper's own text, fit to send to the API -- or "" if it is not."""

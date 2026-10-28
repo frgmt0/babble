@@ -431,10 +431,10 @@ class Settings:
     # `Oracle.from_settings`. Eligibility is a consent question, not a config
     # one: only people who accepted the v3 notice (which discloses this) roll.
     slots_enabled: bool = False
-    slots_model: str = "claude-fable-5-1"
+    slots_model: str = "claude-haiku-5-5"
     # `output_config.effort`. Thinking is always on for this model; effort is
     # the only depth control. "max" is the point of the bit.
-    slots_effort: str = "max"
+    slots_effort: str = "low"
     # Pity timer: after this many misses minus one, the next roll pays. 0 = off.
     slots_pity: int = 15
     # Paid jackpots per UTC day across everybody. 0 = none pay (kill switch).
@@ -442,7 +442,10 @@ class Settings:
     # After a paid jackpot, that person's jackpots are void for this long.
     slots_cooldown_minutes: float = 30
     # How many of booper's own recent replies go along as voice examples.
-    slots_voice_examples: int = 20
+    slots_voice_examples: int = 60
+    # Extra local-model drafts sampled on a paid jackpot, so the writer sees
+    # several real booper takes on the same message, not just one.
+    slots_drafts: int = 4
     # Client timeout for the one streamed request. Max effort can take minutes.
     slots_timeout_seconds: float = 900.0
 
@@ -522,12 +525,13 @@ class Settings:
             gif_provider=os.environ.get(GIF_PROVIDER_ENV, GIF_DEFAULT_PROVIDER),
             gif_api_key=os.environ.get(GIF_API_KEY_ENV) or None,
             slots_enabled=_env_bool("BABBLE_SLOTS_ENABLED", False),
-            slots_model=os.environ.get("BABBLE_SLOTS_MODEL", "").strip() or "claude-fable-5-1",
-            slots_effort=os.environ.get("BABBLE_SLOTS_EFFORT", "").strip().lower() or "max",
+            slots_model=os.environ.get("BABBLE_SLOTS_MODEL", "").strip() or "claude-haiku-5-5",
+            slots_effort=os.environ.get("BABBLE_SLOTS_EFFORT", "").strip().lower() or "low",
             slots_pity=_env_int("BABBLE_SLOTS_PITY", 15),
             slots_daily_cap=_env_int("BABBLE_SLOTS_DAILY_CAP", 20),
             slots_cooldown_minutes=_env_float("BABBLE_SLOTS_COOLDOWN_MINUTES", 30),
-            slots_voice_examples=_env_int("BABBLE_SLOTS_VOICE_EXAMPLES", 20),
+            slots_voice_examples=_env_int("BABBLE_SLOTS_VOICE_EXAMPLES", 60),
+            slots_drafts=_env_int("BABBLE_SLOTS_DRAFTS", 4),
             slots_timeout_seconds=_env_float("BABBLE_SLOTS_TIMEOUT_SECONDS", 900.0),
         )
 

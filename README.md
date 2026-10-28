@@ -344,15 +344,18 @@ change it** — `!babble forget` finds your rows by re-deriving your hash.
 Off by default. When it is on, every ordinary reply to an **eligible** person
 spins a hidden three-reel slot machine (`babble/slots.py`). There is no command
 and nothing is shown. On three of a kind -- about **5.3%** of rolls -- that one
-reply is written by Claude (`claude-fable-5-1` at `max` effort,
+reply is written by Claude (`claude-haiku-5-5` at `low` effort,
 `babble/oracle.py`) instead of the local model. Claude is handed the user's
-message, booper's earlier replies in that conversation, and booper's *draft*
--- what the local model was about to send -- and told to use the draft as a
-launchpad: keep its vibe, make it genuinely funny, and land one line that is
-"wait, that's actually smart", all in booper's voice. The reply goes out with
+message, booper's earlier replies in that conversation, booper's *draft* --
+what the local model was about to send -- plus `BABBLE_SLOTS_DRAFTS` more
+local samples for the same message, and dozens of booper's recent replies. It
+is told to write the reply booper would give on its luckiest day: same length,
+spelling and mess as the drafts, but with one accidentally sharp idea in it.
+It must read like booper, never like an AI. The reply goes out with
 no footer; nothing marks it as Claude-written beyond the consent notice. The prompt
-asks for under 1,900 characters (`REPLY_CHAR_BUDGET`), so it fits one Discord
-message; the hard cap is still applied on send. Everything else is a miss and nothing changes.
+asks for a line or two; anything over 400 characters (`REPLY_CHAR_BUDGET`) is
+treated as a failed call (`reason=too_long`) and booper's own reply goes out
+instead. Everything else is a miss and nothing changes.
 
 People who opted in before this existed (a v2 grant) are not eligible until they `!babble accept` again, so with the feature live each of them gets a one-time "spooooky update" message on their next ordinary reply telling them so. It is recorded per pseudonym in `slots.json` (`announced`), so it never shows twice and `!babble forget` clears it.
 
@@ -417,12 +420,13 @@ ANTHROPIC_API_KEY=...            # an explicit key; a CLI login is not used
 | variable | default | what it does |
 | --- | --- | --- |
 | `BABBLE_SLOTS_ENABLED` | off | spin the hidden reels on eligible replies |
-| `BABBLE_SLOTS_MODEL` | `claude-fable-5-1` | the model that writes jackpot replies |
-| `BABBLE_SLOTS_EFFORT` | `max` | `output_config.effort` for that call |
+| `BABBLE_SLOTS_MODEL` | `claude-haiku-5-5` | the model that writes jackpot replies |
+| `BABBLE_SLOTS_EFFORT` | `low` | `output_config.effort` for that call |
 | `BABBLE_SLOTS_PITY` | `15` | the `pity`-th roll after `pity - 1` straight misses always pays; `0` = no pity |
 | `BABBLE_SLOTS_DAILY_CAP` | `20` | paid jackpots per UTC day, all users; `0` = none |
 | `BABBLE_SLOTS_COOLDOWN_MINUTES` | `30` | per-person gap between paid jackpots |
-| `BABBLE_SLOTS_VOICE_EXAMPLES` | `20` | how many of booper's own recent replies go along as style examples |
+| `BABBLE_SLOTS_VOICE_EXAMPLES` | `60` | how many of booper's own recent replies go along as style examples |
+| `BABBLE_SLOTS_DRAFTS` | `4` | extra local-model drafts sampled for the same message on a jackpot |
 | `BABBLE_SLOTS_TIMEOUT_SECONDS` | `900` | client timeout for the one streamed request (no retries) |
 
 The request is streamed with `max_tokens=64000`, no `thinking`/sampling
