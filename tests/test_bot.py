@@ -257,3 +257,178 @@ def test_a_failing_prewarm_is_logged_not_raised(settings, log, brain, read_log):
     asyncio.run(go())
     (event,) = read_log("bot.error")
     assert event["where"] == "prewarm"
+
+
+# --- /pretend: owner-only posting as the bot ---------------------------------
+
+
+class FakeResponse:
+    def __init__(self, sink: list) -> None:
+        self._sink = sink
+
+    async def send_message(self, content, ephemeral=False):
+        self._sink.append(("response", content, ephemeral))
+
+    async def defer(self, ephemeral=False, thinking=False):
+        self._sink.append(("defer", ephemeral))
+
+
+class FakeFollowup:
+    def __init__(self, sink: list) -> None:
+        self._sink = sink
+
+    async def send(self, content, ephemeral=False):
+        self._sink.append(("followup", content, ephemeral))
+
+
+class FakePosted:
+    jump_url = "https://discord.com/channels/1/2/3"
+
+
+class FakeTarget:
+    def __init__(self, posts: list) -> None:
+        self._posts = posts
+
+    async def reply(self, mention_author=True, **kwargs):
+        self._posts.append(("reply", mention_author, kwargs))
+        return FakePosted()
+
+
+class FakePretendChannel:
+    id = 4242
+
+    def __init__(self, *, send_exc: Exception | None = None) -> None:
+        self.posts: list = []
+        self.fetched: list = []
+        self._send_exc = send_exc
+
+    async def send(self, **kwargs):
+        if self._send_exc is not None:
+            raise self._send_exc
+        self.posts.append(("send", kwargs))
+        return FakePosted()
+
+    async def fetch_message(self, id_):
+        self.fetched.append(id_)
+        return FakeTarget(self.posts)
+
+
+class FakeAttachment:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def is_spoiler(self) -> bool:
+        return False
+
+    async def to_file(self, spoiler=False):
+        return f"file:{self.name}"
+
+
+def _interaction(user_id: int, channel) -> SimpleNamespace:
+    sink: list = []
+    return SimpleNamespace(
+        user=FakeUser(user_id),
+        channel=channel,
+        guild_id=77,
+        response=FakeResponse(sink),
+        followup=FakeFollowup(sink),
+        sink=sink,
+    )
+
+
+def _pretend(client, interaction, **kwargs):
+    return asyncio.run(client._pretend(interaction, **kwargs))
+
+
+def test_pretend_is_registered_with_message_images_and_reply_to(settings, log, brain):
+    client = BabbleClient(settings, log, brain=brain)
+    command = client.tree.get_command("pretend")
+    assert command is not None
+    names = [p.name for p in command.parameters]
+    assert names == ["message", "image", "image2", "image3", "reply_to"]
+    assert not any(p.required for p in command.parameters)
+    message = command.get_parameter("message")
+    assert message.max_value == 2000
+
+
+def test_pretend_refuses_a_non_owner_and_posts_nothing(settings, log, brain, read_log, monkeypatch):
+    monkeypatch.setenv("BABBLE_OWNER_IDS", "1, 2")
+    client = BabbleClient(settings, log, brain=brain)
+    channel = FakePretendChannel()
+    interaction = _interaction(3, channel)
+
+    _pretend(client, interaction, message="hi")
+
+    assert channel.posts == []
+    assert interaction.sink == [("response", "Only the bot owner can use this.", True)]
+    (event,) = read_log("bot.pretend")
+    assert event["status"] == "denied"
+
+
+def test_pretend_falls_back_to_the_application_owner(settings, log, brain, monkeypatch):
+    monkeypatch.delenv("BABBLE_OWNER_IDS", raising=False)
+    client = BabbleClient(settings, log, brain=brain)
+
+    async def app_info():
+        return SimpleNamespace(team=None, owner=FakeUser(5))
+
+    client.application_info = app_info
+    assert asyncio.run(client._is_owner(FakeUser(5))) is True
+    assert asyncio.run(client._is_owner(FakeUser(6))) is False
+
+
+def test_pretend_posts_text_and_images_for_the_owner(settings, log, brain, read_log, monkeypatch):
+    monkeypatch.setenv("BABBLE_OWNER_IDS", "1")
+    client = BabbleClient(settings, log, brain=brain)
+    channel = FakePretendChannel()
+    interaction = _interaction(1, channel)
+
+    _pretend(client, interaction, message="boop", image=FakeAttachment("a.png"), image3=FakeAttachment("b.gif"))
+
+    assert channel.posts == [("send", {"content": "boop", "files": ["file:a.png", "file:b.gif"]})]
+    assert interaction.sink[-1] == ("followup", f"Posted: {FakePosted.jump_url}", True)
+    (event,) = read_log("bot.pretend")
+    assert event["status"] == "sent" and event["chars"] == 4 and event["files"] == 2
+    assert "boop" not in str(event)
+    # Never remembered as an exchange: nobody can "correct" a pretend post.
+    assert brain.exchanges.get("3") is None
+
+
+def test_pretend_can_reply_to_a_message_link(settings, log, brain, monkeypatch):
+    monkeypatch.setenv("BABBLE_OWNER_IDS", "1")
+    client = BabbleClient(settings, log, brain=brain)
+    channel = FakePretendChannel()
+    interaction = _interaction(1, channel)
+
+    _pretend(
+        client, interaction, message="yes",
+        reply_to="https://discord.com/channels/111/222/1234567890123456789",
+    )
+
+    assert channel.fetched == [1234567890123456789]
+    assert channel.posts == [("reply", False, {"content": "yes", "files": []})]
+
+
+def test_pretend_needs_something_to_say(settings, log, brain, monkeypatch):
+    monkeypatch.setenv("BABBLE_OWNER_IDS", "1")
+    client = BabbleClient(settings, log, brain=brain)
+    channel = FakePretendChannel()
+    interaction = _interaction(1, channel)
+
+    _pretend(client, interaction)
+
+    assert channel.posts == []
+    assert interaction.sink[0][0] == "response"
+
+
+def test_pretend_reports_a_forbidden_channel(settings, log, brain, read_log, monkeypatch):
+    monkeypatch.setenv("BABBLE_OWNER_IDS", "1")
+    client = BabbleClient(settings, log, brain=brain)
+    channel = FakePretendChannel(send_exc=_http_exception(discord.Forbidden, 403, "Forbidden"))
+    interaction = _interaction(1, channel)
+
+    _pretend(client, interaction, message="hi")
+
+    assert interaction.sink[-1] == ("followup", "Discord refused that post (forbidden).", True)
+    (event,) = read_log("bot.error")
+    assert event["where"] == "pretend" and event["reason"] == "forbidden"

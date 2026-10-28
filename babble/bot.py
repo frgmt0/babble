@@ -11,6 +11,8 @@ tested without a token.
 from __future__ import annotations
 
 import asyncio
+import os
+import re
 import time
 from typing import Any, Callable
 
@@ -37,6 +39,12 @@ from .trainer import AutoTrainTrigger
 #: second or two after it lands rather than waiting for the next message.
 FEED_FLUSH_SECONDS = 1.0
 BENCH_COOLDOWN_SECONDS = 300.0
+#: Comma-separated Discord user ids allowed to run `/pretend`. When unset, the
+#: owner (or team members) of the bot's Discord application are.
+OWNER_IDS_ENV = "BABBLE_OWNER_IDS"
+#: Discord's hard cap on a message's content.
+PRETEND_MAX_CHARS = 2000
+_MESSAGE_LINK = re.compile(r"(?:channels/[\d@me]+/\d+/)?(\d{15,25})/?$")
 
 
 class BabbleClient(discord.Client):
@@ -122,6 +130,13 @@ class BabbleClient(discord.Client):
         command.guild_only = True
         command.default_permissions = discord.Permissions(manage_guild=True)
         self.tree.add_command(command)
+        self._owner_ids: frozenset[int] | None = _owner_ids_from_env()
+        pretend = app_commands.Command(
+            name="pretend",
+            description="Owner only: post a message as the bot.",
+            callback=self._pretend,
+        )
+        self.tree.add_command(pretend)
 
     async def setup_hook(self) -> None:
         try:
@@ -180,6 +195,85 @@ class BabbleClient(discord.Client):
                 await interaction.followup.send("Benchmark failed; the error was recorded in the bot log.", ephemeral=True)
         finally:
             self._bench_running = False
+
+    async def _is_owner(self, user: discord.abc.User) -> bool:
+        """`BABBLE_OWNER_IDS` if set, else the Discord application's owner/team."""
+        if self._owner_ids is None:
+            info = await self.application_info()
+            if info.team is not None:
+                self._owner_ids = frozenset(m.id for m in info.team.members)
+            else:
+                self._owner_ids = frozenset({info.owner.id})
+        return user.id in self._owner_ids
+
+    @app_commands.describe(
+        message="What the bot should say",
+        image="An image (or any file) to attach",
+        image2="Another attachment",
+        image3="Another attachment",
+        reply_to="Message ID or link to reply to, in this channel",
+    )
+    async def _pretend(
+        self,
+        interaction: discord.Interaction,
+        message: app_commands.Range[str, 1, PRETEND_MAX_CHARS] | None = None,
+        image: discord.Attachment | None = None,
+        image2: discord.Attachment | None = None,
+        image3: discord.Attachment | None = None,
+        reply_to: str | None = None,
+    ) -> None:
+        """Post as the bot. Never captured, never remembered as an exchange.
+
+        The bot ignores its own messages in `on_message`, and nothing here
+        calls `brain.remember`, so a pretend post can never become a training
+        row or the target of a correction.
+        """
+        if not await self._is_owner(interaction.user):
+            self.log.event("bot.pretend", status="denied", user=self.log.user(str(interaction.user.id)))
+            await interaction.response.send_message("Only the bot owner can use this.", ephemeral=True)
+            return
+        attachments = [a for a in (image, image2, image3) if a is not None]
+        if not message and not attachments:
+            await interaction.response.send_message("Give me a message, an image, or both.", ephemeral=True)
+            return
+        channel = interaction.channel
+        if channel is None or not hasattr(channel, "send"):
+            await interaction.response.send_message("I can't post in this channel.", ephemeral=True)
+            return
+        # Downloading and re-uploading attachments can outlast the 3s window.
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            target = None
+            if reply_to:
+                match = _MESSAGE_LINK.search(reply_to.strip())
+                if match is None:
+                    await interaction.followup.send("`reply_to` must be a message ID or link.", ephemeral=True)
+                    return
+                target = await channel.fetch_message(int(match.group(1)))
+            files = [await a.to_file(spoiler=a.is_spoiler()) for a in attachments]
+            kwargs: dict[str, Any] = {"content": message or None, "files": files}
+            if target is not None:
+                sent = await target.reply(mention_author=False, **kwargs)
+            else:
+                sent = await channel.send(**kwargs)
+        except discord.NotFound:
+            await interaction.followup.send("Couldn't find that message in this channel.", ephemeral=True)
+            return
+        except discord.HTTPException as exc:
+            reason = "forbidden" if isinstance(exc, discord.Forbidden) else "http_error"
+            self.log.event("bot.error", where="pretend", reason=reason, error=f"{type(exc).__name__}: {exc}")
+            await interaction.followup.send(f"Discord refused that post ({reason}).", ephemeral=True)
+            return
+        self.log.event(
+            "bot.pretend",
+            status="sent",
+            channel=self.log.channel(str(channel.id)),
+            guild=self.log.guild(str(interaction.guild_id) if interaction.guild_id else None),
+            chars=len(message or ""),
+            files=len(files) or None,
+            reply=target is not None or None,
+        )
+        await interaction.followup.send(f"Posted: {sent.jump_url}", ephemeral=True)
 
     async def _flush_feed_loop(self) -> None:
         while True:
@@ -373,6 +467,12 @@ class BabbleClient(discord.Client):
                     error=f"{type(exc).__name__}: {exc}",
                 )
                 return []
+
+
+def _owner_ids_from_env() -> frozenset[int] | None:
+    raw = os.environ.get(OWNER_IDS_ENV, "")
+    ids = frozenset(int(p) for p in re.split(r"[,\s]+", raw) if p.isdigit())
+    return ids or None
 
 
 def _mentions_bot(user: discord.abc.User | None, message: discord.Message) -> bool:
