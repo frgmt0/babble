@@ -673,7 +673,7 @@ class FakeAnthropicClient:
         self.beta = SimpleNamespace(messages=_Messages())
 
 
-def _message(stop_reason="end_turn", texts=("hi there",)):
+def _message(stop_reason="end_turn", texts=("<reply>hi there</reply>",)):
     content = [SimpleNamespace(type="thinking", thinking="")]
     content += [SimpleNamespace(type="text", text=t) for t in texts]
     return SimpleNamespace(
@@ -709,20 +709,22 @@ def test_oracle_sends_exactly_the_documented_request():
     assert kwargs["betas"] == [FALLBACK_BETA] == ["server-side-fallback-2026-07-01"]
     assert kwargs["fallbacks"] == "default"
     assert kwargs["messages"] == [{"role": "user", "content": build_user_message(REQUEST)}]
-    for banned in ("thinking", "temperature", "top_p", "top_k"):
+    for banned in ("temperature", "top_p", "top_k"):
         assert banned not in kwargs
     assert kwargs["system"] == build_system_prompt(REQUEST.voice_examples)
     assert "<voice_examples>" in kwargs["system"] and "- beep bop" in kwargs["system"]
     assert REQUEST.obsession not in kwargs["system"] + kwargs["messages"][0]["content"]
-    assert set(kwargs) == {"model", "max_tokens", "system", "messages", "output_config", "betas", "fallbacks"}
+    assert kwargs["thinking"] == {"type": "adaptive"}
+    assert set(kwargs) == {
+        "model", "max_tokens", "system", "messages", "thinking", "output_config", "betas", "fallbacks",
+    }
 
 
 def test_system_prompt_riffs_on_the_draft_and_never_holds_the_user_message():
     prompt = build_system_prompt(REQUEST.voice_examples)
-    assert REPLY_CHAR_BUDGET == 1900
-    assert "draft" in prompt and "actually smart" in prompt
+    assert REPLY_CHAR_BUDGET == 400
+    assert "drafts" in prompt and "luckiest day" in prompt and "<reply></reply>" in prompt
     assert "existential crisis" not in prompt and "obsession" not in prompt
-    assert "1,900" in prompt
     assert "<voice_examples>\n- boop\n- beep bop\n</voice_examples>" in prompt
     assert "style only, not context" in prompt
     assert REQUEST.prompt not in prompt and REQUEST.draft not in prompt
@@ -734,14 +736,30 @@ def test_user_message_holds_message_thread_and_draft():
     message = build_user_message(REQUEST)
     assert "<their_message>\nis soup a drink\n</their_message>" in message
     assert "<booper_earlier>\n- hello friend\n</booper_earlier>" in message
-    assert "<booper_draft>\nsoup is wet bread\n</booper_draft>" in message
+    assert "<booper_drafts>\n- soup is wet bread\n</booper_drafts>" in message
     bare = build_user_message(JackpotRequest(prompt="hi", symbol="🐸", obsession="x", symbols=("🐸",) * 3))
     assert "<booper_earlier>" not in bare
 
 
 def test_oracle_joins_only_text_blocks():
-    client = FakeAnthropicClient(_message(texts=("one ", "two")))
+    client = FakeAnthropicClient(_message(texts=("<reply>one ", "two</reply>")))
     assert Oracle(client, model="m", effort="max").ask(REQUEST).text == "one two"
+
+
+def test_oracle_sends_only_the_last_tagged_reply():
+    text = "plan: be dumb\n<reply>draft one</reply>\nWait, too long.\n<reply>  bro the air is blue  </reply>"
+    client = FakeAnthropicClient(_message(texts=(text,)))
+    assert Oracle(client, model="m", effort="low").ask(REQUEST).text == "bro the air is blue"
+
+
+def test_oracle_without_a_reply_tag_falls_back():
+    client = FakeAnthropicClient(_message(texts=("Need a short reply. Something like: hi",)))
+    assert Oracle(client, model="m", effort="low").ask(REQUEST).reason == "empty"
+
+
+def test_oracle_rejects_an_essay():
+    client = FakeAnthropicClient(_message(texts=("<reply>" + "so basically " * 60 + "</reply>",)))
+    assert Oracle(client, model="m", effort="low").ask(REQUEST).reason == "too_long"
 
 
 def test_oracle_treats_a_refusal_as_a_failure_before_reading_content():
@@ -802,7 +820,7 @@ def test_from_settings_builds_a_client_with_the_configured_timeout(settings, mon
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-real")
     oracle = Oracle.from_settings(settings)
     assert oracle is not None
-    assert oracle.model == "claude-fable-5-1" and oracle.effort == "max"
+    assert oracle.model == "claude-haiku-5-5" and oracle.effort == "low"
     assert oracle.client.timeout == 123.0
     assert oracle.client.max_retries == 0
 
@@ -815,8 +833,8 @@ def test_settings_read_the_slots_env(monkeypatch, tmp_path):
     monkeypatch.setenv("BABBLE_SLOTS_DAILY_CAP", "0")
     s = Settings.from_env(tmp_path)
     assert s.slots_enabled and s.slots_pity == 7 and s.slots_daily_cap == 0
-    assert s.slots_model == "claude-fable-5-1" and s.slots_effort == "max"
-    assert s.slots_cooldown_minutes == 30 and s.slots_voice_examples == 20
+    assert s.slots_model == "claude-haiku-5-5" and s.slots_effort == "low"
+    assert s.slots_cooldown_minutes == 30 and s.slots_voice_examples == 60 and s.slots_drafts == 4
     assert s.slots_timeout_seconds == 900.0
     assert s.slots_path == s.data_dir / "slots.json"
 
@@ -1037,3 +1055,34 @@ def test_old_slots_json_without_announced_loads(tmp_path):
     assert not m.has_announced("u_a", "spooky-2026-10")
     m.mark_announced("u_a", "spooky-2026-10")
     assert SlotMachine(path, secret=SECRET).has_announced("u_a", "spooky-2026-10")
+
+
+def test_a_jackpot_samples_extra_drafts_cleaned_and_deduped(sbrain, slots_settings):
+    outputs = iter(["first take", "first take", "<@123> second take", "you badword", "", "third [gif: cat]"])
+    prompts = []
+
+    def gen(prompt):
+        prompts.append(prompt)
+        return next(outputs)
+
+    sbrain.generator = gen
+    sbrain.blocklist = Blocklist(frozenset({"badword"}))
+    slots_settings.slots_drafts = 5
+    FakeDiscord(sbrain).onboard(ALICE)
+    request = _ping(sbrain, ALICE, "should i eat soup", mid="m-jp")[0].jackpot
+
+    assert request.draft == "first take"
+    # duplicate, blocked and empty samples dropped; mentions scrubbed; gif tags stripped
+    assert len(request.drafts) == 2
+    assert "<@123>" not in request.drafts[0] and "second take" in request.drafts[0]
+    assert request.drafts[1] == "third"
+    assert len(set(prompts)) == 1  # every draft answers the same prompt
+
+
+def test_extra_drafts_can_be_turned_off(sbrain, slots_settings, generator):
+    slots_settings.slots_drafts = 0
+    FakeDiscord(sbrain).onboard(ALICE)
+    calls_before = len(generator.prompts)
+    request = _ping(sbrain, ALICE, "should i eat soup", mid="m-jp")[0].jackpot
+    assert request.drafts == ()
+    assert len(generator.prompts) == calls_before + 1

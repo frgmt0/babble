@@ -121,7 +121,7 @@ class JackpotRequest:
     """Everything a paid jackpot needs to become a Claude-written reply.
 
     Deliberately small and deliberately text-only: the user's own message,
-    booper's own draft reply to it, booper's own earlier replies in this
+    booper's own draft replies to it, booper's own earlier replies in this
     conversation (`thread`), and up to N of booper's *own* recent replies as
     voice examples. No author ids, no usernames, no other people's prompts and
     none of the user's earlier messages -- this is the complete payload that
@@ -134,6 +134,8 @@ class JackpotRequest:
     symbols: tuple[str, str, str]
     voice_examples: tuple[str, ...] = ()
     draft: str = ""
+    #: More local-model samples for the same message, besides `draft`.
+    drafts: tuple[str, ...] = ()
     thread: tuple[str, ...] = ()
 
 
