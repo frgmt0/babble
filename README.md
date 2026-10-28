@@ -345,11 +345,12 @@ Off by default. When it is on, every ordinary reply to an **eligible** person
 spins a hidden three-reel slot machine (`babble/slots.py`). There is no command
 and nothing is shown. On three of a kind -- about **5.3%** of rolls -- that one
 reply is written by Claude (`claude-fable-5-1` at `max` effort,
-`babble/oracle.py`) instead of the local model: it is told to overthink the
-user's message into a full existential crisis that keeps spiralling back to a
-ridiculous "obsession" picked by the winning symbol (🐸 "frog-based
-macroeconomics", 💎 "whether soup is a beverage, as a 4-hour treatise", …),
-with a real answer buried somewhere in it, all in booper's voice. The prompt
+`babble/oracle.py`) instead of the local model. Claude is handed the user's
+message, booper's earlier replies in that conversation, and booper's *draft*
+-- what the local model was about to send -- and told to use the draft as a
+launchpad: keep its vibe, make it genuinely funny, and land one line that is
+"wait, that's actually smart", all in booper's voice. The reply goes out with
+no footer; nothing marks it as Claude-written beyond the consent notice. The prompt
 asks for under 1,900 characters (`REPLY_CHAR_BUDGET`), so it fits one Discord
 message; the hard cap is still applied on send. Everything else is a miss and nothing changes.
 
@@ -380,10 +381,13 @@ never roll and nothing is written about them. A message that trips the
 [content filter](#content-filter) never rolls either.
 
 **What leaves the box** on a jackpot, and nothing else: the person's own message
-(mention markup scrubbed, as everywhere) and up to `BABBLE_SLOTS_VOICE_EXAMPLES`
-of booper's **own** recent replies as style examples. Never other people's
-messages, never the prompts those replies answered, never ids or usernames,
-never conversation history.
+(mention markup scrubbed, as everywhere), booper's **own** draft reply to it,
+booper's **own** earlier replies in that conversation, and up to
+`BABBLE_SLOTS_VOICE_EXAMPLES` of booper's **own** recent replies as style
+examples. booper-side text is re-checked against the blocklist and scrubbed
+before it is sent. Never other people's messages, never the person's own
+earlier messages, never the prompts those replies answered, never ids or
+usernames. The winning symbols and obsession stay local (log only).
 
 **What happens to the answer.** It goes through `clean_for_discord` and the
 blocklist exactly like local output, then is sent with `exchange=None`: it is
@@ -419,7 +423,6 @@ ANTHROPIC_API_KEY=...            # an explicit key; a CLI login is not used
 | `BABBLE_SLOTS_DAILY_CAP` | `20` | paid jackpots per UTC day, all users; `0` = none |
 | `BABBLE_SLOTS_COOLDOWN_MINUTES` | `30` | per-person gap between paid jackpots |
 | `BABBLE_SLOTS_VOICE_EXAMPLES` | `20` | how many of booper's own recent replies go along as style examples |
-| `BABBLE_SLOTS_FOOTER` | on | add `-# 🎰 🐸🐸🐸 · <obsession>` under a jackpot reply |
 | `BABBLE_SLOTS_TIMEOUT_SECONDS` | `900` | client timeout for the one streamed request (no retries) |
 
 The request is streamed with `max_tokens=64000`, no `thinking`/sampling

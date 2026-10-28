@@ -120,10 +120,12 @@ class SpinResult:
 class JackpotRequest:
     """Everything a paid jackpot needs to become a Claude-written reply.
 
-    Deliberately small and deliberately text-only: the user's own message, the
-    obsession, and up to N of booper's *own* earlier replies as voice examples.
-    No author ids, no usernames, no other people's prompts, no conversation
-    history -- this is the complete payload that leaves the box.
+    Deliberately small and deliberately text-only: the user's own message,
+    booper's own draft reply to it, booper's own earlier replies in this
+    conversation (`thread`), and up to N of booper's *own* recent replies as
+    voice examples. No author ids, no usernames, no other people's prompts and
+    none of the user's earlier messages -- this is the complete payload that
+    leaves the box. (`obsession` and `symbols` stay local, for the log.)
     """
 
     prompt: str
@@ -131,6 +133,8 @@ class JackpotRequest:
     obsession: str
     symbols: tuple[str, str, str]
     voice_examples: tuple[str, ...] = ()
+    draft: str = ""
+    thread: tuple[str, ...] = ()
 
 
 def digest_for(secret: str, user: str, spin_count: int, prompt: str) -> bytes:
