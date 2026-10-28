@@ -77,6 +77,18 @@ correction pairs is described under
 Delete `data/` before going live, or the fake rows will look like things real
 people said.
 
+## Posting as the bot (`/pretend`)
+
+`/pretend message: image: image2: image3: reply_to:` posts in the current
+channel as the bot -- text, up to three attachments, or both, optionally as a
+reply to a message ID or link in that channel. Only the owner may run it:
+the ids in `BABBLE_OWNER_IDS` (comma-separated) if set, otherwise the owner or
+team members of the bot's Discord application. Everyone else gets a private
+refusal. Pretend posts are never captured, never remembered as an exchange
+(so they cannot be "corrected" into a training pair), and the log records only
+their size, never their text. Replies to them are answered like any other
+message to the bot.
+
 ## Inference benchmark and multi-turn checkpoints
 
 `/bench` runs a short inference-only benchmark against the bot's loaded HF
